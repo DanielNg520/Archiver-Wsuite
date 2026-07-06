@@ -47,10 +47,11 @@ from dotenv import load_dotenv
 
 from core import PolicyStore, DownloadPolicy, db_path as _core_db_path
 from core import env
+from core.platform import paths as _osp
 
 log = logging.getLogger(__name__)
 
-load_dotenv(Path.home() / ".config" / "archiver-suite" / ".env")
+load_dotenv(_osp.config_dir(_osp.SUITE) / ".env")
 
 
 # ── env-var primitives (secrets only; shared parsing lives in core.env) ───────

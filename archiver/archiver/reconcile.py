@@ -48,6 +48,7 @@ from core import (
     split_group_key,
 )
 from core.hashing import full_hash
+from core.platform import paths as _osp
 
 # Upload priority for re-registered recordings. MUST match the recorder's live
 # enqueue (recorder.enqueue.RECORDER_PRIORITY) so a reconciled recording and a
@@ -66,7 +67,7 @@ log = logging.getLogger(__name__)
 from core.files import MEDIA_EXTENSIONS  # noqa: E402
 
 ROOT_CLUSTER_MIN_PREFIX = 5
-RECORDER_CONFIG_TOML = Path.home() / ".config" / "recorder" / "config.toml"
+RECORDER_CONFIG_TOML = _osp.config_dir(_osp.RECORDER) / "config.toml"
 RECORDER_DEFAULT_OUTPUT_DIR = Path.home() / "recorder-output"
 
 

@@ -20,10 +20,11 @@ from dotenv import load_dotenv
 
 from core import db_path as _core_db_path
 from core import env
+from core.platform import paths as _osp
 
-load_dotenv(Path.home() / ".config" / "recorder" / ".env")
+load_dotenv(_osp.config_dir(_osp.RECORDER) / ".env")
 
-CONFIG_TOML = Path.home() / ".config" / "recorder" / "config.toml"
+CONFIG_TOML = _osp.config_dir(_osp.RECORDER) / "config.toml"
 
 # Shared env parsing lives in core.env.
 _opt = env.opt
@@ -100,8 +101,7 @@ class RecorderConfig:
             state_dir           = _opt("STATE_DIR",
                                        os.path.expanduser("~/.recorder")),
             lock_path           = _opt("LOCK_PATH",
-                                       os.path.expanduser(
-                                           "~/.config/archiver-suite/locks/tiktok.lock")),
+                                       str(_osp.locks_dir() / "tiktok.lock")),
             tiktok_users        = users,
             tiktok_cookies_file = cookies,
             reconnect_enabled        = bool(rec.get("reconnect_enabled", True)),

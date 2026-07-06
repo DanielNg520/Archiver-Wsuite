@@ -58,6 +58,7 @@ from core import (
 from core import SortPolicy
 from core import cli as core_cli
 from core import termui
+from core.platform import paths as _osp
 
 
 PLATFORM_CHOICES = ["x", "tiktok", "instagram"]
@@ -1228,7 +1229,7 @@ def _scope_label(platform: str | None, username: str | None) -> str:
 
 
 def _env_path() -> Path:
-    return Path.home() / ".config" / "archiver-suite" / ".env"
+    return _osp.config_dir(_osp.SUITE) / ".env"
 
 
 def _write_enabled_platforms(enabled: set[str]) -> None:

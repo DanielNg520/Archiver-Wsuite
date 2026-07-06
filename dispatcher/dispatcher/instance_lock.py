@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core import InstanceLock, InstanceAlreadyRunning
+from core.platform import paths as _osp
 
 
 class DispatcherAlreadyRunning(InstanceAlreadyRunning):
@@ -31,7 +32,7 @@ class DispatcherInstanceLock(InstanceLock):
     different file and both run — the exact failure this guard prevents.
     """
 
-    _LOCK_DIR = Path("~/.config/dispatcher").expanduser()
+    _LOCK_DIR = _osp.config_dir(_osp.DISPATCHER)
 
     def __init__(self, session_name: str):
         base = Path(session_name).expanduser()

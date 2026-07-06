@@ -18,14 +18,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from core import PolicyStore, DEFAULT_DB_PATH, Sanitizer, ReloadingSanitizer
+from core import PolicyStore, default_db_path, Sanitizer, ReloadingSanitizer
 from core import env
+from core.platform import paths as _osp
 from core.routing import parse_route
 
 # Load dispatcher's own .env BEFORE any os.environ reads. This is a side
 # effect on import; matches archiver's pattern. Test code that needs a
 # different env should monkeypatch os.environ after import.
-load_dotenv(Path.home() / ".config" / "dispatcher" / ".env")
+load_dotenv(_osp.config_dir(_osp.DISPATCHER) / ".env")
 
 
 # ── env-var primitives (shared parsing lives in core.env) ──────────────────
@@ -40,7 +41,7 @@ def banned_words_file_path() -> Path:
     single source of truth shared by config-load and the `banned-words` CLI."""
     return Path(_opt(
         "BANNED_WORDS_FILE",
-        str(Path.home() / ".config" / "dispatcher" / "banned_words.txt")
+        str(_osp.config_dir(_osp.DISPATCHER) / "banned_words.txt")
     )).expanduser()
 
 
@@ -49,13 +50,13 @@ def session_name_or_default() -> str:
     the full Telegram credentials. Lets read-only commands (status) locate the
     instance lock even when creds aren't loadable."""
     return _opt("TELEGRAM_SESSION",
-                os.path.expanduser("~/.config/dispatcher/session"))
+                str(_osp.config_dir(_osp.DISPATCHER) / "session"))
 
 
 def dispatcher_env_path() -> Path:
     """The dispatcher's own .env file — the single store the `burner` CLI writes.
     Kept as a function (not a constant) so tests can point HOME elsewhere."""
-    return Path.home() / ".config" / "dispatcher" / ".env"
+    return _osp.config_dir(_osp.DISPATCHER) / ".env"
 
 
 def burner_session_name_or_default() -> str:
@@ -233,7 +234,7 @@ class DispatcherConfig:
         before the drain loop, so failing here is the right time to fail.
         """
         store = PolicyStore()
-        default_db = os.path.expanduser(DEFAULT_DB_PATH)
+        default_db = str(default_db_path())
         telegram = TelegramCreds.from_env() if require_telegram else None
         burner = BurnerCreds.from_env(telegram) if telegram is not None else None
         default_chat_id = _req("TELEGRAM_CHAT_ID") if require_telegram else None
@@ -262,4 +263,4 @@ class DispatcherConfig:
         return self.policy_store.path
 
     def env_path(self) -> Path:
-        return Path.home() / ".config" / "dispatcher" / ".env"
+        return _osp.config_dir(_osp.DISPATCHER) / ".env"

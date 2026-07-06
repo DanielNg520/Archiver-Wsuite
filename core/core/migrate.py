@@ -45,6 +45,7 @@ import sqlite3
 from pathlib import Path
 
 from . import schema
+from .platform import paths as _osp
 from .store import now_iso
 
 log = logging.getLogger("core.migrate")
@@ -206,9 +207,9 @@ def migrate(archive_db: Path, dispatcher_db: Path, out_db: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(prog="core.migrate")
-    p.add_argument("--archive-db",    default="~/.config/archiver-suite/archive.db")
-    p.add_argument("--dispatcher-db", default="~/.config/dispatcher/dispatcher.db")
-    p.add_argument("--out",           default=schema.DEFAULT_DB_PATH)
+    p.add_argument("--archive-db",    default=str(_osp.config_dir(_osp.SUITE) / "archive.db"))
+    p.add_argument("--dispatcher-db", default=str(_osp.config_dir(_osp.DISPATCHER) / "dispatcher.db"))
+    p.add_argument("--out",           default=str(schema.default_db_path()))
     a = p.parse_args(argv)
 
     stats = migrate(

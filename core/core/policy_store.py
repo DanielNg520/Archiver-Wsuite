@@ -22,6 +22,8 @@ from typing import Any, Iterator
 
 import tomli_w
 
+from core.platform import paths as _osp
+
 log = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ def default_config_path() -> Path:
     override = os.environ.get("ARCHIVER_SUITE_CONFIG")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".config" / "archiver-suite" / "config.toml"
+    return _osp.config_dir(_osp.SUITE) / "config.toml"
 
 
 class PolicyStore:

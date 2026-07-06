@@ -71,19 +71,30 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
 - [ ] Establish a Windows test box / VM with Python 3.12+ matching the pins in
       `requirements.txt`.
 
-### Phase 1 — Path centralization (blocks everything)
-- [ ] Add `platform/paths.py`:
-      `config_root() = platformdirs.user_config_dir("archiver-suite")`
-      (`%APPDATA%\archiver-suite` on Win, `~/.config/archiver-suite` on POSIX),
-      plus `state_dir()`, `locks_dir()`.
-- [ ] Route every literal through it:
-      `core/core/paths.py` (locks, progress.json, loop.json, recorder pid),
-      `core/core/policy_store.py` (config.toml), `core/core/schema.py`
-      (`DEFAULT_DB_PATH`), `core/core/migrate.py`, `core/core/sanitize.py`
-      (banned-words file).
-- [ ] Preserve the `ARCHIVER_DB` env override (already wins in `schema.py`).
-- **Verify:** paths resolve under `%APPDATA%`; core selftest DB opens; macOS
-  paths unchanged.
+### Phase 1 — Path centralization (blocks everything) ✅ DONE (2026-07-06)
+- [x] Added `core/core/platform/` package (`__init__.py` + `paths.py`) exposing
+      `config_dir(app)`, `locks_dir()`, and app constants `SUITE/DISPATCHER/
+      ARCHIVER/RECORDER`.
+- [x] **Deviation from original plan:** did **NOT** use `platformdirs`. Its macOS
+      default resolves to `~/Library/Application Support/<app>`, which would
+      silently relocate existing macOS installs off the suite's `~/.config`
+      convention. Instead: POSIX branch = `$XDG_CONFIG_HOME`/`~/.config` (byte-for-
+      byte unchanged); Windows branch = `%APPDATA%` (or `~/AppData/Roaming`). No
+      new dependency needed.
+- [x] Routed every code literal through it: `core/paths.py`, `core/schema.py`
+      (new `default_db_path()`, exported from `core`), `core/policy_store.py`,
+      `core/migrate.py`, `core/instance_lock.py` (dir only — mechanism is Phase 2),
+      `dispatcher/config.py` (.env, session, banned-words, db default),
+      `dispatcher/instance_lock.py` (dir only), `archiver/config.py`,
+      `archiver/reconcile.py`, `archiver/cli.py`, `recorder/config.py`
+      (.env, config.toml, tiktok.lock). `sanitize.py` needed no change (expands a
+      passed-in path). `~/.recorder` + `~/recorder-output` left as-is (`~`
+      expands correctly on Windows).
+- [x] `ARCHIVER_DB` env override preserved (wins in `schema.db_path()`).
+- **Verified:** POSIX paths unchanged (smoke test); Windows branch selects
+      `%APPDATA%`; all packages import; `core` instance-lock + safebrake selftests
+      pass (55 checks). Full `test_seams.py` deferred to a box with `pytest`
+      installed / the Windows test pass.
 
 ### Phase 2 — Instance lock (load-bearing)
 - [ ] `platform/filelock.py`:

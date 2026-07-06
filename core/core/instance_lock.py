@@ -25,7 +25,9 @@ import fcntl
 import os
 from pathlib import Path
 
-_LOCK_DIR = Path("~/.config/archiver-suite/locks").expanduser()
+from core.platform import paths as _osp
+
+_LOCK_DIR = _osp.locks_dir()
 
 
 class InstanceAlreadyRunning(RuntimeError):

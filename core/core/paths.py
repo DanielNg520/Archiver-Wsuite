@@ -25,10 +25,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.platform import paths as _osp
+
 
 def locks_dir() -> Path:
     """Directory holding the suite's cross-process lock files."""
-    return Path("~/.config/archiver-suite/locks").expanduser()
+    return _osp.locks_dir()
 
 
 def tiktok_lock() -> Path:
@@ -40,12 +42,12 @@ def tiktok_lock() -> Path:
 
 def dispatcher_progress() -> Path:
     """Dispatcher's upload-progress heartbeat (see core.heartbeat)."""
-    return Path("~/.config/dispatcher/progress.json").expanduser()
+    return _osp.config_dir(_osp.DISPATCHER) / "progress.json"
 
 
 def archiver_loop() -> Path:
     """Archiver loop's phase heartbeat (running/sleeping; see core.heartbeat)."""
-    return Path("~/.config/archiver/loop.json").expanduser()
+    return _osp.config_dir(_osp.ARCHIVER) / "loop.json"
 
 
 def recorder_pid() -> Path:

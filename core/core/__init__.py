@@ -7,7 +7,7 @@ recorder, and ops instead of being copied into each.
 """
 
 from .models import Item, Status, TERMINAL
-from .schema import connect, db_path, DEFAULT_DB_PATH, SchemaVersionError
+from .schema import connect, db_path, default_db_path, DEFAULT_DB_PATH, SchemaVersionError
 from .store import (
     ClaimContentionError, IllegalTransition, ItemStore, now_iso, CANCELLED_MARKER,
     is_transient_failure,
@@ -38,7 +38,7 @@ from .sorter import sort_unsorted, SortReport, extract_username
 
 __all__ = [
     "Item", "Status", "TERMINAL",
-    "connect", "db_path", "DEFAULT_DB_PATH", "SchemaVersionError",
+    "connect", "db_path", "default_db_path", "DEFAULT_DB_PATH", "SchemaVersionError",
     "ClaimContentionError", "IllegalTransition", "ItemStore", "now_iso",
     "CANCELLED_MARKER", "is_transient_failure",
     "InstanceLock", "InstanceAlreadyRunning",
