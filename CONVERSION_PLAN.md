@@ -168,18 +168,37 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
 - **Verified (POSIX):** all packages import; `shutdown_signals()` = SIGINT/SIGTERM;
       capture + instance-lock selftests pass (41 checks).
 
-### Phase 5 — Daemonize + service management
-- [ ] **Delete** `_daemonize()` (recorder double-fork). Make `--daemon` a no-op
-      that points at the service manager (its own comment already says the
-      service manager is the real backgrounding mechanism).
-- [ ] `platform/service.py` replacing launchd (`ops/launchd/*.plist`,
-      `launchctl` wiring). Recommended: **Task Scheduler** (run-at-startup +
-      restart-on-failure, simplest) or **Windows Service** via `pywin32`
-      `win32serviceutil` (survives logoff), or **NSSM** (wrap CLIs, zero code).
-- [ ] Update `ops/ops/health.py` + `ops/ops/cli.py` to query the chosen
-      mechanism instead of `launchctl list`. Also review `ops/ops/logrotate.py`
-      — its copy-truncate exists because launchd can't be signalled to reopen;
-      revisit under the Windows service model.
+### Phase 5 — Daemonize + service management ✅ DONE (2026-07-06)
+- [x] **Deleted** `_daemonize()` (the `os.fork`/`os.setsid`/`os.dup2` double-fork
+      — the last POSIX-only process primitive). `--daemon` is now an accepted
+      no-op that logs a pointer to `ops install`; the arg stays so old scripts
+      don't break.
+- [x] **Mechanism chosen: Task Scheduler** (per user's call — runs logged in,
+      manual `ops`-style control). It's the direct analog of today's per-user
+      launchd LaunchAgent (at-logon, runs as the user → `%APPDATA%` paths
+      resolve, restart-on-failure), needs no admin / stored password / bundled
+      binary. (Windows Service + NSSM were the headless-server alternatives.)
+- [x] `platform/service.py` — launchd backend (POSIX, byte-faithful to the old
+      plist XML + launchctl load/unload/kickstart/list) + Task Scheduler backend
+      (Windows: `schtasks /Create /XML` with LogonTrigger + RestartOnFailure for
+      daemons / CalendarTrigger for the daily logrotate job; `/Run` `/End`
+      `/Change /ENABLE|/DISABLE` `/Query`). Same verbs: install / uninstall /
+      load / unload / restart / definition_exists / running_pid / log_dir.
+- [x] `platform/process.py` gained `proc_stats` (POSIX `ps` / Windows `tasklist`)
+      and `find_worker_pid` (POSIX `ps` / Windows `wmic` cmdline match).
+- [x] Rewired `ops/cli.py` (install/uninstall/load/unload/restart → adapter;
+      verbs/health/watch/logrotate unchanged) and `ops/health.py`
+      (`launchctl_pid`→`service.running_pid`; `foreground_pid`/`proc_stats`→
+      `process`; owner label "launchd"→"service"). Removed the inline plist XML
+      + `ops/launchd/` plists + dead `subprocess`/`shlex` imports. Dispatcher's
+      "already running" hint is now OS-neutral (`ops unload dispatcher`).
+- **`ops/logrotate.py` left as-is:** copy-truncate is OS-agnostic and is in fact
+      the *correct* Windows choice too (a rename would strand a service that holds
+      the log's handle open — the same reason it was chosen for launchd).
+- **Verified (POSIX):** all packages import; launchd plist XML (daemon + calendar)
+      generates identically; `ops health` renders `service · pid` via launchd;
+      logrotate + all 6 core/capture selftests pass. Windows `schtasks` lifecycle
+      + `wmic` pid-match deferred to the Windows box.
 
 ---
 
@@ -190,8 +209,10 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
   `policy_store.py`, sorter). `os.replace` is atomic on Windows too.
   ⚠️ **Caveat:** Windows cannot replace/delete a file with an **open handle** —
   audit that nothing holds the target open across the replace.
-- **`os.kill(pid, 0)`** liveness probe (`heartbeat.py:43`, test_seams) — works
-  on Windows.
+- ~~**`os.kill(pid, 0)`** liveness probe — works on Windows.~~ **WRONG** (Phase 2
+  correction): on Windows `os.kill(pid, 0)` routes to TerminateProcess and would
+  *kill* the target. Now handled by `core.platform.process.pid_alive`
+  (OpenProcess). Do not reintroduce raw `os.kill(pid, 0)`.
 - **Telethon / FastTelethon / hachoir / media_prep / ffmpeg subprocesses** —
   cross-platform.
 
@@ -206,12 +227,21 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
 5. Service install + reboot survival + restart-on-crash.
 
 ## 6. Definition of done
-- No `fcntl`, `os.fork`, `os.setsid`, `os.killpg`, or bare `SIGTERM` reachable on
-  the Windows code path (`grep` clean under `if os.name == 'nt'`).
-- All config under `%APPDATA%\archiver-suite`.
-- Kill-tests leave no orphan ffmpeg and no stale locks.
-- Workers auto-start on boot and restart on crash via the service manager.
-- `test_seams.py` green on Windows.
+- [x] **Code complete (Phases 1–5).** No `fcntl`, `os.fork`, `os.setsid`,
+      `os.killpg`, raw `os.kill(pid,0)`, `add_signal_handler`, or bare `SIGTERM`
+      reachable on the Windows path — every OS-specific mechanism sits behind
+      `core.platform.{paths,filelock,process,procgroup,signals,service}`, selected
+      by `os.name`. POSIX behavior preserved (all selftests green on macOS).
+- [x] All config under `%APPDATA%\archiver-suite` on Windows (Phase 1).
+- [ ] **Remaining — validate on a real Windows box** (can't be done from macOS):
+      - Kill-tests: no orphan `ffmpeg.exe`, no stale locks.
+      - Workers auto-start at logon + restart on crash via Task Scheduler.
+      - `test_seams.py` green (`PYTHONPATH=core;archiver;recorder;dispatcher;ops`).
+      - `wmic`/`tasklist` health probes return sensible values (refine if `wmic`
+        is absent on the target — PowerShell CIM fallback).
+      - Add `pywin32`? Not currently needed — the port uses only stdlib
+        (`ctypes`, `msvcrt`, `subprocess`+`schtasks`/`taskkill`). Keep it out
+        unless a Windows-box gap forces it.
 
 ---
 

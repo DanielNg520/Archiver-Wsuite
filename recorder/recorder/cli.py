@@ -2,7 +2,7 @@
 recorder.cli
 ────────────
   recorder start                         foreground (watch the priority list)
-  recorder start --daemon                fork; pid file at state_dir/pid
+  recorder start --daemon                deprecated no-op (use `ops install`)
   recorder record --user <u>             ONE-SHOT: if @u is live, record it
                                          once and exit (no listening loop)
   recorder stop                          terminate via pid file
@@ -90,7 +90,13 @@ def cmd_start(args: argparse.Namespace) -> int:
     from .state import StateMachine
 
     if args.daemon:
-        _daemonize(config)
+        # Backgrounding is the service manager's job (see `ops install`), not a
+        # hand-rolled double-fork — which POSIX-forked and did not exist on
+        # Windows at all. Kept as an accepted no-op so old invocations/scripts
+        # don't break; it just runs in the foreground.
+        log.warning("--daemon is a no-op; use `ops install` + `ops load` to run "
+                    "the recorder under the OS service manager. Running in "
+                    "foreground.")
 
     ui.banner(config)
 
@@ -141,21 +147,6 @@ def cmd_start(args: argparse.Namespace) -> int:
     finally:
         pid_path.unlink(missing_ok=True)
     return 0
-
-
-def _daemonize(config: RecorderConfig) -> None:
-    """Minimal double-fork daemonization. launchd (Slice 5) is the real
-    backgrounding mechanism; this --daemon flag is for manual use."""
-    if os.fork() > 0:
-        sys.exit(0)
-    os.setsid()
-    if os.fork() > 0:
-        sys.exit(0)
-    log_dir = Path(config.state_dir).expanduser()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    out = open(log_dir / "recorder.out.log", "a")
-    os.dup2(out.fileno(), sys.stdout.fileno())
-    os.dup2(out.fileno(), sys.stderr.fileno())
 
 
 # ── record (one-shot manual mode) ──────────────────────────────────────────
@@ -403,7 +394,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_start = sub.add_parser("start", help="run the recorder")
     p_start.add_argument("--daemon", action="store_true",
-                         help="fork into background (pid file in state_dir)")
+                         help="deprecated no-op — use `ops install` to run under "
+                              "the OS service manager")
     p_record = sub.add_parser(
         "record",
         help="one-shot: record a single user's live now, then exit (no loop)")

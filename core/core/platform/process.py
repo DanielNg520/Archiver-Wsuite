@@ -16,11 +16,18 @@ POSIX keeps the exact signal-0 semantics the suite relied on (ProcessLookupError
 ``OpenProcess`` via ctypes (no pywin32 dependency): a handle back ⇒ alive;
 ERROR_INVALID_PARAMETER ⇒ no such pid ⇒ dead; access-denied ⇒ the process
 exists ⇒ alive.
+
+Also here (used by ops health, both OS-specific):
+
+  proc_stats(pid) -> str | None            # "up 1:10:15, cpu 10.6%, mem 110MB"
+  find_worker_pid(command, action) -> int  # locate a worker by its argv
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
+from pathlib import Path
 
 if os.name == "nt":                                   # ── Windows backend ──
     import ctypes
@@ -69,3 +76,103 @@ else:                                                 # ── POSIX backend ─
         except (OSError, ValueError, TypeError):
             return False
         return True
+
+
+# ── process inspection (ops health) ────────────────────────────────────────
+
+if os.name == "nt":                                   # ── Windows backend ──
+
+    import shlex
+
+    def proc_stats(pid: int) -> "str | None":
+        # tasklist gives image + mem; CPU% and uptime aren't cheaply available
+        # from a single call, so report memory (the field ops most cares about).
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return None
+        line = out.stdout.strip().splitlines()
+        if out.returncode != 0 or not line or "No tasks" in out.stdout:
+            return None
+        try:
+            fields = next(__import__("csv").reader([line[0]]))
+            mem = fields[4].replace("\xa0", " ")     # "110,240 K"
+        except (StopIteration, IndexError):
+            return None
+        return f"mem {mem}"
+
+    def find_worker_pid(command: str, action: str) -> "int | None":
+        # Match a worker by its command line via WMI (wmic is present on most
+        # Windows; PowerShell CIM is the fallback path a Windows box can add).
+        try:
+            out = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
+                capture_output=True, text=True, timeout=6,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode != 0:
+            return None
+        for row in out.stdout.splitlines():
+            if command not in row or action not in row:
+                continue
+            try:
+                argv = shlex.split(row, posix=False)
+            except ValueError:
+                continue
+            for i, tok in enumerate(argv[:-1]):
+                base = tok.strip('"').replace("\\", "/").rsplit("/", 1)[-1]
+                if (base == command or base == f"{command}.exe") \
+                        and argv[i + 1].strip('"') == action:
+                    tail = row.rsplit(",", 1)[-1].strip()
+                    return int(tail) if tail.isdigit() else None
+        return None
+
+else:                                                 # ── POSIX backend ──
+
+    import shlex
+
+    def proc_stats(pid: int) -> "str | None":
+        try:
+            out = subprocess.run(
+                ["ps", "-p", str(int(pid)), "-o", "etime=,%cpu=,rss="],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return None
+        fields = out.stdout.split()
+        if out.returncode != 0 or len(fields) != 3:
+            return None
+        etime, pcpu, rss_kb = fields
+        try:
+            mem_mb = int(rss_kb) // 1024
+        except ValueError:
+            return None
+        return f"up {etime}, cpu {pcpu}%, mem {mem_mb}MB"
+
+    def find_worker_pid(command: str, action: str) -> "int | None":
+        try:
+            out = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode != 0:
+            return None
+        for line in out.stdout.splitlines():
+            fields = line.strip().split(maxsplit=1)
+            if len(fields) != 2:
+                continue
+            try:
+                pid = int(fields[0])
+                argv = shlex.split(fields[1])
+            except (ValueError, IndexError):
+                continue
+            for index, token in enumerate(argv[:-1]):
+                if Path(token).name == command and argv[index + 1] == action:
+                    return pid
+        return None

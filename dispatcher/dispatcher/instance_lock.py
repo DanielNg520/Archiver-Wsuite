@@ -45,8 +45,7 @@ class DispatcherInstanceLock(InstanceLock):
         session = self.path.name.removesuffix(".dispatcher.lock")
         return DispatcherAlreadyRunning(
             f"another dispatcher ({holder}) already owns Telegram session "
-            f"{session!r} — if launchd manages it, that instance restarted "
-            f"on boot; stop it with "
-            f"`launchctl bootout gui/$UID/com.duy.dispatcher` "
+            f"{session!r} — if the service manager runs it, that instance "
+            f"restarted on boot; stop it with `ops unload dispatcher` "
             f"or check it with `dispatcher status`"
         )

@@ -17,9 +17,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import shlex
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -41,6 +39,8 @@ except ModuleNotFoundError:
 # *worker* package imported — core is the shared library.
 from core import heartbeat as _heartbeat
 from core import paths as _paths
+from core.platform import service as _service
+from core.platform import process as _process
 
 # Single source of truth: one DB for the whole suite. ops still imports no
 # *service* package (dispatcher/recorder/archiver) — it only borrows the
@@ -69,83 +69,24 @@ LABELS = {
 }
 
 
-# ── launchd liveness ──────────────────────────────────────────────────────
-
-def launchctl_pid(label: str) -> int | None:
-    """Return the managed pid if the job is loaded AND running, else None.
-    `launchctl list <label>` prints a plist-ish block with a "PID" key
-    only while the process is actually alive."""
-    try:
-        out = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if out.returncode != 0:
-        return None  # not loaded
-    for line in out.stdout.splitlines():
-        s = line.strip()
-        if s.startswith('"PID"'):
-            # format: "PID" = 1234;
-            digits = "".join(c for c in s if c.isdigit())
-            return int(digits) if digits else None
-    return None
-
-
-def foreground_pid(command: str, action: str) -> int | None:
-    """Find a manually-started worker without matching shell snippets."""
-    try:
-        out = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if out.returncode != 0:
-        return None
-    for line in out.stdout.splitlines():
-        fields = line.strip().split(maxsplit=1)
-        if len(fields) != 2:
-            continue
-        try:
-            pid = int(fields[0])
-            argv = shlex.split(fields[1])
-        except (ValueError, IndexError):
-            continue
-        for index, token in enumerate(argv[:-1]):
-            if Path(token).name == command and argv[index + 1] == action:
-                return pid
-    return None
-
+# ── service / process liveness ─────────────────────────────────────────────
+# The OS-specifics (launchd vs Task Scheduler; ps vs tasklist/wmic) live in
+# core.platform; ops just asks for a managed pid, then falls back to finding the
+# worker in the process table.
 
 def worker_pid(name: str) -> tuple[int | None, str]:
-    """Return a worker PID and whether launchd or a shell owns it."""
-    managed = launchctl_pid(LABELS[name])
+    """Return a worker PID and whether the service manager or a shell owns it."""
+    managed = _service.running_pid(LABELS[name])
     if managed is not None:
-        return managed, "launchd"
+        return managed, "service"
     action = "loop" if name == "archiver" else "start"
-    return foreground_pid(name, action), "foreground"
+    return _process.find_worker_pid(name, action), "foreground"
 
 
 def proc_stats(pid: int) -> str | None:
-    """'up 1:10:15, cpu 10.6%, mem 110MB' from ps, or None if it vanished."""
-    try:
-        out = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "etime=,%cpu=,rss="],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    fields = out.stdout.split()
-    if out.returncode != 0 or len(fields) != 3:
-        return None
-    etime, pcpu, rss_kb = fields
-    try:
-        mem_mb = int(rss_kb) // 1024
-    except ValueError:
-        return None
-    return f"up {etime}, cpu {pcpu}%, mem {mem_mb}MB"
+    """'up 1:10:15, cpu 10.6%, mem 110MB' (POSIX) / 'mem …' (Windows), or None if
+    the process vanished. OS-specific probe lives in core.platform.process."""
+    return _process.proc_stats(pid)
 
 
 # ── DB queries (read-only) ─────────────────────────────────────────────────

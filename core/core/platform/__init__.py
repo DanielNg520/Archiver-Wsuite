@@ -12,7 +12,7 @@ Adapters (added phase by phase):
   • process    — os.kill(pid,0) ↔ OpenProcess liveness (Phase 2)
   • procgroup  — os.killpg ↔ CTRL_BREAK / taskkill /T   (Phase 3)
   • signals    — SIGTERM ↔ SIGBREAK, sync/async wiring   (Phase 4)
-  • service    — launchd ↔ Task Scheduler / Service     (Phase 5)
+  • service    — launchd ↔ Task Scheduler               (Phase 5)
 
 Design rule: each adapter exposes ONE platform-blind API; the POSIX and Windows
 implementations sit side by side and are selected at call time by ``os.name``.
@@ -27,5 +27,6 @@ from . import filelock
 from . import process
 from . import procgroup
 from . import signals
+from . import service
 
-__all__ = ["paths", "filelock", "process", "procgroup", "signals"]
+__all__ = ["paths", "filelock", "process", "procgroup", "signals", "service"]
