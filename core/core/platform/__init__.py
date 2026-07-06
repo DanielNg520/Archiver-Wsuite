@@ -11,6 +11,7 @@ Adapters (added phase by phase):
   • filelock   — fcntl.flock ↔ msvcrt.locking          (Phase 2)
   • process    — os.kill(pid,0) ↔ OpenProcess liveness (Phase 2)
   • procgroup  — os.killpg ↔ CTRL_BREAK / taskkill /T   (Phase 3)
+  • signals    — SIGTERM ↔ SIGBREAK, sync/async wiring   (Phase 4)
   • service    — launchd ↔ Task Scheduler / Service     (Phase 5)
 
 Design rule: each adapter exposes ONE platform-blind API; the POSIX and Windows
@@ -25,5 +26,6 @@ from . import paths
 from . import filelock
 from . import process
 from . import procgroup
+from . import signals
 
-__all__ = ["paths", "filelock", "process", "procgroup"]
+__all__ = ["paths", "filelock", "process", "procgroup", "signals"]

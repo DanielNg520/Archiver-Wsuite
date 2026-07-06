@@ -31,10 +31,10 @@ import argparse
 import asyncio
 import logging
 import os
-import signal
 import sys
 from pathlib import Path
 
+from core.platform import signals as _signals
 from core import (
     ItemStore, DeletePolicy, RecorderDeletePolicy, BatchPolicy, DeletionGuard,
     parse_route, load_words,
@@ -100,8 +100,10 @@ async def _run_drain(config: DispatcherConfig) -> None:
         stop_event.set()
 
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _on_signal, sig)
+    # add_signal_handler is POSIX-only (raises on Windows loops); the adapter
+    # falls back to signal.signal + call_soon_threadsafe there, and registers
+    # SIGBREAK instead of the never-delivered SIGTERM.
+    _signals.install_async(loop, _on_signal)
 
     async with TelethonSendStrategy(
         api_id           = config.telegram.api_id,

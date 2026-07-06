@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import signal
 import sys
 import time
 import tomllib
@@ -32,6 +31,8 @@ import tomli_w
 from core import ItemStore
 from core import cli as core_cli
 from core import heartbeat
+from core.platform import procgroup as _procgroup
+from core.platform import signals as _signals
 
 from . import ui, watch
 from .config import CONFIG_TOML, RecorderConfig
@@ -133,8 +134,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                  extra={"ev": "stop"})
         machine.request_stop()
 
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    _signals.install_sync(_on_signal)
 
     try:
         machine.run_forever()
@@ -213,8 +213,7 @@ def cmd_record(args: argparse.Namespace) -> int:
                  extra={"ev": "stop"})
         machine.request_stop()
 
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    _signals.install_sync(_on_signal)
 
     try:
         recorded = machine.record_once(username)
@@ -239,14 +238,15 @@ def cmd_stop(args: argparse.Namespace) -> int:
     except (OSError, ValueError):
         log.error("pid file unreadable: %s", pid_path)
         return 1
-    try:
-        os.kill(pid, signal.SIGTERM)
-        log.info("sent SIGTERM to recorder pid=%d", pid)
-    except ProcessLookupError:
+    if not heartbeat.pid_alive(pid):
         log.warning("pid %d not running — clearing stale pid file", pid)
         pid_path.unlink(missing_ok=True)
         return 1
-    return 0
+    if _procgroup.terminate_pid(pid):
+        log.info("requested stop of recorder pid=%d", pid)
+        return 0
+    log.error("could not signal recorder pid=%d", pid)
+    return 1
 
 
 # ── status ────────────────────────────────────────────────────────────────

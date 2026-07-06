@@ -147,12 +147,26 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
       group test is POSIX-only (`sh -c`); the **Windows kill → no stray ffmpeg.exe
       in Task Manager** test is deferred to the Windows box.
 
-### Phase 4 — Signals & shutdown
-- [ ] Guard `SIGTERM` registration to POSIX. On Windows register `SIGINT` +
-      `CTRL_CLOSE_EVENT` (or the service stop handler) → same `stop_event` →
-      clean drain exit.
-- [ ] `recorder/cli.py` stop command (`os.kill(pid, SIGTERM)`) → send
-      `CTRL_BREAK_EVENT`/`taskkill` via the procgroup adapter on Windows.
+### Phase 4 — Signals & shutdown ✅ DONE (2026-07-06)
+- [x] `platform/signals.py` with `install_sync(handler)` (recorder — threaded)
+      and `install_async(loop, callback)` (dispatcher — asyncio). Shutdown signal
+      set is `(SIGINT, SIGTERM)` on POSIX, `(SIGINT, SIGBREAK)` on Windows.
+- [x] **Correction to the plan's premise:** the real Windows blocker was the
+      *dispatcher*, not the recorder. `loop.add_signal_handler` (dispatcher)
+      raises `NotImplementedError` on Windows loops — `install_async` catches it
+      and falls back to `signal.signal` + `call_soon_threadsafe`. Bare
+      `signal.signal(SIGTERM,…)` (recorder) is actually *allowed* on Windows; it's
+      just never delivered, so we register `SIGBREAK` there instead.
+- [x] Routed: `dispatcher/cli.py` (→ `install_async`), `recorder/cli.py` both
+      handler sites (→ `install_sync`). Dropped now-unused `import signal` from
+      both. `archiver/cli.py` uses only `SIGINT` (Windows-safe) — left as-is.
+- [x] `recorder stop` (`os.kill(pid, SIGTERM)`) → `procgroup.terminate_pid(pid)`:
+      POSIX SIGTERM to the recorder (its handler stops gracefully + group-kills
+      the capture); Windows `taskkill /PID <pid> /T /F` (tree kill — recording
+      stays playable via MPEG-TS/--no-part). Stale-pid check now uses the
+      Windows-safe `heartbeat.pid_alive`.
+- **Verified (POSIX):** all packages import; `shutdown_signals()` = SIGINT/SIGTERM;
+      capture + instance-lock selftests pass (41 checks).
 
 ### Phase 5 — Daemonize + service management
 - [ ] **Delete** `_daemonize()` (recorder double-fork). Make `--daemon` a no-op

@@ -16,6 +16,7 @@ API — all operate on a ``subprocess.Popen`` (``proc``):
   popen_kwargs() -> dict     # spread into Popen(...) to make its own group
   terminate(proc) -> bool    # graceful stop of the whole group; False = unreachable
   kill(proc)      -> bool     # forceful kill of the whole tree;  False = unreachable
+  terminate_pid(pid) -> bool # stop a worker known only by pid (recorder stop)
 
 Mapping:
 
@@ -58,13 +59,20 @@ if os.name == "nt":                                   # ── Windows backend �
         # Terminate the whole descendant tree so the child ffmpeg can't orphan.
         if proc is None:
             return False
+        return terminate_pid(proc.pid)
+
+    def terminate_pid(pid: int) -> bool:
+        # A running console worker (e.g. the recorder started by the service) has
+        # no reliable cross-process *graceful* stop on Windows, so kill the whole
+        # tree — /T reaps yt-dlp + its child ffmpeg with the recorder, and the
+        # in-progress recording is still playable (MPEG-TS + --no-part).
         try:
             res = subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
                 capture_output=True,
             )
             return res.returncode == 0
-        except OSError:
+        except (OSError, ValueError):
             return False
 
 else:                                                 # ── POSIX backend ──
@@ -86,3 +94,12 @@ else:                                                 # ── POSIX backend ─
 
     def kill(proc: "subprocess.Popen | None") -> bool:
         return _signal_group(proc, signal.SIGKILL)
+
+    def terminate_pid(pid: int) -> bool:
+        # SIGTERM the recorder itself; its own handler does the graceful stop
+        # (which group-kills the capture). ProcessLookupError ⇒ already gone.
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+            return True
+        except (ProcessLookupError, PermissionError, OSError, ValueError):
+            return False
