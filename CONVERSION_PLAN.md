@@ -124,18 +124,28 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
       / re-acquire-after-exit) + media_prep selftest pass (80 checks); all packages
       import. **Windows kill-frees-lock test deferred to the Windows box.**
 
-### Phase 3 — Recorder process-group kill (data-loss guard)
-- [ ] `platform/procgroup.py`:
-      POSIX = `start_new_session=True` spawn + `killpg(getpgid(pid), sig)`;
-      Windows = spawn with `CREATE_NEW_PROCESS_GROUP`; stop via
-      `CTRL_BREAK_EVENT` then escalate to a **Job Object** kill or
-      `taskkill /PID <pid> /T /F` (`/T` kills the child tree — the invariant:
-      parent death guarantees child ffmpeg death).
-- [ ] Route `capture.py` spawn + `_signal_group` through the adapter. The
-      existing `hasattr(os, "killpg")` bare-pid fallback is **insufficient** on
-      Windows — it orphans ffmpeg.
-- **Verify:** kill recorder mid-capture → **no** stray `ffmpeg.exe` in Task
-  Manager, segment not left half-written.
+### Phase 3 — Recorder process-group kill (data-loss guard) ✅ DONE (2026-07-06)
+- [x] `platform/procgroup.py` with `popen_kwargs()` / `terminate(proc)` /
+      `kill(proc)`:
+      - POSIX = `start_new_session=True` spawn; `terminate`→SIGTERM, `kill`→SIGKILL
+        to the group via `killpg(getpgid(pid), …)`.
+      - Windows = `CREATE_NEW_PROCESS_GROUP` spawn; `terminate`→`CTRL_BREAK_EVENT`
+        to the group (lets ffmpeg flush and close the file), `kill`→
+        `taskkill /PID <pid> /T /F` (`/T` = whole descendant tree ⇒ the child
+        ffmpeg cannot survive). Chose taskkill /T over a Job Object: simpler, no
+        long-lived job handle to babysit, and it satisfies the same invariant.
+- [x] Routed `capture.py`: spawn now uses `**procgroup.popen_kwargs()`; the old
+      `_signal_group` method (with its `hasattr(os,"killpg")` bare-pid fallback,
+      which would orphan ffmpeg on Windows) is **deleted** — `_terminate` calls
+      the adapter, falling back to the bare pid only when the group is already
+      gone. `import os`/`import signal` dropped from `capture.py`.
+- [x] Confirmed capture.py is the ONLY production process-group site (remux /
+      ffmpeg use synchronous `subprocess.run`).
+- **Verified (POSIX):** capture selftest incl. "terminate kills the whole group —
+      NO orphan, child stops writing" passes (10 checks); all recorder modules
+      import; `popen_kwargs()` returns the right flag. The `_selftest_capture.py`
+      group test is POSIX-only (`sh -c`); the **Windows kill → no stray ffmpeg.exe
+      in Task Manager** test is deferred to the Windows box.
 
 ### Phase 4 — Signals & shutdown
 - [ ] Guard `SIGTERM` registration to POSIX. On Windows register `SIGINT` +
