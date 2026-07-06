@@ -31,23 +31,16 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from .platform import process as _process
+
 
 def pid_alive(pid: int) -> bool:
     """Is `pid` a live process? The suite's one liveness primitive (used by
-    read_live and by the recorder's pid-file checks). signal 0 is an existence
-    probe: ProcessLookupError ⇒ gone (dead); PermissionError ⇒ the process
-    EXISTS but is owned by another user (alive — matters on a multi-user host,
-    never fires on the suite's single-user setup); any other OSError ⇒ treat as
-    dead. A non-int pid is dead."""
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-    return True
+    read_live and by the recorder's pid-file checks). The actual probe is
+    platform-specific — signal 0 on POSIX, OpenProcess on Windows (where
+    os.kill(pid, 0) would *terminate* the target) — and lives in
+    core.platform.process. A non-int / gone pid is dead."""
+    return _process.pid_alive(pid)
 
 
 def write_atomic(path: Path, state: dict) -> None:

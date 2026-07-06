@@ -7,8 +7,9 @@ rest of the codebase (store / ingest / send / media_prep) stays platform-blind
 — no scattered ``if os.name == "nt"`` checks.
 
 Adapters (added phase by phase):
-  • paths      — config/state/lock directories        (Phase 1, this commit)
+  • paths      — config/state/lock directories        (Phase 1)
   • filelock   — fcntl.flock ↔ msvcrt.locking          (Phase 2)
+  • process    — os.kill(pid,0) ↔ OpenProcess liveness (Phase 2)
   • procgroup  — os.killpg ↔ Job Object / taskkill /T   (Phase 3)
   • service    — launchd ↔ Task Scheduler / Service     (Phase 5)
 
@@ -21,5 +22,7 @@ macOS/Linux installs are untouched.
 from __future__ import annotations
 
 from . import paths
+from . import filelock
+from . import process
 
-__all__ = ["paths"]
+__all__ = ["paths", "filelock", "process"]

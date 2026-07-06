@@ -260,7 +260,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text().strip())
-            os.kill(pid, 0)
+            if not heartbeat.pid_alive(pid):
+                raise ProcessLookupError
             running = True
             state_line, accent = f"running · pid {pid}", "green"
         except (OSError, ValueError, ProcessLookupError):

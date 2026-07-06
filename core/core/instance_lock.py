@@ -8,10 +8,12 @@ process per name: `archiver loop`/`run`/`start` share the "archiver" lock,
 DispatcherInstanceLock — its singleton-ness is per Telegram session, not per
 worker name — but the mechanism is identical.)
 
-Why flock, not a PID file: the kernel releases an flock automatically when the
-holder exits OR crashes (even SIGKILL / power loss), so there is no stale-lock
-problem and no unreliable PID-liveness heuristic. The PID written into the file
-is diagnostics only — it tells a human/ops WHICH process holds it.
+Why an advisory file lock, not a PID file: the kernel releases the lock
+automatically when the holder exits OR crashes (even SIGKILL / power loss), so
+there is no stale-lock problem and no unreliable PID-liveness heuristic. The PID
+written into the file is diagnostics only — it tells a human/ops WHICH process
+holds it. The lock mechanism itself (fcntl on POSIX, msvcrt on Windows) lives
+behind core.platform.filelock so this module stays platform-blind.
 
 PLACEMENT: the path resolves to a fixed config dir, never CWD-relative, so a
 launchd-started worker (CWD /) and a manually started one (CWD ~) contend for
@@ -21,11 +23,11 @@ running — the exact failure mode this guard exists to prevent.
 
 from __future__ import annotations
 
-import fcntl
 import os
 from pathlib import Path
 
 from core.platform import paths as _osp
+from core.platform import filelock as _flock
 
 _LOCK_DIR = _osp.locks_dir()
 
@@ -71,14 +73,18 @@ class InstanceLock:
         separate handle), not acquisition: success means nobody holds it (we
         release immediately); failure means a live holder whose PID is the file
         body. Diagnosis only — the holder may exit between probe and use."""
+        if not self.path.exists():
+            return None            # no lock file ⇒ nobody holds it
         try:
-            with self.path.open("r", encoding="utf-8") as probe:
-                try:
-                    fcntl.flock(probe.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    text = probe.read().strip()
-                    return int(text) if text.isdigit() else None
-                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+            # open a+ (read+write) so the shared-probe works on both backends;
+            # the file already exists, so this never creates it.
+            with self.path.open("a+", encoding="utf-8") as probe:
+                if _flock.try_acquire_shared(probe):
+                    _flock.release(probe)
+                    return None    # we locked it ⇒ nobody else holds it
+                probe.seek(0)
+                text = probe.read().strip()
+                return int(text) if text.isdigit() else None
         except OSError:
             pass
         return None
@@ -86,9 +92,7 @@ class InstanceLock:
     def __enter__(self) -> "InstanceLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not _flock.try_acquire_exclusive(handle):
             handle.seek(0)
             text = handle.read().strip()
             handle.close()
@@ -106,7 +110,7 @@ class InstanceLock:
         if self._file is None:
             return
         try:
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+            _flock.release(self._file)
         finally:
             self._file.close()
             self._file = None

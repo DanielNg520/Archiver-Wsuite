@@ -96,17 +96,33 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
       pass (55 checks). Full `test_seams.py` deferred to a box with `pytest`
       installed / the Windows test pass.
 
-### Phase 2 — Instance lock (load-bearing)
-- [ ] `platform/filelock.py`:
-      POSIX = `fcntl.flock(LOCK_EX|LOCK_NB)` + `LOCK_SH` probe + `LOCK_UN`;
-      Windows = `msvcrt.locking(fd, LK_NBLCK, 1)`. Both give **kernel
-      auto-release on crash/kill** — the whole reason this module exists.
-- [ ] Rewrite the three `InstanceLock`/`lock.py` holders to call the adapter,
-      preserving the shared-lock live-holder probe.
-- [ ] **Do NOT fall back to PID files** — reintroduces the stale-lock race the
-      module was built to kill.
-- **Verify:** 2nd instance fails while 1st holds; killing holder via Task
-  Manager frees the lock instantly, no manual cleanup.
+### Phase 2 — Instance lock + liveness (load-bearing) ✅ DONE (2026-07-06)
+- [x] `platform/filelock.py`: POSIX = `fcntl.flock(LOCK_EX/SH|LOCK_NB)`/`LOCK_UN`;
+      Windows = `msvcrt.locking(fd, LK_NBLCK, 1)` on byte 0. Both give **kernel
+      auto-release on crash/kill**. API is non-blocking `try_acquire_exclusive`/
+      `try_acquire_shared`/`release` over an open file handle. (Windows has no
+      shared mode → shared degrades to a non-blocking exclusive attempt, which is
+      exactly what the diagnostic holder-pid probe needs.)
+- [x] `platform/process.py`: portable `pid_alive(pid)`. **Critical Windows
+      finding:** `os.kill(pid, 0)` on Windows routes to TerminateProcess and would
+      *kill* the process it means to probe. Windows impl uses `OpenProcess` +
+      `GetExitCodeProcess` via ctypes (no pywin32). `core.heartbeat.pid_alive`
+      (the suite's one liveness primitive) now delegates here.
+- [x] **Wider scope than planned** — the `fcntl` surface was 2 sites, not 1:
+      - `core/instance_lock.py` (the InstanceLock; dispatcher's session lock
+        subclasses it, so it's covered for free — it never had its own `fcntl`).
+      - `core/media_prep.py` `_prep_lock` (the per-file prep flock) — also routed.
+      - `recorder/lock.py` needed **no** change: it's a *soft* presence lock
+        (heartbeat + liveness), never used `fcntl`.
+      - `os.kill(pid,0)` liveness fixed at `heartbeat.py` + `recorder/cli.py`
+        (status) + `tests/test_seams.py` (`_dead_pid` helper).
+- [x] Holder-pid probe now short-circuits on a missing lock file (never creates
+      it just to probe) and opens `a+` so the probe handle is lockable on Windows.
+- [x] **No PID-file fallback** — the kernel-auto-release guarantee is preserved
+      on both platforms.
+- **Verified (POSIX):** instance-lock selftest (acquire / refuse-2nd / holder-pid
+      / re-acquire-after-exit) + media_prep selftest pass (80 checks); all packages
+      import. **Windows kill-frees-lock test deferred to the Windows box.**
 
 ### Phase 3 — Recorder process-group kill (data-loss guard)
 - [ ] `platform/procgroup.py`:

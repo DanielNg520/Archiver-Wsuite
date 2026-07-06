@@ -44,7 +44,6 @@ split_group_key so the dispatcher ships them as a single ordered album.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import logging
 import os
@@ -56,6 +55,7 @@ from pathlib import Path
 
 from . import env, ffmpeg, ffprobe, paths
 from .files import VIDEO_EXTS
+from .platform import filelock as _flock
 
 log = logging.getLogger(__name__)
 
@@ -591,9 +591,7 @@ def _prep_lock(src: Path):
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = lock_path.open("a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not _flock.try_acquire_exclusive(handle):
             handle.close()
             yield False
             return
@@ -605,7 +603,7 @@ def _prep_lock(src: Path):
     finally:
         if handle is not None and not handle.closed:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                _flock.release(handle)
             finally:
                 handle.close()
 

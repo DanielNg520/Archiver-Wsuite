@@ -66,16 +66,14 @@ def _fresh_db() -> "object":
 
 
 def _dead_pid() -> int:
-    """A pid guaranteed not to be alive right now (for stale-heartbeat tests)."""
+    """A pid guaranteed not to be alive right now (for stale-heartbeat tests).
+    Uses the suite's portable liveness primitive so this works on Windows too
+    (where os.kill(pid, 0) would terminate the target)."""
+    from core.platform import process as _process
     p = 999_999
-    while True:
-        try:
-            os.kill(p, 0)
-        except ProcessLookupError:
-            return p
-        except OSError:
-            pass        # alive (or not ours) — try a higher number
+    while _process.pid_alive(p):
         p += 1
+    return p
 
 
 # ══════════════════════════════════════════════════════════════════════════════
