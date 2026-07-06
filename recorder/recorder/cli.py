@@ -246,14 +246,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     config = RecorderConfig.load()
     pid_path = _pid_path(config)
 
-    running = False
     state_line, accent = "not running", "dim"
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text().strip())
             if not heartbeat.pid_alive(pid):
                 raise ProcessLookupError
-            running = True
             state_line, accent = f"running · pid {pid}", "green"
         except (OSError, ValueError, ProcessLookupError):
             state_line, accent = "not running (stale pid file)", "yellow"

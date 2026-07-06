@@ -82,7 +82,9 @@ else:                                                 # ── POSIX backend ─
 
 if os.name == "nt":                                   # ── Windows backend ──
 
-    import shlex
+    import csv
+    import io
+    import json
 
     def proc_stats(pid: int) -> "str | None":
         # tasklist gives image + mem; CPU% and uptime aren't cheaply available
@@ -98,38 +100,88 @@ if os.name == "nt":                                   # ── Windows backend �
         if out.returncode != 0 or not line or "No tasks" in out.stdout:
             return None
         try:
-            fields = next(__import__("csv").reader([line[0]]))
+            fields = next(csv.reader([line[0]]))
             mem = fields[4].replace("\xa0", " ")     # "110,240 K"
         except (StopIteration, IndexError):
             return None
         return f"mem {mem}"
 
-    def find_worker_pid(command: str, action: str) -> "int | None":
-        # Match a worker by its command line via WMI (wmic is present on most
-        # Windows; PowerShell CIM is the fallback path a Windows box can add).
+    def _cmdline_matches(cmdline: str, command: str, action: str) -> bool:
+        """Does this process command line run `<command> <action>`? Token-wise
+        match on the executable basename (with or without .exe) followed by the
+        action — the same discipline the POSIX branch applies via shlex, so a
+        shell snippet merely *mentioning* the worker can't false-positive."""
         try:
-            out = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
-                capture_output=True, text=True, timeout=6,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
+            argv = next(csv.reader(io.StringIO(cmdline), delimiter=" ",
+                                   skipinitialspace=True))
+        except (StopIteration, csv.Error):
+            argv = cmdline.split()
+        for i, tok in enumerate(argv[:-1]):
+            base = tok.strip('"').replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if base in (command.lower(), f"{command.lower()}.exe") \
+                    and argv[i + 1].strip('"') == action:
+                return True
+        return False
+
+    def _pids_via_wmic(command: str, action: str) -> "int | None":
+        out = subprocess.run(
+            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
+            capture_output=True, text=True, timeout=6,
+        )
         if out.returncode != 0:
             return None
         for row in out.stdout.splitlines():
             if command not in row or action not in row:
                 continue
-            try:
-                argv = shlex.split(row, posix=False)
-            except ValueError:
+            # CSV rows are Node,CommandLine,ProcessId
+            parts = row.rsplit(",", 1)
+            if len(parts) != 2 or not parts[1].strip().isdigit():
                 continue
-            for i, tok in enumerate(argv[:-1]):
-                base = tok.strip('"').replace("\\", "/").rsplit("/", 1)[-1]
-                if (base == command or base == f"{command}.exe") \
-                        and argv[i + 1].strip('"') == action:
-                    tail = row.rsplit(",", 1)[-1].strip()
-                    return int(tail) if tail.isdigit() else None
+            if _cmdline_matches(parts[0], command, action):
+                return int(parts[1].strip())
         return None
+
+    def _pids_via_powershell(command: str, action: str) -> "int | None":
+        # wmic was removed from Windows 11 24H2+; CIM via PowerShell is the
+        # supported replacement and ships on every Windows this suite targets.
+        script = ("Get-CimInstance Win32_Process | "
+                  "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        try:
+            rows = json.loads(out.stdout)
+        except ValueError:
+            return None
+        if isinstance(rows, dict):
+            rows = [rows]
+        for row in rows:
+            cmdline = row.get("CommandLine") or ""
+            if command in cmdline and action in cmdline \
+                    and _cmdline_matches(cmdline, command, action):
+                try:
+                    return int(row["ProcessId"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return None
+
+    def find_worker_pid(command: str, action: str) -> "int | None":
+        # Self-healing probe order: wmic (fast, but removed on Win11 24H2+) →
+        # PowerShell CIM (always present). Each layer degrades to the next on
+        # any failure so health reporting never hard-fails on tooling drift.
+        try:
+            pid = _pids_via_wmic(command, action)
+            if pid is not None:
+                return pid
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            return _pids_via_powershell(command, action)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
 
 else:                                                 # ── POSIX backend ──
 

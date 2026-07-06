@@ -233,12 +233,28 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
       `core.platform.{paths,filelock,process,procgroup,signals,service}`, selected
       by `os.name`. POSIX behavior preserved (all selftests green on macOS).
 - [x] All config under `%APPDATA%\archiver-suite` on Windows (Phase 1).
+- [x] **Full-suite validation on macOS (2026-07-06, post-Phase-5 hardening):**
+      `tests/test_seams.py` ran for the first time on the port in a proper venv
+      (telethon + hachoir + full requirements) — **ALL 210 checks pass**, plus
+      all 9 selftests, `compileall` clean, pyflakes clean on every ported file.
+      Hardening applied in the same pass:
+      - `find_worker_pid` (Windows) now self-heals across tooling drift:
+        `wmic` (removed on Win11 24H2+) → PowerShell `Get-CimInstance` fallback;
+        strict token-wise cmdline match shared by both probes (no shell-snippet
+        false positives — same discipline as the POSIX shlex branch).
+      - Verified the Task Scheduler `cmd.exe` argument quoting invariant
+        (`/c ""prog" args >> "out" 2>> "err""` — canonical strip-outer form).
+      - Dead code removed: unused `Path` imports (archiver/recorder config),
+        dead `running` local (recorder status), f-string cosmetic (service).
+      - **Design note:** on Windows, `schtasks /End` is a hard tree-kill (no
+        graceful console event), so `ops unload` = crash-equivalent stop there.
+        Safe by design: the suite is crash-safe end-to-end (WAL, kernel-released
+        locks, startup sweeps, claim recovery — all covered by the seam suite).
 - [ ] **Remaining — validate on a real Windows box** (can't be done from macOS):
       - Kill-tests: no orphan `ffmpeg.exe`, no stale locks.
       - Workers auto-start at logon + restart on crash via Task Scheduler.
       - `test_seams.py` green (`PYTHONPATH=core;archiver;recorder;dispatcher;ops`).
-      - `wmic`/`tasklist` health probes return sensible values (refine if `wmic`
-        is absent on the target — PowerShell CIM fallback).
+      - `tasklist`/CIM health probes return sensible values on the target build.
       - Add `pywin32`? Not currently needed — the port uses only stdlib
         (`ctypes`, `msvcrt`, `subprocess`+`schtasks`/`taskkill`). Keep it out
         unless a Windows-box gap forces it.

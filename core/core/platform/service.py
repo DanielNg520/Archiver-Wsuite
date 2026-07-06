@@ -73,7 +73,7 @@ if os.name == "nt":                                   # ── Windows / Task Sc
         out, err = _log_paths(spec.tag)
         # Task Scheduler can't redirect stdout itself — wrap in cmd.exe.
         inner = " ".join([f'"{spec.program}"', *spec.args])
-        command = f'cmd.exe'
+        command = "cmd.exe"
         arguments = f'/c "{inner} >> "{out}" 2>> "{err}""'
         user = getpass.getuser()
 
