@@ -263,8 +263,42 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
 
 ## 7. Open decisions (need a call before/at Phase 5)
 - **Service mechanism**: Task Scheduler vs Windows Service vs NSSM.
-- **Port in place vs. fork the tree**: this folder can either hold the adapter
-  package as a staging area, or the work lands directly in `../Archiver suite`
-  behind `os.name` guards (recommended — keeps one codebase, no drift).
+  → **DECIDED: Task Scheduler** with `ops`-style manual CLI control (Phase 5).
+- **Port in place vs. fork the tree**: → **DECIDED: hard fork** (this repo,
+  github.com/DanielNg520/Archiver-Wsuite).
 - **Distribution**: ship as pipx installs (as today) or bundle a PyInstaller
-  `.exe` per binary for non-technical Windows users.
+  `.exe` per binary. Still open; pipx assumed by `ops install`'s bin resolution.
+
+---
+
+## 8. Target deployment (decided 2026-07-06)
+
+**Beelink SER9 mini-PC — Windows 11 Pro, AMD Ryzen AI 9 (8c/16t Zen 5), 32 GB.**
+Always-on box; the user stays logged in (Task Scheduler at-logon model, per §7).
+
+What this pins down:
+- **Win 11 Pro is current-build (24H2+): `wmic` is REMOVED.** The PowerShell
+  `Get-CimInstance` fallback in `platform/process.find_worker_pid` is therefore
+  the *primary* probe on this box, not a contingency. Validated design choice.
+- **First-boot checklist for the box** (one-time, before `ops install`):
+  1. `powercfg /change standby-timeout-ac 0` (+ hibernate off) — the recorder
+     must never sleep mid-capture; a mini-PC's default power plan will.
+  2. Enable auto-logon (netplwiz / Sysinternals Autologon) so an unattended
+     reboot (Windows Update…) still reaches the at-logon triggers. Without it,
+     workers stay down until someone logs in — the one real gap of the Task
+     Scheduler model vs a Service.
+  3. Set Windows Update active hours / restart policy so forced reboots land in
+     a quiet window (the suite is crash-safe, but a reboot mid-recording still
+     ends that capture).
+  4. Windows Defender exclusions for the output/scratch dirs (`~/recorder-output`,
+     `%APPDATA%\archiver-suite`) — real-time scanning of multi-GB .ts files
+     costs CPU the encoder wants; optional but recommended.
+  5. `winget install ffmpeg yt-dlp gallery-dl python` (or choco) → all on PATH.
+- **Encoder note (optional tuning, NOT default):** media_prep re-encodes with
+  software `libx264 -crf 18 -preset medium` — correct default (best
+  quality-per-bit; 8c Zen 5 handles it). The Ryzen's VCN block offers `h264_amf`
+  hardware encode — much faster, lower quality-per-bit, no CRF equivalent. Only
+  worth a config knob if prep throughput ever becomes the bottleneck on real
+  workloads; per the standing priority (integrity > efficiency), don't switch
+  by default.
+- 32 GB RAM is ample (workers are I/O-bound; ffmpeg peaks well under 4 GB).
