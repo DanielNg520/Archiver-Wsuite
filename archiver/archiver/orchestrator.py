@@ -349,20 +349,29 @@ class Archiver:
         chat_id-named folders and enqueue loose files — the automated form of
         `archiver ingest`. On by default; toggle via `archiver auto-ingest`."""
         from core import AutoIngestPolicy, ingest_chat_id_dirs
+        from .reconcile import reconcile_pseudo_platform
 
         if not AutoIngestPolicy(self.config.policy_store).enabled():
             return
+
+        def _pseudo(name: str, scan_dir) -> None:
+            rep = reconcile_pseudo_platform(
+                name, scan_dir, self.db, guard=self.deletion_guard)
+            if rep.inserted or rep.deleted_dupes or rep.prep_failed:
+                log.info("  pseudo-platform %s", rep, extra={"ev": "ingest"})
+
         reports = ingest_chat_id_dirs(
             self.db, self.config.output_dir,
             known_platforms=known_platform_names,
             guard=self.deletion_guard,
+            pseudo_ingest=_pseudo,
         )
         total = sum(r.inserted for r in reports)
         if total:
             log.info("auto-ingest — enqueued %d loose file(s) from chat_id "
                      "folders", total, extra={"ev": "ingest"})
         for r in reports:
-            if not r.skipped_dir and (r.inserted or r.deduped):
+            if not r.skipped_dir and not r.pseudo_dir and (r.inserted or r.deduped):
                 log.info("  %s", r)
 
     async def _run_platforms(

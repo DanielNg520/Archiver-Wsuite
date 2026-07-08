@@ -739,13 +739,20 @@ class ItemStore:
         Powers the dispatcher's global-dedup guarantee — an O(log n) hit on
         the partial idx_items_hash_sent index, never a re-scan. NULL hash
         (rows enqueued without ingest) never matches, so they're never
-        wrongly suppressed."""
+        wrongly suppressed.
+
+        Orphaned (chat_id drop-zone) rows are EXCLUDED as twins: a drop-zone
+        "leaves no trace", so an orphaned copy must never suppress another
+        item's upload — and its own row is deleted after send anyway, so a
+        lingering one (a delete the safebrake vetoed) must not start gating
+        unrelated uploads."""
         if not content_hash:
             return None
         r = self.conn.execute(
             """SELECT * FROM items
-                WHERE content_hash=? AND status='sent' AND id<>? LIMIT 1""",
-            (content_hash, exclude_id),
+                WHERE content_hash=? AND status='sent' AND id<>?
+                  AND source<>? LIMIT 1""",
+            (content_hash, exclude_id, ORPHANED_SOURCE_NAME),
         ).fetchone()
         return Item.from_row(r) if r else None
 

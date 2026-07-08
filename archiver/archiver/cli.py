@@ -528,6 +528,7 @@ def cmd_ingest(args, config: Config, db: ItemStore) -> int:
     Default: scan output_dir's chat_id folders. --path DIR --chat CHAT_ID:
     ingest an arbitrary folder to an explicit chat (same dedup guarantee)."""
     from core import ingest_chat_id_dirs, ingest_folder, parse_route
+    from .reconcile import reconcile_pseudo_platform
 
     guard = DeletionGuard(config.policy_store)
 
@@ -553,11 +554,17 @@ def cmd_ingest(args, config: Config, db: ItemStore) -> int:
         print(rep)
         return 0
 
+    def _pseudo(name: str, scan_dir) -> None:
+        rep = reconcile_pseudo_platform(name, scan_dir, db, guard=guard)
+        print(f"[pseudo-platform] {name}: +{rep.inserted}, "
+              f"known {rep.already_known}, deleted {rep.deleted_dupes} dup")
+
     reports = ingest_chat_id_dirs(
         db, config.output_dir,
         known_platforms=list(PLATFORM_CHOICES) + list(config.local_platforms),
         priority=args.priority,
         guard=guard,
+        pseudo_ingest=_pseudo,
     )
     if not reports:
         print("No chat_id folders found under", config.output_dir)

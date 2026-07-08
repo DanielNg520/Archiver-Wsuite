@@ -411,6 +411,14 @@ async def drain_forever(
         batch_dupes: list[tuple[Item, int]] = []   # (dupe, in-batch twin id)
         batch_hashes: dict[str, int] = {}
         for it in present:
+            # Orphaned (chat_id drop-zone) items opt OUT of global dedup — a
+            # drop-zone "leaves no trace" and re-uploads whatever is dropped in,
+            # so an orphaned copy is never suppressed against a sent twin nor
+            # collapsed against an in-batch twin. (Its row is deleted after the
+            # send by maybe_delete, so nothing lingers to dedup against later.)
+            if it.source == ORPHANED_SOURCE:
+                survivors.append(it)
+                continue
             twin = store.sent_twin(it.content_hash, it.id)
             if twin is not None:
                 _suppress_duplicate(store, guard, it, twin.id)

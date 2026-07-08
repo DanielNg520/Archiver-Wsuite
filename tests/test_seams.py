@@ -2340,6 +2340,83 @@ def test_burner_account_seam() -> None:
         os.environ.pop(k, None)
 
 
+def test_orphaned_no_trace_and_pseudo_platform_seam(tmp: Path) -> None:
+    section("Seam 31: chat_id drop-zone leaves no trace; pseudo-platform keeps dedup")
+    from core import ItemStore, ingest_chat_id_dirs
+    from core.ingest import register_file, IngestOutcome
+    from core.hashing import full_hash
+    from archiver.reconcile import reconcile_pseudo_platform
+
+    out = tmp / "out"
+    same = b"IDENTICAL-DROP-ZONE-BYTES-XXXXXXXXXXXXXXXXX"
+
+    # ── chat_id drop-zone: byte-identical files BOTH upload (dedup bypassed) ──
+    db = ItemStore.open(str(tmp / "nt.db"))
+    a = _write_media(out / "-100123" / "a.mp4", same)
+    b = _write_media(out / "-100123" / "b.mp4", same)   # byte-identical copy
+    r1 = register_file(db, a, source="orphaned", platform="orphaned",
+                       username="-100123", chat_id="-100123")
+    r2 = register_file(db, b, source="orphaned", platform="orphaned",
+                       username="-100123", chat_id="-100123")
+    ok(r1.outcome == IngestOutcome.INSERTED
+       and r2.outcome == IngestOutcome.INSERTED,
+       "chat_id drop-zone bypasses dedup: identical files BOTH enqueue")
+
+    # Re-add after a prior sent+deleted (leave-no-trace) → uploads AGAIN.
+    aid = db.id_of(str(a))
+    while (it := db.claim_next()) is not None:
+        db.mark_sent(it.id)
+    db.delete(aid)                                       # maybe_delete: row gone
+    a2 = _write_media(out / "-100123" / "a.mp4", same)   # user re-drops it
+    r3 = register_file(db, a2, source="orphaned", platform="orphaned",
+                       username="-100123", chat_id="-100123")
+    ok(r3.outcome == IngestOutcome.INSERTED,
+       "a chat_id file re-added after send+delete RE-UPLOADS (the reported bug)")
+
+    # An orphaned 'sent' row must never suppress another item as a twin.
+    ok(db.sent_twin(full_hash(a2), exclude_id=-1) is None,
+       "sent_twin excludes orphaned rows (a drop-zone copy never gates others)")
+    db.close()
+
+    # ── archiver source is UNCHANGED: byte-dup still collapses ──
+    db = ItemStore.open(str(tmp / "arch.db"))
+    pa = _write_media(out / "x" / "u" / "a.jpg", same)
+    pb = _write_media(out / "x" / "u" / "b.jpg", same)
+    register_file(db, pa, source="archiver", platform="x", username="u")
+    rr = register_file(db, pb, source="archiver", platform="x", username="u")
+    ok(rr.outcome == IngestOutcome.DEDUP_DROPPED,
+       "real-source (archiver) byte-dup still dedup_dropped (global dedup kept)")
+    db.close()
+
+    # ── pseudo-platform: a non-chat_id folder ingests upload-only, dedup kept ──
+    db = ItemStore.open(str(tmp / "ps.db"))
+    _write_media(out / "xiaohongshu" / "set" / "20240101_p1_0.jpg", b"XHS-1")
+    _write_media(out / "xiaohongshu" / "set" / "20240102_p2_0.jpg", b"XHS-2")
+    seen: list[str] = []
+    reports = ingest_chat_id_dirs(
+        db, out, known_platforms=["x", "tiktok", "instagram"],
+        pseudo_ingest=lambda name, sd: (
+            seen.append(name), reconcile_pseudo_platform(name, sd, db))[-1])
+    ok(seen == ["xiaohongshu"],
+       "a folder that is neither platform nor chat_id → pseudo-platform ingest")
+    ok(any(r.pseudo_dir and r.chat_id == "xiaohongshu" for r in reports),
+       "the pseudo-platform folder is reported as pseudo_dir")
+    row = db.conn.execute(
+        "SELECT COUNT(*) c, SUM(source='archiver') a, SUM(chat_id IS NULL) nc "
+        "FROM items WHERE platform='xiaohongshu'").fetchone()
+    ok(row["c"] == 2 and row["a"] == 2 and row["nc"] == 2,
+       "pseudo-platform rows: source='archiver', chat_id NULL (env-routed)")
+
+    # Re-introduction dedup KEPT: a re-added already-sent copy is NOT re-uploaded.
+    while (it := db.claim_next()) is not None:
+        db.mark_sent(it.id)
+    reintro = _write_media(out / "xiaohongshu" / "set" / "reintro.jpg", b"XHS-1")
+    rep = reconcile_pseudo_platform("xiaohongshu", out / "xiaohongshu", db)
+    ok(rep.deleted_dupes == 1 and not reintro.exists(),
+       "pseudo-platform re-added already-SENT bytes are NOT re-uploaded (dedup kept)")
+    db.close()
+
+
 def main() -> int:
     print("cross-worker seam integration tests")
     # Each test gets an isolated temp config.toml so the real user config is
@@ -2387,6 +2464,7 @@ def main() -> int:
         test_video_metadata_backend_seam(tmp / "s27")
         test_hashtag_root_seam(tmp / "s28")
         test_orphaned_mixed_album_seam(tmp / "s30")
+        test_orphaned_no_trace_and_pseudo_platform_seam(tmp / "s31")
         _reset_config()
         test_burner_account_seam()
 

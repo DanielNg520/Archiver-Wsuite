@@ -228,6 +228,38 @@ def reconcile_recordings(
     return reports
 
 
+def reconcile_pseudo_platform(
+    name: str,
+    scan_dir: Path,
+    db: "ProducerStore",
+    guard: "DeletionGuard | None" = None,
+) -> ReconcileReport:
+    """Ingest an upload-only "pseudo-platform" folder — a top-level dir whose
+    name is neither a configured download platform nor a Telegram chat_id (e.g.
+    `xiaohongshu`). The user drops already-downloaded media here; the suite only
+    UPLOADS it (no extractor ever runs for it).
+
+    It reuses the exact reconcile machinery real platform folders get — identity
+    resolution, media_prep convert/split, and the content-hash re-introduction
+    dedup guard — so pseudo-platform items keep global dedup and persistent rows
+    (they do NOT leave-no-trace like a chat_id drop-zone). `platform=None` so no
+    extractor archive is seeded; the folder name is the platform/username, and
+    the dispatcher resolves the destination from TELEGRAM_CHAT_ID_<NAME> (or the
+    global default). Scans recursively, picking up any subfolders."""
+    report = ReconcileReport(platform=name, username=name)
+    return _reconcile_dir(
+        platform=None,
+        username=name,
+        db=db,
+        scan_dir=scan_dir,
+        recursive=True,
+        seed_extractor_archive=False,
+        report=report,
+        source="archiver",
+        guard=guard,
+    )
+
+
 def _reconcile_dir(
     *,
     platform: "Platform | None",

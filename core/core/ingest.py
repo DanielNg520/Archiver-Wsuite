@@ -22,7 +22,10 @@ re-deriving the others. The order is the contract:
   3. dedup-collapse BEFORE inserting a second row. Global dedup means "these
      exact bytes are removed as if never there": if a row already holds this
      content_hash we keep exactly one physical copy (the better-named one, via
-     core.dedup winner rules) and never create a duplicate row.
+     core.dedup winner rules) and never create a duplicate row. EXCEPTION:
+     orphaned (chat_id-folder) drops skip this step entirely — a drop-zone
+     "leaves no trace" (its row is deleted after send), so a re-added file must
+     always upload again rather than be suppressed against a stale twin.
 
   4/5. identity + insert only happen for genuinely new content.
 
@@ -43,7 +46,7 @@ from typing import Callable
 
 from . import identity, media_prep, stability
 from .dedup import _pick_winner
-from .files import cleanup_sidecars
+from .files import cleanup_sidecars, ORPHANED_SOURCE_NAME
 from .grouping import split_group_key
 from .hashing import full_hash
 from .models import Status
@@ -115,9 +118,18 @@ def register_file(
         return IngestResult(IngestOutcome.HASH_FAILED)
 
     # 3. dedup-collapse — if these exact bytes already have a row, keep one copy.
-    twin = store.find_by_content_hash(digest)
-    if twin is not None:
-        return _collapse(store, path, twin, digest)
+    #    SKIPPED for orphaned (chat_id-folder) drops: a chat_id folder is a pure
+    #    drop-zone that must "leave no trace" — maybe_delete removes its row after
+    #    the send, so a file re-added to the folder has to upload AGAIN every
+    #    time. Gating it through content-hash dedup would suppress that re-add
+    #    against a lingering 'sent' twin (a platform copy of the same bytes, or a
+    #    not-yet-cleaned orphaned row) — exactly the "re-added file never
+    #    re-uploaded" bug. Real sources (platforms, pseudo-platforms) keep the
+    #    global-dedup guarantee; only the drop-zone opts out.
+    if source != ORPHANED_SOURCE_NAME:
+        twin = store.find_by_content_hash(digest)
+        if twin is not None:
+            return _collapse(store, path, twin, digest)
 
     # 4. resolve identity (sidecar > filename > path-hash fallback). An
     #    explicit producer identifier wins; date/title still resolve normally.

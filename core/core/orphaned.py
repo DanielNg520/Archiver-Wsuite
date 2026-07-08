@@ -21,9 +21,14 @@ GROUPING / CAPTION
 
 DISCRIMINATOR (the safety-critical bit)
   A top-level folder is a route dir iff its name is NOT a known platform AND
-  is a syntactically valid chat_id (core.routing.is_chat_id). Anything else is
-  skipped with a warning — we never guess, because a wrong guess uploads
-  private content to the wrong place.
+  is a syntactically valid chat_id (core.routing.is_chat_id). A folder whose
+  name is neither a known platform nor a chat_id is a PSEUDO-PLATFORM: an
+  upload-only source (no downloading) that otherwise behaves like a real
+  platform — real identity, global dedup, persistent rows, destination resolved
+  from TELEGRAM_CHAT_ID_<NAME> (falling back to the global default). It is
+  ingested through the `pseudo_ingest` handler the archiver injects (which owns
+  reconcile); with no handler the folder is skipped with a warning, never
+  guessed at, because a wrong guess uploads private content to the wrong place.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from . import media_prep, stability
 from .dedup import MEDIA_EXTENSIONS
@@ -104,9 +110,12 @@ class OrphanedReport:
     unstable:  int  = 0
     failed:    int  = 0   # HASH_FAILED
     skipped_dir: bool = False   # set when the top-level name wasn't a chat_id
+    pseudo_dir:  bool = False   # set when handled as a pseudo-platform (upload-only)
     errors:    list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
+        if self.pseudo_dir:
+            return f"[orphaned] {self.chat_id}: pseudo-platform (upload-only)"
         if self.skipped_dir:
             return f"[orphaned] {self.chat_id}: SKIPPED (not a platform or chat_id)"
         return (
@@ -123,12 +132,24 @@ def ingest_chat_id_dirs(
     known_platforms: list[str] | set[str],
     priority:        int = CHAT_ID_PRIORITY,
     guard:           DeletionGuard | None = None,
+    pseudo_ingest:   "Callable[[str, Path], None] | None" = None,
 ) -> list[OrphanedReport]:
     """Scan output_dir's top-level folders; ingest every chat_id-named one.
     Returns one report per top-level folder considered.
 
+    A top-level folder is classified by NAME:
+      - a known platform  → skipped here (the archiver's reconcile pass owns it,
+        it is a DOWNLOAD platform);
+      - a valid chat_id   → a pure drop-zone, ingested here (leave-no-trace);
+      - anything else      → a PSEUDO-PLATFORM (upload-only, no download, but
+        real identity + global dedup + persistent rows). Ingested via the
+        injected `pseudo_ingest(name, dir)` when supplied; without an injector
+        (e.g. a bare unit test) it is skipped with a warning, as before.
+
     `guard` (optional) gates deletion of an original that media_prep replaced
-    with a converted/split copy: a safebraked scope keeps its original."""
+    with a converted/split copy: a safebraked scope keeps its original.
+    `pseudo_ingest` is injected by the archiver — which owns reconcile — so core
+    stays free of an archiver import; None keeps the legacy skip-and-warn."""
     base = Path(output_dir)
     reports: list[OrphanedReport] = []
     if not base.exists():
@@ -150,12 +171,21 @@ def ingest_chat_id_dirs(
             continue   # a platform dir — the archiver's reconcile pass owns it
         route = parse_route(name)
         if route is None:
-            log.warning(
-                "orphaned: top-level dir %r is neither a known platform nor a "
-                "valid chat_id — skipping (rename it to the destination chat_id, "
-                "optionally with a `.t<topic_id>` suffix, to route it)", name,
-            )
-            reports.append(OrphanedReport(chat_id=name, skipped_dir=True))
+            # Not a chat_id and not a download platform → a pseudo-platform
+            # upload-only folder (e.g. `xiaohongshu`). Ingest it with real
+            # identity + dedup when the archiver injected a handler; otherwise
+            # keep the legacy skip-and-warn so nothing is silently mis-ingested.
+            if pseudo_ingest is not None:
+                pseudo_ingest(name, entry)
+                reports.append(OrphanedReport(chat_id=name, pseudo_dir=True))
+            else:
+                log.warning(
+                    "orphaned: top-level dir %r is neither a known platform nor "
+                    "a valid chat_id — skipping (rename it to the destination "
+                    "chat_id, optionally with a `.t<topic_id>` suffix, to route "
+                    "it)", name,
+                )
+                reports.append(OrphanedReport(chat_id=name, skipped_dir=True))
             continue
         reports.append(ingest_folder(
             store, entry, chat_id=route.chat_id, topic_id=route.topic_id,
