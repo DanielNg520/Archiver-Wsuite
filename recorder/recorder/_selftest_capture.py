@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import recorder.state as st                              # noqa: E402
 from recorder.capture import StreamCapture               # noqa: E402
+from core.platform import process as _process            # noqa: E402
+from core.platform import procgroup as _procgroup        # noqa: E402
 
 _checks = 0
 
@@ -46,14 +48,9 @@ def check(cond: bool, label: str) -> None:
     print(f"✓ {label}")
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+# pid-liveness via core.platform.process: `os.kill(pid, 0)` is POSIX-only —
+# on Windows it TerminateProcess-es (or errors) instead of merely probing.
+_pid_alive = _process.pid_alive
 
 
 def test_terminate_kills_whole_group(tmp: Path) -> None:
@@ -61,18 +58,40 @@ def test_terminate_kills_whole_group(tmp: Path) -> None:
     tmp.mkdir(parents=True, exist_ok=True)
     childfile = tmp / "child.out"
     pidfile = tmp / "childpid"
-    # Parent (stands in for yt-dlp) forks a writer child (stands in for the
+    # Parent (stands in for yt-dlp) spawns a writer child (stands in for the
     # ffmpeg downloader) that appends forever. We record the child's pid so we
-    # can prove it dies with the group rather than being orphaned.
-    script = (
-        f'( while true; do echo x >> "{childfile}"; sleep 0.1; done ) & '
-        f'echo $! > "{pidfile}"; wait'
+    # can prove it dies with the group rather than being orphaned. Both levels
+    # are Python: an `sh` parent would report MSYS pids on Windows (useless to
+    # taskkill/OpenProcess), and $!-style forking doesn't exist there at all.
+    writer_py = tmp / "writer.py"
+    writer_py.write_text(
+        "import sys, time\n"
+        "while True:\n"
+        "    with open(sys.argv[1], 'a') as f:\n"
+        "        f.write('x\\n')\n"
+        "    time.sleep(0.1)\n"
     )
-    proc = subprocess.Popen(["sh", "-c", script], start_new_session=True)
+    parent_py = tmp / "parent.py"
+    parent_py.write_text(
+        "import pathlib, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+        "pathlib.Path(sys.argv[3]).write_text(str(child.pid))\n"
+        "child.wait()\n"
+    )
+    # Launch exactly the way StreamCapture launches yt-dlp (same popen kwargs:
+    # its own process group / session), so _terminate() is exercised on the
+    # same shape of process tree it manages in production.
+    proc = subprocess.Popen(
+        [sys.executable, str(parent_py), str(writer_py),
+         str(childfile), str(pidfile)],
+        **_procgroup.popen_kwargs())
 
     cap = StreamCapture(str(tmp), None)
     cap._proc = proc                       # inject the live group as the capture
-    time.sleep(0.6)                        # let the child spin up + write its pid
+    deadline = time.time() + 10            # let the child spin up + write its pid
+    while time.time() < deadline and not pidfile.exists():
+        time.sleep(0.1)
+    time.sleep(0.3)                        # pid written → let the writer start
     child_pid = int(pidfile.read_text().strip())
     check(_pid_alive(child_pid), "writer child is running before terminate")
 

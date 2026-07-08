@@ -57,3 +57,4 @@ librarian/
 
 # ── Streamer is its OWN repo (independent worker; archiver suite is reference only); never track it here ──
 Streamer/
+Autosplitter.zip

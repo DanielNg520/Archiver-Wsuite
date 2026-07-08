@@ -96,9 +96,13 @@ if os.name == "nt":                                   # ── Windows / Task Sc
                 "    </LogonTrigger>"
             )
             # KeepAlive analog: restart on failure, effectively forever.
+            # Interval is PT1M, not the launchd ThrottleInterval's 30s: Task
+            # Scheduler's RestartOnFailure/Interval has a hard 1-minute minimum
+            # (PT30S is rejected as "out of range" and the whole task fails to
+            # register). One minute is the closest legal restart cadence.
             restart = (
                 "    <RestartOnFailure>\n"
-                "      <Interval>PT30S</Interval>\n"
+                "      <Interval>PT1M</Interval>\n"
                 "      <Count>999</Count>\n"
                 "    </RestartOnFailure>"
             )
@@ -145,13 +149,19 @@ if os.name == "nt":                                   # ── Windows / Task Sc
             fh.write(_task_xml(spec))
             xml_path = fh.name
         try:
-            _run(["schtasks", "/Create", "/TN", spec.label,
-                  "/XML", xml_path, "/F"])
+            r = _run(["schtasks", "/Create", "/TN", spec.label,
+                      "/XML", xml_path, "/F"])
         finally:
             try:
                 os.unlink(xml_path)
             except OSError:
                 pass
+        # schtasks reports XML/schema problems on a non-zero exit; without this
+        # a rejected task (e.g. an out-of-range setting) would masquerade as a
+        # successful install and only surface later as "not installed" at load.
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout or "").strip() or "unknown schtasks error"
+            raise RuntimeError(f"schtasks /Create failed for {spec.label}: {msg}")
 
     def uninstall(label: str) -> None:
         _run(["schtasks", "/Delete", "/TN", label, "/F"])

@@ -65,6 +65,83 @@ separate processes — not from giving them disjoint code.)
 
 Install: the **Install** section below. Day-to-day usage of every feature:
 **USER-GUIDE.md**. Dense architecture map for revising the code: **DESIGN.md**.
+Running on **this Windows machine right now**: see **Quick start (Windows)**
+just below — config, DB, sessions and cookies are already migrated and
+validated; nothing needs re-auth or re-setup.
+
+---
+
+## Quick start (Windows — this machine, migrated 2026-07-07)
+
+The suite was migrated from the macOS box and fully validated on this PC
+(all selftests + 210-check seam test pass; suite.db integrity `ok`;
+124k-item history intact). It is installed **exactly like macOS — pipx apps
+with `core` injected editable** — so day-to-day you just type `dispatcher
+status`, `ops health`, etc. No `PYTHONPATH`, no `python -m`.
+
+**Already done on this machine** (one-time setup, listed here for a rebuild):
+
+```powershell
+# 1. UTF-8 mode — the ONE Windows delta from macOS. Without it the workers'
+#    status glyphs (● ✓ →) crash with UnicodeEncodeError whenever stdout is
+#    redirected (Task Scheduler capture, pipes). macOS is always UTF-8; this
+#    makes Windows match. Persistent, per-user; restart the shell after.
+setx PYTHONUTF8 1
+
+# 2. Install each app as its own pipx venv, then inject the shared core
+#    library editable (same two-step as macOS — apps don't depend on core
+#    directly). pipx puts dispatcher/recorder/archiver/ops on PATH via
+#    %USERPROFILE%\.local\bin.
+pipx install .\dispatcher --python 3.13
+pipx install .\recorder   --python 3.13
+pipx install .\archiver   --python 3.13
+pipx install .\ops        --python 3.13
+
+pipx inject --editable dispatcher     .\core
+pipx inject --editable recorder       .\core
+pipx inject --editable media-archiver .\core   # archiver's package name
+pipx inject --editable ops            .\core
+
+# 3. Recorder's one-time headless-browser download (age-restricted lives).
+& "$env:USERPROFILE\pipx\venvs\recorder\Scripts\python.exe" -m playwright install chromium
+```
+
+**Daily use** — bare commands, from anywhere:
+
+```powershell
+ops health          # system status
+dispatcher start    # drain the queue → Telegram
+recorder start      # watch TikTok lives
+archiver start      # VOD pull cycle
+```
+
+To run unattended (auto-start at logon, restart on crash) register the
+Task Scheduler services once — the Windows analog of `launchctl load`:
+
+```powershell
+ops install         # register task definitions (resolves the pipx .exes)
+ops load            # start + enable all workers
+```
+
+After editing an app's code: `pipx reinstall <package>` (`dispatcher`,
+`recorder`, `media-archiver`, `ops`). Editing `core` needs nothing — it's
+injected editable, so changes are live in every app immediately.
+
+Where everything lives on this machine:
+
+| What | Where |
+|------|-------|
+| config / DB / sessions / cookies | `%APPDATA%\archiver-suite`, `%APPDATA%\dispatcher`, `%APPDATA%\recorder` |
+| archiver downloads | `D:\archiver_downloads` |
+| recorder output | `D:\records` |
+| worker logs (service capture) | `%APPDATA%\archiver-suite\logs` |
+| AutoSplitter (oversize-video splitter) | `C:\Users\danie\Documents\Coding\autosplitter` — sibling checkout, auto-discovered by `core.media_prep`; no config needed |
+
+Requirements already satisfied on this box: Python 3.13, ffmpeg/ffprobe on
+PATH (winget Gyan build), Firefox profile `default-release` present (cookie
+auto-refresh works). Telegram sessions migrated as-is — if Telegram flags
+the new device on first connect, re-auth interactively with the credentials
+already in the `.env` files.
 
 ---
 
@@ -120,24 +197,32 @@ scraping). ffmpeg must be installed.
 
 Detailed docs: `recorder/` source headers.
 
-### ops — health checks and launchd management
+### ops — health checks and service management
 
-Reads the other three (via `launchctl`, the SQLite DBs, and the lockfile) but
-imports none of them. Provides:
+Reads the other three (via the OS service manager, the SQLite DBs, and the
+lockfile) but imports none of them. The service seam is
+`core.platform.service`: launchd LaunchAgents on macOS, **Task Scheduler
+tasks on Windows** — same verbs on both. Provides:
 
 ```
 ops health      one-shot system status
 ops watch       auto-refreshing status
-ops load        launchctl load all three services
+ops install     register the service definitions
+ops load        start + enable all three services
 ops unload      stop all three
 ops restart <s> restart one service
 ```
 
-Also ships the three launchd plists and `RUNBOOK.md` (failure recovery).
+Also ships `RUNBOOK.md` (failure recovery).
 
 ---
 
 ## On-disk layout
+
+POSIX paths shown; on Windows every `~/.config/<app>` maps to
+`%APPDATA%\<app>` (see `core.platform.paths`), worker logs land in
+`%APPDATA%\archiver-suite\logs`, and the output volumes are
+`D:\archiver_downloads` / `D:\records` on this machine.
 
 ```
 ~/.config/archiver-suite/
@@ -170,6 +255,10 @@ Also ships the three launchd plists and `RUNBOOK.md` (failure recovery).
 ---
 
 ## Install
+
+> **Same pipx flow on macOS and Windows.** The block below is the canonical
+> install; on Windows use `.\` path separators and first run `setx PYTHONUTF8 1`
+> (see Quick start above for why). This machine is already set up this way.
 
 Install order **no longer matters** — `core` creates the schema
 idempotently the first time any process connects. Each app is installed
@@ -207,10 +296,11 @@ step 1.
 
 ## Daily operation, once automated
 
-You don't run anything by hand. launchd keeps all three alive. You check:
+You don't run anything by hand. The service manager (launchd on macOS,
+Task Scheduler on Windows) keeps all three alive. You check:
 
 ```
-ops health
+ops health          # (python -m ops health when running from source)
 ```
 
 and read `RUNBOOK.md` when something's wrong. Full automation setup and the

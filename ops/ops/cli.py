@@ -127,18 +127,27 @@ def cmd_install(_args: argparse.Namespace) -> int:
                   f"install it first (pipx install ./{cmd}), then re-run. skipped")
             rc = 1
             continue
-        _service.install(JobSpec(label=label, program=program,
-                                 args=sub_args, kind="daemon"))
+        try:
+            _service.install(JobSpec(label=label, program=program,
+                                     args=sub_args, kind="daemon"))
+        except (OSError, RuntimeError) as e:
+            print(f"{name}: install FAILED — {e}")
+            rc = 1
+            continue
         print(f"{name}: installed  →  {program} {' '.join(sub_args)}")
     ops_bin = _resolve_bin("ops")
     if ops_bin is None:
         print("logrotate: 'ops' not found on PATH — job skipped")
         rc = 1
     else:
-        _service.install(JobSpec(label=LOGROTATE_LABEL, program=ops_bin,
-                                 args=["logrotate"], kind="calendar",
-                                 calendar=(4, 5)))
-        print(f"logrotate: installed  →  {ops_bin} logrotate (daily 04:05)")
+        try:
+            _service.install(JobSpec(label=LOGROTATE_LABEL, program=ops_bin,
+                                     args=["logrotate"], kind="calendar",
+                                     calendar=(4, 5)))
+            print(f"logrotate: installed  →  {ops_bin} logrotate (daily 04:05)")
+        except (OSError, RuntimeError) as e:
+            print(f"logrotate: install FAILED — {e}")
+            rc = 1
     if rc == 0:
         print("installed. Now run:  ops load")
     return rc

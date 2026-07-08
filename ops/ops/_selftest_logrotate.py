@@ -66,7 +66,10 @@ def main() -> int:
 
         # writer-keeps-appending semantics: an O_APPEND fd opened before the
         # rotation must land bytes at the new (empty) EOF afterwards
-        fd = os.open(big, os.O_WRONLY | os.O_APPEND)
+        # O_BINARY: Windows CRT fds default to text mode, which would rewrite
+        # the \n below to \r\n and fail the byte-exact comparison. POSIX has no
+        # O_BINARY (open is always binary), hence the getattr fallback.
+        fd = os.open(big, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
         try:
             big.write_bytes(b"Z" * 2048)     # refill over threshold
             rotate_logs(logs, max_bytes=1024, keep=2)

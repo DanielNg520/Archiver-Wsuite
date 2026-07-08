@@ -169,7 +169,25 @@ def setup_logging(verbose: bool, *, quiet: tuple[str, ...] = _DEFAULT_QUIET,
     for h in list(root.handlers):
         root.removeHandler(h)
 
-    console = logging.StreamHandler(stream or sys.stdout)
+    console_stream = stream or sys.stdout
+    # Windows: the process stdout defaults to the legacy console codepage (cp1252),
+    # not UTF-8 — and under Task Scheduler it is a redirected file, not a TTY. The
+    # UI face uses ✓/✗/box-drawing glyphs, so the FIRST such log line would raise
+    # UnicodeEncodeError and take down the log call. Pin the stream to UTF-8 (drop
+    # to errors="replace" rather than crash). POSIX stdout is already UTF-8, so this
+    # is a no-op there and its behaviour is left byte-for-byte unchanged.
+    if os.name == "nt":
+        # Also pin stderr: an uncaught traceback (which may embed a TikTok/X
+        # filename with emoji/CJK) is written to stderr, and the task redirects
+        # both streams — a crash report must not itself die on cp1252.
+        for _stream in (console_stream, sys.stderr):
+            if hasattr(_stream, "reconfigure"):
+                try:
+                    _stream.reconfigure(encoding="utf-8", errors="replace")
+                except (ValueError, OSError):
+                    pass
+
+    console = logging.StreamHandler(console_stream)
     console.setFormatter(ConsoleFormatter(color=color_enabled()))
     root.addHandler(console)
 

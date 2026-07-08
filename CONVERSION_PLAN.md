@@ -250,14 +250,31 @@ New dependencies: `platformdirs` (all platforms), `pywin32` (Windows-only,
         graceful console event), so `ops unload` = crash-equivalent stop there.
         Safe by design: the suite is crash-safe end-to-end (WAL, kernel-released
         locks, startup sweeps, claim recovery — all covered by the seam suite).
-- [ ] **Remaining — validate on a real Windows box** (can't be done from macOS):
-      - Kill-tests: no orphan `ffmpeg.exe`, no stale locks.
-      - Workers auto-start at logon + restart on crash via Task Scheduler.
-      - `test_seams.py` green (`PYTHONPATH=core;archiver;recorder;dispatcher;ops`).
-      - `tasklist`/CIM health probes return sensible values on the target build.
-      - Add `pywin32`? Not currently needed — the port uses only stdlib
-        (`ctypes`, `msvcrt`, `subprocess`+`schtasks`/`taskkill`). Keep it out
-        unless a Windows-box gap forces it.
+- [x] **Windows-box validation — DONE on the target Beelink SER9 (2026-07-07,
+      Win11 Pro 24H2, Python 3.13.14).** Full dependency union + `hachoir`
+      installed clean (no build failures); `compileall` clean across all five
+      packages; **`test_seams.py` green — ALL 190 checks** (the ~20-check delta
+      vs macOS's 210 is the POSIX-only seams that skip on `nt`); `core`,
+      `safebrake`, `media_prep` selftests pass. Two **real Windows-only bugs**
+      surfaced and fixed in this pass (both invisible on macOS):
+      1. **`filelock` mandatory-lock vs. `holder_pid()`** — Windows
+         `msvcrt.locking` is *mandatory* (POSIX `flock` is advisory), so locking
+         byte 0 made the PID at byte 0 unreadable; `holder_pid()`'s `except OSError`
+         swallowed the `PermissionError` → returned `None`. Fixed by locking a byte
+         at a fixed high offset (`1<<30`) via the raw fd, leaving the PID region
+         readable. `core/core/platform/filelock.py`.
+      2. **cp1252 stdout crash** — nothing pinned stdio to UTF-8; under Task
+         Scheduler (stdout→file, legacy codepage) the first ✓/box-drawing log line
+         would raise `UnicodeEncodeError`. Fixed in `termui.setup_logging` by
+         reconfiguring stdout+stderr to UTF-8 (`errors="replace"`) on `nt` only.
+- [ ] **Still manual-only (needs interaction/observation, not automatable here):**
+      - Kill-tests: no orphan `ffmpeg.exe`, no stale locks (the `_selftest_capture`
+        group test is POSIX-only — spawns `sh -c`; verify by hand on Windows).
+      - Workers auto-start at logon + restart on crash via Task Scheduler
+        (`ops install` + reboot).
+      - `tasklist`/CIM health probes on a live worker (`ops health`).
+      - Add `pywin32`? Still **not** needed — the port uses only stdlib
+        (`ctypes`, `msvcrt`, `subprocess`+`schtasks`/`taskkill`).
 
 ---
 
