@@ -53,6 +53,13 @@ log = logging.getLogger(__name__)
 
 _VIDEO_SUFFIXES = frozenset({".mp4", ".ts", ".mkv", ".webm", ".flv", ".m4v"})
 
+# TEMP (remove once TikTok cookies are reliably configured): after this many
+# CONSECUTIVE failures to START a capture for a user, deactivate them for the
+# rest of this process so the poll loop stops hot-spinning on a stream we can
+# never open (expired/absent cookies, age-restriction, region block, a broken
+# stream). Cleared on restart. A single successful start resets the count.
+_SKIP_AFTER_FAILS = 3
+
 
 def _safe_size(p: Path) -> int:
     """Byte size of `p`, or 0 if it vanished/can't be stat'd. Used to total a
@@ -180,6 +187,13 @@ class StateMachine:
         self._stop     = threading.Event()
         self._upload_q: "queue.Queue[_Job]" = queue.Queue()
         self._lock_held = False
+        # TEMP (remove once TikTok cookies are reliably configured): a safety
+        # net so a user we can never start recording doesn't hot-loop the poll.
+        # `_skipped` holds deactivated users; `_consec_fail` counts consecutive
+        # failed starts per user (reset on any successful start). See
+        # _SKIP_AFTER_FAILS. In-memory only — a restart re-enables everyone.
+        self._skipped: set[str] = set()
+        self._consec_fail: dict[str, int] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -285,6 +299,8 @@ class StateMachine:
         for username in self.config.tiktok_users:   # priority order
             if self._stop.is_set():
                 return
+            if username in self._skipped:            # TEMP: deactivated user
+                continue
             if self.platform.is_live(username):
                 log.info("@%s is LIVE — recording", username, extra={"ev": "live"})
                 self._start_recording(username)
@@ -314,14 +330,43 @@ class StateMachine:
         try:
             url = self.platform.stream_url(username)
         except Exception as e:
+            # TEMP: a live with no usable cookies can NEVER be started, so
+            # deactivate the user immediately — retrying can't help (fail-fast).
+            from .platforms.tiktok_browser import CookiesRequiredError
+            if isinstance(e, CookiesRequiredError):
+                self._deactivate_user(username, "no usable TikTok cookies")
+                return False
             log.error("recorder: stream_url(%s) failed: %s", username, e)
+            self._note_start_failure(username)     # TEMP: safety-net counter
             return False
         try:
             self.capture.start(url, username)
         except Exception as e:
             log.error("recorder: capture start for @%s failed: %s", username, e)
+            self._note_start_failure(username)     # TEMP: safety-net counter
             return False
+        self._consec_fail.pop(username, None)      # TEMP: started → reset count
         return True
+
+    # TEMP (remove with the safety net): consecutive-failure deactivation.
+    def _note_start_failure(self, username: str) -> None:
+        """Record a failed capture start; deactivate the user once failures
+        reach _SKIP_AFTER_FAILS in a row so a persistently unstartable stream
+        stops hot-looping the poll. Reset by any successful start."""
+        n = self._consec_fail.get(username, 0) + 1
+        self._consec_fail[username] = n
+        if n >= _SKIP_AFTER_FAILS:
+            self._deactivate_user(
+                username, f"{n} consecutive failed starts")
+
+    def _deactivate_user(self, username: str, reason: str) -> None:
+        if username in self._skipped:
+            return
+        self._skipped.add(username)
+        self._consec_fail.pop(username, None)
+        log.warning("recorder: deactivating @%s (%s) — skipping until the "
+                    "recorder is restarted", username, reason,
+                    extra={"ev": "skip"})
 
     def _confirm_still_live(self, username: str | None) -> bool:
         """Re-check whether `username` is still broadcasting after a capture

@@ -46,6 +46,13 @@ log = logging.getLogger(__name__)
 _PULL_HINTS = ("pull-", "/stream-", "/game/", "pull_")
 
 
+class CookiesRequiredError(RuntimeError):
+    """The browser fallback was reached but no TikTok session cookies were
+    available, so an age-restricted live cannot be resolved. Distinct type so
+    the state machine can react specifically (e.g. temporarily skip the user)
+    instead of treating it like a generic transient resolve failure."""
+
+
 def _is_pull_url(url: str) -> bool:
     """True if `url` looks like a live-stream pull edge (HLS or FLV) rather
     than an unrelated page asset. Module-level so it is unit-testable."""
@@ -76,7 +83,7 @@ async def _resolve_async(uid: str, cookies_file: str | None, timeout_s: float) -
 
     cookies = _netscape_to_playwright(cookies_file) if cookies_file else []
     if not cookies:
-        raise RuntimeError(
+        raise CookiesRequiredError(
             "browser fallback needs the TikTok session cookies; none loaded "
             f"from {cookies_file!r}"
         )
