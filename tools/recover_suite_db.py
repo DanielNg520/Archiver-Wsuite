@@ -84,17 +84,72 @@ def integrity(path: Path) -> list[str]:
 
 
 def count_items(path: Path) -> int:
+    """Row count of items, or -1 when the corruption defeats every counting
+    strategy (2026-07-09 incident: the btree damage broke COUNT(*) AND the
+    status-index GROUP BY, so the old two-step fallback crashed the tool
+    before it could even start recovering). -1 means 'unknown' — the caller
+    must then skip the recovered≥live sanity gate instead of aborting."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
     try:
-        # COUNT(*) via the pk btree can die on the corrupt pages; the status
-        # index is intact in the observed incident. Fall back gracefully.
-        try:
-            return conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-        except sqlite3.DatabaseError:
-            return sum(n for _, n in conn.execute(
-                "SELECT status, COUNT(*) FROM items GROUP BY status"))
+        # COUNT(*) via the pk btree can die on the corrupt pages; secondary
+        # indexes may survive. Try each cheap strategy in turn.
+        for sql in (
+            "SELECT COUNT(*) FROM items",
+            "SELECT COUNT(username) FROM items INDEXED BY idx_items_user_disc",
+            "SELECT MAX(id) FROM items",     # upper bound; better than nothing
+        ):
+            try:
+                n = conn.execute(sql).fetchone()[0]
+                if n is not None:
+                    return int(n)
+            except sqlite3.Error:
+                continue
+        return -1
     finally:
         conn.close()
+
+
+def salvage_lost_and_found(recovered: Path) -> int:
+    """Re-home items rows that .recover parked in lost_and_found tables.
+
+    When the corruption hits the items tree's ROOT page (2026-07-09 incident:
+    'Tree 8 page 8 cell 0: invalid page number'), .recover can no longer tell
+    which table the orphaned leaf pages belong to and dumps every record into
+    lost_and_found* as (rootpgno, pgno, nfield, id, c0, c1, …). For an items
+    row: `id` holds the rowid, c0 is the NULL INTEGER-PRIMARY-KEY alias slot,
+    and c1..c21 are the 21 payload columns in schema order. Rows written
+    before the last ALTER TABLE ADD COLUMN carry nfield=21, current ones 22 —
+    both map identically (missing trailing fields read as NULL).
+
+    Row filter is deliberately strict — nfield >= 21, the id-alias slot NULL,
+    and c10 (status) a legal lifecycle value — so orphaned INDEX records
+    (2–4 fields) and any foreign table's rows can never be misfiled into
+    items. The lost_and_found tables are dropped afterwards so the swapped-in
+    DB carries no recovery residue."""
+    ncols = len(_MERGE_COLS.split(","))          # 21 payload columns
+    sel = ", ".join(f"c{i}" for i in range(1, ncols + 1))
+    conn = sqlite3.connect(recovered)
+    total = 0
+    try:
+        tabs = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name LIKE 'lost_and_found%'")]
+        for t in tabs:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info([{t}])")}
+            if not {"nfield", "id", f"c{ncols}"} <= cols:
+                continue
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO items (id, {_MERGE_COLS}) "
+                f"SELECT id, {sel} FROM [{t}] "
+                f"WHERE nfield >= {ncols} AND c0 IS NULL "
+                f"AND c10 IN ('pending','sending','sent','failed')")
+            total += cur.rowcount
+        for t in tabs:
+            conn.execute(f"DROP TABLE [{t}]")
+        conn.commit()
+    finally:
+        conn.close()
+    return total
 
 
 def stop_workers() -> None:
@@ -141,19 +196,38 @@ def main() -> int:
         print("DB is healthy — nothing to recover (use --force to run anyway).")
         return 0
     live_count = count_items(db)
-    print(f"live rows : {live_count:,} (index-served count)")
+    print(f"live rows : {'UNKNOWN (all counting strategies hit corrupt pages)' if live_count < 0 else f'{live_count:,}'}")
 
     # ── recover into a scratch file ──
     workdir = Path(tempfile.mkdtemp(prefix="suite-recover-"))
     recovered = workdir / "suite.recovered.db"
     print(f"\nrecovering → {recovered}")
-    dump = subprocess.Popen([sqlite, f"file:{db}?mode=ro", ".recover"],
-                            stdout=subprocess.PIPE)
+    # URI filename: backslashes are NOT valid URI path separators — with a
+    # raw str(db) the CLI opened a nonexistent path, emitted nothing, and the
+    # "recovery" was an empty DB that only the backup merge then populated
+    # (silently discarding every post-migration row). Forward-slash the path
+    # and hard-fail on a non-zero dump rc so that can never pass again.
+    db_uri = "file:" + str(db).replace("\\", "/") + "?mode=ro"
+    dump = subprocess.Popen([sqlite, db_uri, ".recover"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     load = subprocess.run([sqlite, str(recovered)], stdin=dump.stdout,
                           capture_output=True, text=True)
+    dump.stdout.close()
+    dump_err = dump.stderr.read().decode(errors="replace")
     dump.wait()
+    if dump.returncode != 0:
+        print(f"ERROR: .recover dump failed (rc={dump.returncode}): "
+              f"{dump_err[:300]}")
+        return 1
     if load.returncode != 0:
         print(f"ERROR: recovery load failed: {load.stderr[:300]}")
+        return 1
+    salvaged = salvage_lost_and_found(recovered)
+    if salvaged:
+        print(f"salvaged  : {salvaged:,} items rows re-homed from lost_and_found")
+    if count_items(recovered) <= 0:
+        print("ERROR: recovery produced ZERO rows from a non-empty live DB — "
+              "refusing to continue (the result would be backup-merge only).")
         return 1
 
     rec_findings = integrity(recovered)
@@ -194,10 +268,13 @@ def main() -> int:
     final_count = count_items(recovered)
     print(f"final     : {final_count:,} rows "
           f"(live {live_count:,} → recovered {rec_count:,} + merged {merged:,})")
-    if final_count < live_count:
+    if live_count >= 0 and final_count < live_count:
         print("ERROR: recovered+merged has FEWER rows than the live DB reports "
               "— not swapping. Inspect manually.")
         return 1
+    if live_count < 0:
+        print("NOTE: live row count unknowable (corruption) — the recovered≥live "
+              "gate cannot run; relying on integrity_check + the backup merge.")
 
     if not args.apply:
         print("\nDRY RUN — nothing changed. Re-run with --apply to:")

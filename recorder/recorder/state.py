@@ -53,12 +53,23 @@ log = logging.getLogger(__name__)
 
 _VIDEO_SUFFIXES = frozenset({".mp4", ".ts", ".mkv", ".webm", ".flv", ".m4v"})
 
-# TEMP (remove once TikTok cookies are reliably configured): after this many
-# CONSECUTIVE failures to START a capture for a user, deactivate them for the
-# rest of this process so the poll loop stops hot-spinning on a stream we can
-# never open (expired/absent cookies, age-restriction, region block, a broken
-# stream). Cleared on restart. A single successful start resets the count.
+# After this many CONSECUTIVE failures to START a capture for a user, bench them
+# so the poll loop stops hot-spinning on a stream we currently can't open
+# (expired/absent cookies, age-restriction, region block, a broken stream). A
+# single successful start resets the count.
 _SKIP_AFTER_FAILS = 3
+
+# The bench is a COOLDOWN, not a permanent deactivation. Many "unstartable"
+# causes are actually transient — a flaky headless-browser launch for an
+# age-restricted live, a momentary network error resolving the stream URL, a
+# cookie file mid-refresh. Permanently benching until process restart meant one
+# such blip dropped a user for the whole session (observed: @ipasgym age-gated,
+# a transient `BrowserType.launch` ENOENT tripped 3 fails and it stopped being
+# recorded for hours while the browser was actually fine). Instead we skip the
+# user for _SKIP_COOLDOWN_S and then retry: a genuinely dead stream just re-fails
+# and re-cools (bounded ~1 attempt-burst per cooldown, no hot-spin), while a
+# recovered one is picked back up automatically with no restart.
+_SKIP_COOLDOWN_S = 600.0
 
 
 def _safe_size(p: Path) -> int:
@@ -187,12 +198,13 @@ class StateMachine:
         self._stop     = threading.Event()
         self._upload_q: "queue.Queue[_Job]" = queue.Queue()
         self._lock_held = False
-        # TEMP (remove once TikTok cookies are reliably configured): a safety
-        # net so a user we can never start recording doesn't hot-loop the poll.
-        # `_skipped` holds deactivated users; `_consec_fail` counts consecutive
-        # failed starts per user (reset on any successful start). See
-        # _SKIP_AFTER_FAILS. In-memory only — a restart re-enables everyone.
-        self._skipped: set[str] = set()
+        # Safety net so a user we currently can't start recording doesn't
+        # hot-loop the poll. `_skipped` maps a benched username → the
+        # time.monotonic() at which it may be retried (a COOLDOWN, not a
+        # permanent bench — see _SKIP_COOLDOWN_S). `_consec_fail` counts
+        # consecutive failed starts per user (reset on any successful start).
+        # In-memory only — a restart re-enables everyone immediately.
+        self._skipped: dict[str, float] = {}
         self._consec_fail: dict[str, int] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -272,14 +284,19 @@ class StateMachine:
         # No uploader thread in one-shot mode — drain synchronously so the
         # process can exit once the file is registered.
         drained = 0
+        lost = 0
         while not self._upload_q.empty():
             try:
-                self._enqueue_job(self._upload_q.get_nowait())
-                drained += 1
+                if self._enqueue_job(self._upload_q.get_nowait()):
+                    drained += 1
+                else:
+                    lost += 1
             except queue.Empty:
                 break
-        log.info("done — %d file%s queued for upload", drained,
-                 "" if drained == 1 else "s", extra={"ev": "queued"})
+        log.info("done — %d file%s queued for upload%s", drained,
+                 "" if drained == 1 else "s",
+                 f" ({lost} lost/refused)" if lost else "",
+                 extra={"ev": "queued"})
         self.state = RecorderState.STOPPED
         return True
 
@@ -299,7 +316,7 @@ class StateMachine:
         for username in self.config.tiktok_users:   # priority order
             if self._stop.is_set():
                 return
-            if username in self._skipped:            # TEMP: deactivated user
+            if self._is_skipped(username):           # benched (cooldown)
                 continue
             if self.platform.is_live(username):
                 log.info("@%s is LIVE — recording", username, extra={"ev": "live"})
@@ -330,42 +347,59 @@ class StateMachine:
         try:
             url = self.platform.stream_url(username)
         except Exception as e:
-            # TEMP: a live with no usable cookies can NEVER be started, so
-            # deactivate the user immediately — retrying can't help (fail-fast).
+            # A live with no usable cookies can NEVER be started this attempt-
+            # burst, so bench the user immediately — retrying within the same
+            # cooldown can't help (fail-fast straight to the cooldown).
             from .platforms.tiktok_browser import CookiesRequiredError
             if isinstance(e, CookiesRequiredError):
                 self._deactivate_user(username, "no usable TikTok cookies")
                 return False
             log.error("recorder: stream_url(%s) failed: %s", username, e)
-            self._note_start_failure(username)     # TEMP: safety-net counter
+            self._note_start_failure(username)
             return False
         try:
             self.capture.start(url, username)
         except Exception as e:
             log.error("recorder: capture start for @%s failed: %s", username, e)
-            self._note_start_failure(username)     # TEMP: safety-net counter
+            self._note_start_failure(username)
             return False
-        self._consec_fail.pop(username, None)      # TEMP: started → reset count
+        self._consec_fail.pop(username, None)      # started → reset fail count
         return True
 
-    # TEMP (remove with the safety net): consecutive-failure deactivation.
     def _note_start_failure(self, username: str) -> None:
-        """Record a failed capture start; deactivate the user once failures
-        reach _SKIP_AFTER_FAILS in a row so a persistently unstartable stream
-        stops hot-looping the poll. Reset by any successful start."""
+        """Record a failed capture start; bench the user once failures reach
+        _SKIP_AFTER_FAILS in a row so a currently-unstartable stream stops
+        hot-looping the poll. Reset by any successful start."""
         n = self._consec_fail.get(username, 0) + 1
         self._consec_fail[username] = n
         if n >= _SKIP_AFTER_FAILS:
             self._deactivate_user(
                 username, f"{n} consecutive failed starts")
 
-    def _deactivate_user(self, username: str, reason: str) -> None:
-        if username in self._skipped:
-            return
-        self._skipped.add(username)
+    def _is_skipped(self, username: str) -> bool:
+        """Whether `username` is currently benched. Cooldown-based: once the
+        skip window has elapsed the entry is evicted (and its failure count
+        cleared) so the next poll retries the user — a transient cause that has
+        since cleared recovers with no restart. See _SKIP_COOLDOWN_S."""
+        until = self._skipped.get(username)
+        if until is None:
+            return False
+        if time.monotonic() < until:
+            return True
+        # Cooldown elapsed → re-enable and give the user a clean slate.
+        self._skipped.pop(username, None)
         self._consec_fail.pop(username, None)
-        log.warning("recorder: deactivating @%s (%s) — skipping until the "
-                    "recorder is restarted", username, reason,
+        log.info("recorder: @%s cooldown elapsed — retrying", username,
+                 extra={"ev": "listen"})
+        return False
+
+    def _deactivate_user(self, username: str, reason: str) -> None:
+        """Bench `username` for _SKIP_COOLDOWN_S (a cooldown, not a permanent
+        deactivation — _is_skipped auto-retries once it elapses)."""
+        self._skipped[username] = time.monotonic() + _SKIP_COOLDOWN_S
+        self._consec_fail.pop(username, None)
+        log.warning("recorder: benching @%s (%s) — skipping for %.0fs then "
+                    "retrying", username, reason, _SKIP_COOLDOWN_S,
                     extra={"ev": "skip"})
 
     def _confirm_still_live(self, username: str | None) -> bool:
@@ -507,6 +541,8 @@ class StateMachine:
         for username in self.config.tiktok_users:
             if self._stop.is_set():
                 return
+            if self._is_skipped(username):           # benched (cooldown)
+                continue
             if self.platform.is_live(username):
                 log.info("handoff → @%s is live, recording next",
                          username, extra={"ev": "handoff"})
@@ -538,26 +574,30 @@ class StateMachine:
                 continue
             self._enqueue_job(job)
 
-    def _enqueue_job(self, job: _Job) -> None:
+    def _enqueue_job(self, job: _Job) -> bool:
         """Register one finished recording in the shared queue. Shared by the
         daemon uploader thread and the one-shot record_once drain so both build
-        the caption and handle failures identically."""
+        the caption and handle failures identically. Returns True only when the
+        file was actually registered — the one-shot summary counts these, so a
+        lost/refused file must not inflate 'N files queued'."""
         # A file present at handoff that's gone by enqueue means it was lost
         # (e.g. an orphaned writer's unlinked inode). Report it honestly instead
         # of enqueuing a phantom row the dispatcher will fail as "file missing".
         if not job.file_path.exists():
             log.error("recorder: %s vanished before enqueue — recording lost, "
                       "not enqueued", job.file_path.name, extra={"ev": "lost"})
-            return
+            return False
         try:
             upload_path = _remux_for_telegram(job.file_path)
             caption = (f"@{job.username} · tiktok · live · "
                        f"{upload_path.stem}")
             self.enqueue("tiktok", job.username, str(upload_path), caption,
                          job.group_key)
+            return True
         except Exception as e:
             # Keep the file on disk; ops can re-enqueue via the dispatcher
             # CLI. Losing the recording is the only unacceptable outcome,
             # and we avoid it.
             log.error("recorder: enqueue failed for %s: %s — file kept "
                       "on disk for manual recovery", job.file_path, e)
+            return False

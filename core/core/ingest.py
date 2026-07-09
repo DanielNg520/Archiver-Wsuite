@@ -54,6 +54,17 @@ from .stores import ProducerStore
 
 log = logging.getLogger(__name__)
 
+# When an oversize original is split into parts, those parts are demoted in the
+# send queue so they sort AFTER every normal (unsplit) file of the same
+# (platform, username) folder — a big file's chunks always tail its user's
+# block instead of interleaving with smaller files by discovery time. The offset
+# is added to the part's own priority; it is large enough to dominate the spread
+# of normal producer priorities within one cluster (recorder=5, archiver=10,
+# loose=100), so parts always outrank-lower every sibling. Cluster POSITION is
+# unaffected: the cluster anchor keys on MIN(priority) over the user, so a
+# demoted part never drags its whole user block to the tail — only the parts move.
+SPLIT_PART_PRIORITY_DEMOTE = 1_000_000
+
 
 class IngestOutcome(str, Enum):
     """What register_file did. str-Enum so it logs/serializes as plain text."""
@@ -287,6 +298,12 @@ def register_media(
         split_group_key(platform, username, path.stem)
         if prep.individual and album_split_parts else None)
 
+    # Demote a split original's parts so they queue behind every normal file of
+    # the same folder (see SPLIT_PART_PRIORITY_DEMOTE). prep.individual is set
+    # ONLY for split output, so a plain convert/passthrough keeps its priority.
+    part_priority = (priority + SPLIT_PART_PRIORITY_DEMOTE
+                     if prep.individual else priority)
+
     outcomes: list[IngestOutcome] = []
     for out in prep.outputs:
         ident = identifier_for(out) if identifier_for else None
@@ -299,7 +316,7 @@ def register_media(
             chat_id    = chat_id,
             group_key  = album_gk,
             caption    = cap if cap is not None else caption,
-            priority   = priority,
+            priority   = part_priority,
             identifier = ident,
             topic_id   = topic_id,
         )

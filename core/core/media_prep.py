@@ -606,6 +606,18 @@ def _prep_lock(src: Path):
                 _flock.release(handle)
             finally:
                 handle.close()
+            # Litter control, Windows only: one prep-<hash>.lock per unique
+            # source path otherwise accumulates forever (150+ observed). On
+            # Windows the unlink FAILS whenever any other process still has
+            # the file open, so this can never yank the lock out from under a
+            # concurrent acquirer. On POSIX unlink succeeds regardless and
+            # would split future lockers across two inodes (both "exclusive"),
+            # so there we keep the flock convention of leaving the file.
+            if os.name == "nt":
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
 
 
 def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResult:

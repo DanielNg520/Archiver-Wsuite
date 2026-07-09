@@ -2440,6 +2440,59 @@ def test_orphaned_no_trace_and_pseudo_platform_seam(tmp: Path) -> None:
     db.close()
 
 
+def test_live_recording_protection_seam(tmp: Path) -> None:
+    section("Seam 32: sweepers skip the user a live recorder is recording")
+    from recorder.lock import TikTokLock
+    from recorder import startup_sweep
+    from archiver.reconcile import reconcile_recordings
+    from core import ingest, paths as core_paths
+    from core.media_prep import PrepResult
+
+    root = tmp / "records"
+    active = _write_media(root / "alice" / "alice_1700.mp4", b"LIVE-RECORDING")
+    active_log = root / "alice" / "alice_1700_ytdlp.log"
+    active_log.write_text("live capture log")
+    other = _write_media(root / "bob" / "bob_1600.mp4", b"FINISHED-RECORDING")
+    old = time.time() - 3600
+    for f in (active, other):
+        os.utime(f, (old, old))
+
+    db = _fresh_db()
+    lock_path = tmp / "locks" / "tiktok.lock"
+    orig_lockfn = core_paths.tiktok_lock
+    orig_prep = ingest.media_prep.prepare
+    core_paths.tiktok_lock = lambda: lock_path          # type: ignore
+    ingest.media_prep.prepare = (                        # type: ignore
+        lambda p, split_threshold_bytes=None: PrepResult.passthrough(p))
+    try:
+        lock = TikTokLock(str(lock_path))
+        lock.username = "alice"
+        with lock:
+            reports = reconcile_recordings(db, root)
+            names = {r.username for r in reports}
+            ok("alice" not in names,
+               "reconcile SKIPS the actively-recorded user's dir")
+            ok("bob" in names, "reconcile still processes other users")
+            ok(db.id_of(str(active)) is None,
+               "no row registered for the live recording")
+            ok(db.id_of(str(other)) is not None,
+               "the finished recording DID get a row")
+
+            startup_sweep.sweep(str(root), _db_file(db))
+            ok(active.exists() and active_log.exists(),
+               "startup sweep leaves the live recording AND its log alone")
+            ok(db.id_of(str(active)) is None,
+               "sweep registered nothing from the protected dir")
+        # Lock released → the next reconcile picks alice up again.
+        reconcile_recordings(db, root)
+        ok(db.id_of(str(active)) is not None,
+           "after the lock clears, the recording IS reconciled")
+    finally:
+        core_paths.tiktok_lock = orig_lockfn             # type: ignore
+        ingest.media_prep.prepare = orig_prep            # type: ignore
+        db.close()
+
+
 def main() -> int:
     print("cross-worker seam integration tests")
     # Each test gets an isolated temp config.toml so the real user config is
@@ -2451,6 +2504,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         test_lock_seam(tmp / "s1")
+        test_live_recording_protection_seam(tmp / "s32")
         test_producer_table_seam(tmp / "s2")
         test_local_platform_discovery_seam(tmp / "s13")
         test_dispatcher_instance_lock_seam(tmp / "s14")

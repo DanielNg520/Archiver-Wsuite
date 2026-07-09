@@ -39,6 +39,7 @@ from core import (
     cleanup_sidecars, register_media,
 )
 from core.ingest import IngestOutcome
+from core.recorder_lock import live_recording_user as _live_recording_user
 
 from .enqueue import RECORDER_PRIORITY
 
@@ -151,6 +152,28 @@ def sweep(output_dir: str, db_path: str | None = None,
     if not root.exists():
         return report
 
+    # NEVER sweep the dir another live recorder is recording into (a manual
+    # `recorder record` session while this managed instance restarts). The
+    # stability probe alone can't protect it: an ffmpeg reconnect stall makes
+    # the growing file look stable, and this sweep would then convert it and
+    # retire the original mid-capture — and step 1 below would delete its live
+    # yt-dlp log. An unknown username (pre-stamp lock) aborts the whole sweep:
+    # "unknown" must never degrade into "sweep it anyway". The skipped backlog
+    # is reconciled on the next start once the lock clears.
+    _lock_held, _rec_user = _live_recording_user()
+    if _lock_held and _rec_user is None:
+        log.warning("startup-sweep: another recorder is live (user unknown) — "
+                    "skipping the sweep this start")
+        return report
+    _active_dir = (root / _rec_user) if _lock_held else None
+
+    def _in_active_dir(f: Path) -> bool:
+        return _active_dir is not None and _active_dir in f.parents
+
+    if _active_dir is not None:
+        log.info("startup-sweep: @%s is being recorded — leaving %s alone",
+                 _rec_user, _active_dir)
+
     # Deleting an already-uploaded file is a deletion like any other: it must
     # honor the user's delete-after-upload setting AND the safebrake, exactly
     # as the dispatcher's delete-after-upload path does. We never bypass them.
@@ -176,7 +199,7 @@ def sweep(output_dir: str, db_path: str | None = None,
 
     # 1. delete every per-recording log.
     for f in root.rglob("*.log"):
-        if not f.is_file():
+        if not f.is_file() or _in_active_dir(f):
             continue
         try:
             f.unlink()
@@ -188,7 +211,7 @@ def sweep(output_dir: str, db_path: str | None = None,
     store = ItemStore.open(db_path)
     try:
         for f in sorted(root.rglob("*")):
-            if not f.is_file() or f.name.startswith("."):
+            if not f.is_file() or f.name.startswith(".") or _in_active_dir(f):
                 continue
             if f.suffix.lower() not in _RECORDING_EXTS:
                 continue

@@ -227,14 +227,55 @@ if os.name == "nt":                                   # ── Windows / Task Sc
         return (r.returncode == 0,
                 "loaded" if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
 
+    def _job_tree_roots(tag: str) -> "list[int]":
+        """Pids of every process ROOT belonging to this managed job, matched by
+        command line: the hidden wscript shim (references launchers/<tag>.vbs)
+        and the cmd.exe log-redirect wrapper (references <tag>.out.log). Only
+        these two strings — a worker CLI the user runs by hand in a console has
+        neither in its command line, so a manual `recorder record` session is
+        never matched by an unload. The worker exe / venv pythons underneath
+        are NOT matched directly; they die as descendants of a /T tree-kill."""
+        from . import process as _process
+        launcher = str(_launcher_path(tag)).lower()
+        # The `>> …out.log` redirect only ever appears in OUR generated cmd
+        # wrapper — a user tailing the same log file (Get-Content, type) must
+        # not match, so require the redirect syntax, not just the filename.
+        redirect = f'>> "{_log_paths(tag)[0]}"'.lower()
+        roots: "list[int]" = []
+        for pid, cmdline in _process.process_table(fresh=True):
+            c = (cmdline or "").lower()
+            if launcher in c or redirect in c:
+                roots.append(pid)
+        return roots
+
+    def _kill_job_tree(label: str) -> int:
+        """Kill every process tree the job left behind. schtasks /End
+        terminates ONLY the task's root process — the hidden wscript shim —
+        and ORPHANS the cmd → worker → python tree it spawned, so an unload
+        that stops at /End reports success while the workers keep running.
+        taskkill /T takes each surviving root's whole descendant tree with it.
+        Returns how many roots were killed."""
+        n = 0
+        for pid in _job_tree_roots(label.rsplit(".", 1)[-1]):
+            r = _run(["taskkill", "/PID", str(pid), "/T", "/F"])
+            if r.returncode == 0:
+                n += 1
+        return n
+
     def unload(label: str) -> "tuple[bool, str]":
-        _run(["schtasks", "/End", "/TN", label])
+        # Disable FIRST: /End makes the shim exit non-zero, and RestartOnFailure
+        # would relaunch the job within a minute if the task were still enabled.
         r = _run(["schtasks", "/Change", "/TN", label, "/DISABLE"])
-        return (r.returncode == 0,
-                "unloaded" if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
+        _run(["schtasks", "/End", "/TN", label])
+        killed = _kill_job_tree(label)
+        if r.returncode != 0:
+            return False, r.stderr.strip() or r.stdout.strip()
+        return True, ("unloaded" if not killed
+                      else f"unloaded (killed {killed} surviving process tree(s))")
 
     def restart(label: str) -> "tuple[bool, str]":
         _run(["schtasks", "/End", "/TN", label])
+        _kill_job_tree(label)     # /End orphans the tree — see _kill_job_tree
         r = _run(["schtasks", "/Run", "/TN", label])
         return (r.returncode == 0,
                 "restarted" if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())

@@ -290,6 +290,15 @@ if os.name == "nt":                                   # ── Windows backend �
         _snap = (now, rows)
         return rows
 
+    def process_table(fresh: bool = False) -> "list[tuple[int, str]]":
+        """(pid, command line) snapshot of every process. `fresh=True` bypasses
+        the TTL cache — required when the caller is about to KILL matches (a
+        3s-stale row would target a recycled pid)."""
+        global _snap
+        if fresh:
+            _snap = None
+        return _process_table()
+
     def find_worker_pid(command: str, action: str) -> "int | None":
         # Steady state: revalidate the memoized pid with two ctypes calls. The
         # image-name check guards against Windows recycling the pid for an

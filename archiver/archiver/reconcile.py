@@ -49,6 +49,7 @@ from core import (
 )
 from core.hashing import full_hash
 from core.platform import paths as _osp
+from core.recorder_lock import live_recording_user as _live_recording_user
 
 # Upload priority for re-registered recordings. MUST match the recorder's live
 # enqueue (recorder.enqueue.RECORDER_PRIORITY) so a reconciled recording and a
@@ -182,6 +183,15 @@ def reconcile_recordings(
     if not root.exists():
         return reports
 
+    # NEVER sweep the dir a live recorder is currently recording into. The
+    # stability probe is not enough: an ffmpeg reconnect stall makes a growing
+    # recording look stable for seconds, and this reconcile then converts it
+    # and retires the original mid-capture (the recorder later reports it
+    # "vanished before enqueue"). An unknown username (pre-stamp lock) skips
+    # every user dir — "unknown" must never degrade into "sweep it anyway";
+    # the recording user's backlog is picked up again on the next pass.
+    lock_held, recording_user = _live_recording_user()
+
     # Recorder "split mode" (config.toml): when on, every recording over the
     # configured size (default 2 GiB) is cut into <=that-size parts, instead of
     # only splitting above the ~3.9 GiB upload ceiling.
@@ -207,6 +217,12 @@ def reconcile_recordings(
         ))
 
     for user_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        if lock_held and recording_user in (None, user_dir.name):
+            log.info("reconcile: skipping %s — a live recorder is recording "
+                     "%s", user_dir.name,
+                     f"@{recording_user}" if recording_user else
+                     "(user unknown, skipping all user dirs)")
+            continue
         report = ReconcileReport(platform="tiktok", username=user_dir.name)
         reports.append(_reconcile_dir(
             platform=None,

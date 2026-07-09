@@ -1,15 +1,12 @@
 """
-Self-test for recorder.state's TEMP "deactivate an unstartable user" safety net.
-
-TEMP: delete this file together with the safety net (grep `_skipped` /
-`_note_start_failure` / `_SKIP_AFTER_FAILS` in recorder.state) once TikTok
-cookies are reliably configured.
+Self-test for recorder.state's "bench an unstartable user" safety net.
 
 Asserts:
-  - N-1 consecutive failed starts do NOT deactivate; the N-th does (N = 3).
-  - a deactivated user is skipped by the poll loop (is_live never called).
+  - N-1 consecutive failed starts do NOT bench; the N-th does (N = 3).
+  - a benched user is skipped by the poll loop (is_live never called).
+  - the bench is a COOLDOWN: once it elapses the user is retried automatically.
   - a successful start resets the consecutive-failure count.
-  - CookiesRequiredError deactivates immediately (fail-fast, first failure).
+  - CookiesRequiredError benches immediately (fail-fast, first failure).
 
 No network, no yt-dlp: a scripted platform whose stream_url raises stands in.
 
@@ -24,8 +21,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import time                                                    # noqa: E402
+
 from recorder.config import RecorderConfig                     # noqa: E402
-from recorder.state import StateMachine, _SKIP_AFTER_FAILS     # noqa: E402
+from recorder.state import (                                   # noqa: E402
+    StateMachine, _SKIP_AFTER_FAILS, _SKIP_COOLDOWN_S)
 from recorder.platforms.tiktok_browser import CookiesRequiredError  # noqa: E402
 
 _checks = 0
@@ -94,7 +94,7 @@ def _sm(tmp: Path, platform) -> StateMachine:
 
 
 def test_threshold(tmp: Path) -> None:
-    print("\n── generic failures deactivate only at the threshold ──")
+    print("\n── generic failures bench only at the threshold ──")
     plat = ScriptedPlatform(RuntimeError("boom"), fail_first=99)
     sm = _sm(tmp, plat)
     for i in range(1, _SKIP_AFTER_FAILS):
@@ -104,17 +104,31 @@ def test_threshold(tmp: Path) -> None:
     check(sm._open_capture("alice") is False,
           f"fail #{_SKIP_AFTER_FAILS} returns False")
     check("alice" in sm._skipped,
-          f"deactivated on the {_SKIP_AFTER_FAILS}th consecutive failure")
+          f"benched on the {_SKIP_AFTER_FAILS}th consecutive failure")
 
 
-def test_poll_skips_deactivated(tmp: Path) -> None:
-    print("\n── the poll loop skips a deactivated user (no is_live call) ──")
+def test_poll_skips_benched(tmp: Path) -> None:
+    print("\n── the poll loop skips a benched user (no is_live call) ──")
     plat = ScriptedPlatform(RuntimeError("boom"), fail_first=99)
     sm = _sm(tmp, plat)
-    sm._skipped.add("alice")
+    sm._skipped["alice"] = time.monotonic() + _SKIP_COOLDOWN_S
     sm._poll_for_live()
     check(plat.is_live_calls == 0,
-          "is_live never called for a deactivated user")
+          "is_live never called for a benched user")
+
+
+def test_cooldown_elapses_and_retries(tmp: Path) -> None:
+    print("\n── an elapsed cooldown re-enables the user (auto-retry) ──")
+    plat = ScriptedPlatform(RuntimeError("boom"), fail_first=99)
+    sm = _sm(tmp, plat)
+    # Bench with an already-past deadline: _is_skipped must evict + retry.
+    sm._skipped["alice"] = time.monotonic() - 1.0
+    sm._consec_fail["alice"] = _SKIP_AFTER_FAILS
+    check(sm._is_skipped("alice") is False, "past-deadline bench reads as active")
+    check("alice" not in sm._skipped, "elapsed bench evicted from _skipped")
+    check("alice" not in sm._consec_fail, "failure count cleared on re-enable")
+    sm._poll_for_live()
+    check(plat.is_live_calls == 1, "is_live IS called again after cooldown")
 
 
 def test_success_resets(tmp: Path) -> None:
@@ -136,21 +150,22 @@ def test_success_resets(tmp: Path) -> None:
 
 
 def test_cookies_required_fail_fast(tmp: Path) -> None:
-    print("\n── CookiesRequiredError deactivates on the FIRST failure ──")
+    print("\n── CookiesRequiredError benches on the FIRST failure ──")
     plat = ScriptedPlatform(CookiesRequiredError("no cookies"), fail_first=99)
     sm = _sm(tmp, plat)
     check(sm._open_capture("alice") is False, "first call returns False")
     check("alice" in sm._skipped,
-          "deactivated immediately — no retries for a deterministic failure")
+          "benched immediately — no retries for a deterministic failure")
 
 
 def main() -> int:
     print("recorder.state skip-safety-net self-test")
     with tempfile.TemporaryDirectory() as d:
         test_threshold(Path(d) / "a")
-        test_poll_skips_deactivated(Path(d) / "b")
-        test_success_resets(Path(d) / "c")
-        test_cookies_required_fail_fast(Path(d) / "d")
+        test_poll_skips_benched(Path(d) / "b")
+        test_cooldown_elapses_and_retries(Path(d) / "c")
+        test_success_resets(Path(d) / "d")
+        test_cookies_required_fail_fast(Path(d) / "e")
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

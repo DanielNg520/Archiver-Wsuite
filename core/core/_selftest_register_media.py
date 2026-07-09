@@ -51,7 +51,7 @@ def _make_stable_file(path: Path, *, kb: int = 1) -> Path:
 def _rows(store: ItemStore) -> list[dict]:
     cur = store.conn.execute(
         "SELECT identifier, file_path, caption, group_key, source, platform, "
-        "username FROM items ORDER BY id")
+        "username, priority FROM items ORDER BY id")
     cols = [c[0] for c in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -79,6 +79,8 @@ def _run(tmp: Path) -> None:
     check(rows[0]["identifier"] == "recorder_clip", "passthrough: identifier_for applied")
     check(rows[0]["caption"] == "@alice · clip", "passthrough: caption_for applied")
     check(retired == [], "passthrough: original NOT retired (it is the upload)")
+    check(rows[0]["priority"] == 100,
+          "passthrough: priority NOT demoted (only split parts are)")
     store.close()
 
     # ── 2. oversize split: 3 parts → 3 rows sharing ONE album key, and the
@@ -105,6 +107,9 @@ def _run(tmp: Path) -> None:
           "split: per-part identifier_for applied")
     check(res.transformed and retired == [big],
           "split: original retired exactly once (all parts accounted)")
+    check(all(r["priority"] == 100 + ingest.SPLIT_PART_PRIORITY_DEMOTE
+              for r in rows),
+          "split: every part demoted by SPLIT_PART_PRIORITY_DEMOTE")
     store.close()
 
     # ── 3. split with one UNSTABLE part → original NOT retired (bytes would
