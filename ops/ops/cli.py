@@ -27,9 +27,11 @@ import sys
 import time
 from pathlib import Path
 
+from core import termui as _termui
 from core.platform import service as _service
 from core.platform.service import JobSpec
 
+from . import health as _health
 from .health import LABELS, render
 from .logrotate import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_logs
 
@@ -57,7 +59,7 @@ def cmd_health(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _watch_frame() -> str:
+def _watch_frame(anim: int) -> str:
     """One repaint of the watch screen, as a SINGLE string written atomically.
 
     Flicker-free redraw: never blank the screen (the old `\\033[2J` left a blank
@@ -66,11 +68,23 @@ def _watch_frame() -> str:
     so a shorter new line leaves no stale tail; a trailing `\\033[J`
     (erase-to-end-of-screen) drops orphaned rows when a frame is shorter than the
     last. Written in one shot so the terminal repaints in a single pass."""
-    body = render()   # render() draws its own header + live clock
+    body = render(anim)   # render() draws its own header + live clock
     return "\033[H" + "\033[K\n".join(body.split("\n")) + "\033[K\033[J"
 
 
+# Animation cadence, decoupled from data refresh: frames redraw the spinner /
+# pulse / clock at 4 fps, while every data probe behind them is memoized inside
+# ops.health for `--interval` seconds (and the expensive OS probes even longer).
+# Smoothness costs string formatting only — no extra DB reads or subprocesses.
+_FRAME_S = 0.25
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
+    _health.set_data_ttl(args.interval)
+    # The alt-screen / cursor / home escapes below need VT processing on a
+    # Windows console even when colour is disabled (NO_COLOR) — without it a
+    # legacy conhost prints the raw escapes instead of switching screens.
+    _termui.ensure_vt()
     out = sys.stdout
     # Alternate screen buffer (like htop/less): watch gets its own screen, so an
     # oversized report can't smear and the user's scrollback is restored on exit.
@@ -78,10 +92,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
     out.write("\033[?1049h\033[?25l")
     out.flush()
     try:
+        anim = 0
         while True:
-            out.write(_watch_frame())
+            out.write(_watch_frame(anim))
             out.flush()
-            time.sleep(args.interval)
+            time.sleep(_FRAME_S)
+            anim += 1
     except KeyboardInterrupt:
         return 0
     finally:
@@ -223,7 +239,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("uninstall", help="unload + remove the definitions")
     sub.add_parser("health", help="one-shot health report")
     w = sub.add_parser("watch", help="auto-refreshing health report")
-    w.add_argument("--interval", type=float, default=3.0)
+    w.add_argument("--interval", type=float, default=3.0,
+                   help="data refresh seconds (animation redraws faster)")
     job_names = [*LABELS, "logrotate"]
     ld = sub.add_parser("load", help="start + enable managed services "
                                      "(all, or just one)")

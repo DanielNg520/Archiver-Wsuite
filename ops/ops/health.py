@@ -14,6 +14,7 @@ not used for liveness because they go stale on hard kills.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -69,18 +70,71 @@ LABELS = {
 }
 
 
+# ── data-refresh memoization (ops watch) ────────────────────────────────────
+# `ops watch` renders many frames per second for animation, but the DB counts /
+# task-scheduler states it draws only need refreshing every couple of seconds.
+# One-shot `ops health` keeps TTL 0 (every probe fresh). The process-table
+# probe has its own memo inside core.platform.process, so it is not wrapped.
+
+_DATA_TTL = 0.0
+
+
+def set_data_ttl(seconds: float) -> None:
+    """Called by `ops watch` so data probes are reused across animation frames."""
+    global _DATA_TTL
+    _DATA_TTL = max(0.0, seconds)
+
+
+def _memo(min_ttl: float = 0.0):
+    """TTL-memoize a zero/positional-arg probe. Effective TTL is the larger of
+    `min_ttl` and the watch-set _DATA_TTL, so slow-moving facts (service
+    definitions, archive volume) can refresh even less often than the data."""
+    def deco(fn):
+        cache: dict[tuple, tuple[float, object]] = {}
+
+        @functools.wraps(fn)
+        def wrap(*a):
+            ttl = max(min_ttl, _DATA_TTL)
+            if ttl <= 0:
+                return fn(*a)
+            now = time.time()
+            hit = cache.get(a)
+            if hit is not None and now - hit[0] < ttl:
+                return hit[1]
+            val = fn(*a)
+            cache[a] = (now, val)
+            return val
+        return wrap
+    return deco
+
+
 # ── service / process liveness ─────────────────────────────────────────────
-# The OS-specifics (launchd vs Task Scheduler; ps vs tasklist/wmic) live in
+# The OS-specifics (launchd vs Task Scheduler; ps vs process snapshots) live in
 # core.platform; ops just asks for a managed pid, then falls back to finding the
 # worker in the process table.
 
+@_memo(min_ttl=15.0)          # service definitions change rarely; spare the spawns
+def job_state(name: str) -> str | None:
+    """'running' | 'enabled' | 'disabled' | None (not installed) for the
+    worker's service-manager job. Drives the ownership tag and the
+    self-healing warnings (a disabled task, a manual run with no
+    crash-restart protection)."""
+    return _service.job_state(LABELS[name])
+
+
 def worker_pid(name: str) -> tuple[int | None, str]:
-    """Return a worker PID and whether the service manager or a shell owns it."""
+    """Return a worker PID and whether the service manager or a shell owns it.
+    On Windows the service manager exposes no PID, so ownership is decided by
+    the task state: a live process while the task reports 'running' is the
+    task's action (Task Scheduler owns it, restart-on-failure active)."""
     managed = _service.running_pid(LABELS[name])
     if managed is not None:
         return managed, "service"
     action = "loop" if name == "archiver" else "start"
-    return _process.find_worker_pid(name, action), "foreground"
+    pid = _process.find_worker_pid(name, action)
+    if pid is not None and job_state(name) == "running":
+        return pid, "service"
+    return pid, "foreground"
 
 
 def proc_stats(pid: int) -> str | None:
@@ -99,6 +153,7 @@ def _iso_utc_ago(hours: float) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+@_memo()
 def dispatcher_details() -> dict | None:
     """What the drain is DOING, not just that it exists: recent throughput,
     the in-flight claim (who/how big/how long — a multi-GB album legitimately
@@ -139,6 +194,7 @@ def dispatcher_details() -> dict | None:
         conn.close()
 
 
+@_memo()
 def recorder_details() -> dict | None:
     """Recorder activity via its rows in the shared table (ops deliberately
     has no IPC with the recorder)."""
@@ -173,6 +229,7 @@ def tiktok_lock_info() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+@_memo()
 def archiver_details() -> dict | None:
     """Archiver activity: discoveries landing in the table + busiest
     pending platforms (where the backlog actually sits)."""
@@ -248,6 +305,7 @@ def _connect_ro(path: Path) -> sqlite3.Connection | None:
         return None
 
 
+@_memo()
 def dispatcher_queue_counts() -> dict[str, int] | None:
     conn = _connect_ro(SUITE_DB)
     if conn is None:
@@ -263,6 +321,7 @@ def dispatcher_queue_counts() -> dict[str, int] | None:
         conn.close()
 
 
+@_memo()
 def queue_health() -> dict | None:
     """Early-warning signals the counts alone don't show: how long the oldest
     pending row has waited, whether anything is wedged in 'sending', and how
@@ -300,6 +359,7 @@ def queue_health() -> dict | None:
         conn.close()
 
 
+@_memo(min_ttl=60.0)
 def archive_volume_path() -> str | None:
     """A path ON the archive volume, so disk-free is measured where the files
     actually live (often an external drive) instead of on /. Derived from the
@@ -341,6 +401,7 @@ def archiver_loop_phase() -> dict | None:
     )
 
 
+@_memo(min_ttl=5.0)
 def archiver_last_run() -> str | None:
     conn = _connect_ro(SUITE_DB)
     if conn is None:
@@ -414,12 +475,15 @@ def _disk_fields(path: str = "/") -> tuple[str, float] | None:
 # NO_COLOR / TERM=dumb), so `ops health` piped to a log stays clean plain text
 # while `ops watch` and an interactive `ops health` get the full palette. The
 # box-drawing glyphs and bars are plain Unicode, so they survive even uncoloured.
+#
+# The gate is core.termui.color_enabled() — ONE definition suite-wide. It also
+# flips the Windows console into VT mode and, crucially, does NOT require TERM:
+# PowerShell/Windows Terminal leave TERM unset (unlike every macOS shell), and
+# the old `TERM not in ("", "dumb")` check silently monochromed the entire
+# dashboard on this box after the migration.
+from core.termui import color_enabled as _color_enabled
 
-_USE_COLOR = (
-    sys.stdout.isatty()
-    and os.environ.get("TERM", "") not in ("", "dumb")
-    and not os.environ.get("NO_COLOR")
-)
+_USE_COLOR = _color_enabled()
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 # 256-colour palette (widely supported; degrades to plain when color is off).
@@ -500,6 +564,44 @@ def _gauge_color(frac_used: float) -> int:
     return _GREEN if frac_used < 0.8 else _AMBER if frac_used < 0.93 else _RED
 
 
+# ── animation (ops watch) ──
+# render() takes an optional frame counter. None (one-shot `ops health`) draws
+# every glyph static; a counter animates a spinner on live activity and a slow
+# pulse on attention states. Pure presentation — no data depends on it.
+
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _spin(anim: "int | None") -> str:
+    """One spinner frame, or '' when rendering statically."""
+    return _SPINNER[anim % len(_SPINNER)] if anim is not None else ""
+
+
+def _beat(anim: "int | None") -> bool:
+    """A slow ~1 Hz on/off beat for pulsing dots. True on the 'on' phase (and
+    always True when static, so one-shot output shows the bright form)."""
+    return True if anim is None else (anim // 2) % 2 == 0
+
+
+def _service_row(name: str, pid: "int | None", owner: str) -> "str | None":
+    """Self-healing visibility: one row that says whether THIS worker survives
+    a crash/reboot without a human. Silence means healthy (service-managed);
+    every degraded arrangement names its own fix command."""
+    state = job_state(name)
+    if state is None:
+        return _row("service", _c("not installed as a service — run `ops install`",
+                                  _DIM))
+    if state == "disabled":
+        return _row("service", _c("▲ task DISABLED — no boot/crash restart  ·  "
+                                  f"fix: `ops load {name}`", _AMBER))
+    if pid and owner == "foreground":
+        return _row("service", _c("▲ manual run — restart-on-failure inactive  ·  "
+                                  f"prefer: `ops load {name}`", _AMBER))
+    if not pid and state == "enabled":
+        return _row("service", _c(f"task idle — start: `ops load {name}`", _AMBER))
+    return None
+
+
 def _section(name: str, pid: int | None, owner: str,
              rows: "list[str]") -> list[str]:
     """A worker block: a coloured status rail + header (●/name/state/vitals)
@@ -534,21 +636,25 @@ def _cont(value: str) -> str:
     return f"   {' ' * 9} {value}"
 
 
-def render() -> str:
+def render(anim: "int | None" = None) -> str:
     cols = shutil.get_terminal_size((80, 24)).columns
     width = min(cols, _WIDTH)
 
     out: list[str] = []
 
-    # ── header: title · live status · clock ──
+    # ── header: title · live status · clock (+ spinner in watch mode) ──
     live = {n: worker_pid(n) for n in ("dispatcher", "recorder", "archiver")}
     down = [n for n, (pid, _) in live.items() if not pid]
     title = _c("ARCHIVER SUITE", _TITLE, bold=True) + "  " + _c("health", _LABEL)
-    clock = _c(time.strftime("%H:%M:%S"), _WHITE)
+    spin = _spin(anim)
+    clock = ((_c(spin, _CYAN) + " ") if spin else "") \
+        + _c(time.strftime("%H:%M:%S"), _WHITE)
     gap = max(2, width - _vlen(title) - _vlen(clock) - 1)
     out.append(" " + title + " " * gap + clock)
     if down:
-        status = _c("●", _RED) + _c(f" {len(down)} down: {', '.join(down)}", _RED)
+        # Pulse the alarm dot so a down worker is impossible to miss in watch.
+        dot = _c("●", _RED, bold=True) if _beat(anim) else _c("○", _RED)
+        status = dot + _c(f" {len(down)} down: {', '.join(down)}", _RED)
     else:
         status = _c("●", _GREEN) + _c(" all systems nominal", _GREEN)
     out.append(" " + status)
@@ -581,7 +687,10 @@ def render() -> str:
                  _DIM)))
         up = upload_progress_fields()
         if up:
-            rows.append(_row("upload", _c(up["name"], _WHITE)))
+            spin_up = _spin(anim)
+            rows.append(_row("upload",
+                (_c(spin_up + " ", _CYAN) if spin_up else "")
+                + _c(up["name"], _WHITE)))
             rows.append(_cont(
                 _bar(up["frac"], _BAR_W, _CYAN)
                 + _c(f" {up['frac'] * 100:.0f}%", _WHITE, bold=True)
@@ -599,6 +708,9 @@ def render() -> str:
                      f"  ·  {head['platform']}/@{head['username']}", _DIM)))
         if dd["last_fail"]:
             rows.append(_row("last fail", _c(dd["last_fail"][:80], _RED)))
+    svc = _service_row("dispatcher", pid, owner)
+    if svc:
+        rows.append(svc)
     out += _section("dispatcher", pid, owner, rows)
     out.append("")
 
@@ -618,15 +730,20 @@ def render() -> str:
             + _c(f"  ·  {rd['enqueued_24h']:,} in 24h", _DIM)))
     if held:
         # A capture is in flight — name the user (and how long) from the lock.
+        # The REC dot pulses in watch mode, the universal "capturing" idiom.
         user = (info or {}).get("username")
         who = _c(f"@{user}", _GREEN, bold=True) if user else _c("user unknown", _AMBER)
-        line = _c("◉ recording ", _GREEN) + who
+        dot = _c("◉ ", _RED, bold=True) if _beat(anim) else _c("◌ ", _RED)
+        line = dot + _c("recording ", _GREEN) + who
         since = (info or {}).get("started_at")
         if since:
             line += _c(f"  ·  started {_humanize_age(since)}", _DIM)
         rows.append(_row("tiktok", line))
     else:
         rows.append(_row("tiktok", _c("○ idle — listening for live streams", _DIM)))
+    svc = _service_row("recorder", pid, owner)
+    if svc:
+        rows.append(svc)
     out += _section("recorder", pid, owner, rows)
     out.append("")
 
@@ -641,18 +758,22 @@ def render() -> str:
         run_n = phase.get("run_n")
         tag = f"  ·  run #{run_n}" if run_n else ""
         if phase["phase"] == "running":
+            # An active scan gets the spinner in watch mode — motion says
+            # "working" at a glance, stillness would say "wedged".
+            sc = _spin(anim)
+            mark = (_c(sc + " ", _CYAN) if sc else _c("◉ ", _GREEN))
             plat, usr = phase.get("platform"), phase.get("user")
             if plat and usr:
-                head = _c(f"◉ scanning {plat}/@{usr}", _GREEN)
+                head = mark + _c(f"scanning {plat}/@{usr}", _GREEN)
                 extra = tag
             elif plat:
-                head = _c(f"◉ scanning {plat}", _GREEN)
+                head = mark + _c(f"scanning {plat}", _GREEN)
                 extra = tag
             else:
                 # No target yet — between users, or the pre/post-scan phases
                 # (reconcile / ingest / backfill). Show how long we've been here.
                 since = phase.get("since")
-                head = _c("◉ scanning", _GREEN)
+                head = mark + _c("scanning", _GREEN)
                 extra = tag + (f"  ·  {_humanize_age_epoch(since)}" if since else "")
             rows.append(_row("phase", head + _c(extra, _DIM)))
         else:
@@ -671,6 +792,9 @@ def render() -> str:
                 _c(f"{p} ", _TEXT) + _c(f"{n:,}", _BLUE)
                 for p, n in ad["top_pending"])
             rows.append(_row("backlog", tp))
+    svc = _service_row("archiver", pid, owner)
+    if svc:
+        rows.append(svc)
     out += _section("archiver", pid, owner, rows)
     out.append("")
 
