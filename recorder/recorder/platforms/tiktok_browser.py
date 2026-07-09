@@ -161,10 +161,14 @@ async def _dismiss_age_prompt(page) -> None:
 
 
 def _pick_best(urls: list[str]) -> str:
-    """Prefer HLS (.m3u8) over FLV — HLS survives reconnects better in
-    yt-dlp's ffmpeg downloader. Within a kind, first-seen wins."""
+    """Prefer FLV (.flv) over HLS (.m3u8). TikTok's HLS pull edges
+    (`pull-hls-*`) stall the response from this deployment while the FLV edges
+    (`pull-f5-*`) stream fine, and FLV's single long-lived connection avoids the
+    per-segment 404s / m3u8 rotation that split HLS recordings. yt-dlp's ffmpeg
+    downloader ingests FLV natively. Kept in sync with tiktok._extract_pull_url.
+    Within a kind, first-seen wins; HLS is the fallback when no FLV appears."""
     for u in urls:
-        if ".m3u8" in u:
+        if ".flv" in u:
             return u
     return urls[0]
 

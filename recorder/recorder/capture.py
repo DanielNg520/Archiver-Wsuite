@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -92,7 +93,33 @@ class StreamCapture:
         )
 
         cmd = [
-            "yt-dlp",
+            # Invoke yt-dlp via OUR OWN interpreter (`sys.executable -m yt_dlp`),
+            # never the bare `yt-dlp` command. yt_dlp is a dependency inside the
+            # recorder's venv, so this always runs a working copy. A bare
+            # `yt-dlp` resolves through PATH, and on the target box PATH's first
+            # match was a stale `pip install --user` shim in an unrelated app's
+            # sandboxed Python whose yt_dlp module had been removed — it exited
+            # instantly with `ModuleNotFoundError: No module named 'yt_dlp'`,
+            # producing zero bytes that the state machine read as a dead stream
+            # (the "capture exited rc=1 but still LIVE" loop). Pinning to
+            # sys.executable makes the recorder immune to whatever else is on
+            # PATH. (ffmpeg is still resolved via PATH by yt-dlp's downloader —
+            # it is not a Python module — but no broken ffmpeg shadowed it.)
+            sys.executable, "-m", "yt_dlp",
+            # --socket-timeout: cap a hung read at 10s instead of yt-dlp's 20s
+            # default. TikTok's pull-HLS edges (pull-hls-*) sometimes complete
+            # the TLS handshake but never return a body — the real fix is to pull
+            # FLV instead of HLS (see tiktok._extract_pull_url), but if an FLV
+            # edge ever stalls too this bounds the dead time before the reconnect
+            # loop re-resolves a fresh edge. The UA + Referer are defensive (a
+            # player-like request never hurts and forwards into the child
+            # ffmpeg); they did NOT fix the HLS stall on their own — edge choice
+            # did — but are cheap to keep.
+            "--user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--referer", "https://www.tiktok.com/",
+            "--socket-timeout", "10",
             "--downloader", "ffmpeg",
             # ffmpeg (our live-HLS downloader) does NOT retry the HTTP transport
             # on its own — any socket stall, rotated m3u8, or mid-stream EOF ends
@@ -245,7 +272,21 @@ class StreamCapture:
             return
         media = self.output_files()
         if not media:
-            self._log_path.unlink(missing_ok=True)
+            # TEMP DIAGNOSTIC (remove once the intermittent zero-byte failures
+            # are understood): a dead-stream run is exactly the case we can't
+            # otherwise inspect — normally the log is deleted here, so the real
+            # yt-dlp/ffmpeg error is lost. Instead RENAME it to a distinctive
+            # *_DEADSTREAM.log kept in the run dir so a failed capture leaves its
+            # diagnostics behind. These won't be cleaned by cleanup_sidecars (no
+            # media to pair with) — delete them manually after debugging.
+            try:
+                keep = self._log_path.with_name(
+                    self._log_path.stem.replace("_ytdlp", "") + "_DEADSTREAM.log")
+                if self._log_path.exists():
+                    self._log_path.rename(keep)
+                    log.warning("capture: dead-stream diagnostics kept at %s", keep)
+            except OSError as e:
+                log.debug("capture: could not keep dead-stream log: %s", e)
             self._log_path = None
             return
         target = media[0].with_name(media[0].stem + "_ytdlp.log")

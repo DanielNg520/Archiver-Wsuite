@@ -145,7 +145,7 @@ class TikTokLivePlatform:
             # needs no room_id, and returns the same payload shape.
             info = await asyncio.wait_for(
                 client.web.fetch_room_info(unique_id=uid), _CHECK_TIMEOUT_S)
-            url = _extract_hls_url(info)
+            url = _extract_pull_url(info)
             if not url:
                 raise RuntimeError(
                     f"could not extract HLS URL for @{uid} from room info; "
@@ -189,26 +189,38 @@ class TikTokLivePlatform:
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _extract_hls_url(room_info: dict) -> str | None:
-    """Pull the best HLS URL out of TikTok room info. Tries flv/hls map
-    variants in priority order. Returns None if nothing matches."""
+def _extract_pull_url(room_info: dict) -> str | None:
+    """Pull the best stream URL out of TikTok room info.
+
+    PREFER FLV over HLS. TikTok serves two edge families for a live: the
+    HLS playlist edges (`pull-hls-*.tiktokcdn.com`) and the continuous-FLV
+    edges (`pull-f5-*.tiktokcdn.com`). Observed in prod (Beelink box, SG-origin
+    streams): the HLS edges complete the TLS handshake but then STALL the
+    playlist/segment response — yt-dlp hangs on "Downloading webpage" until its
+    socket timeout, exits rc=1 with zero bytes, and the state machine reads that
+    as a dead stream. The FLV edge for the SAME stream returns 200 and streams
+    immediately. FLV is also a single long-lived connection (no per-segment
+    fetches, no m3u8 rotation), so it sidesteps the segment-404 and URL-rotation
+    reconnect churn entirely. yt-dlp's ffmpeg downloader ingests FLV natively.
+    HLS is kept as a fallback for the case where only it is present.
+    Returns None if nothing matches."""
     try:
         stream = room_info.get("stream_url", {})
-        # Prefer explicit HLS pull URL.
-        hls = stream.get("hls_pull_url")
-        if hls:
-            return hls
-        # Multi-quality HLS map.
-        hls_map = stream.get("hls_pull_url_map") or {}
-        if isinstance(hls_map, dict) and hls_map:
-            # Pick the highest-listed quality deterministically.
-            return next(iter(hls_map.values()))
-        # Fallback: FLV (yt-dlp can still ingest it).
+        # Prefer continuous FLV (most reliable edge family here).
         flv = stream.get("flv_pull_url")
         if isinstance(flv, dict) and flv:
             return next(iter(flv.values()))
         if isinstance(flv, str) and flv:
             return flv
+        # Fallback: explicit HLS pull URL.
+        hls = stream.get("hls_pull_url")
+        if hls:
+            return hls
+        # Fallback: multi-quality HLS map.
+        hls_map = stream.get("hls_pull_url_map") or {}
+        if isinstance(hls_map, dict) and hls_map:
+            # Pick the highest-listed quality deterministically.
+            return next(iter(hls_map.values()))
     except AttributeError:
         return None
     return None

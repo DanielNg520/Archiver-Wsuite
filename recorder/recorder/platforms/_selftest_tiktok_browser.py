@@ -71,10 +71,10 @@ def test_pick_best():
     flv = "https://pull-a.tiktokcdn.com/stream-1.flv?s=1"
     flv2 = "https://pull-b.tiktokcdn.com/stream-2.flv?s=2"
     hls = "https://pull-c.tiktokcdn.com/stream-1.m3u8?s=3"
-    check(tb._pick_best([flv, hls]) == hls, "prefers HLS even when FLV seen first")
-    check(tb._pick_best([hls, flv]) == hls, "keeps HLS when HLS seen first")
+    check(tb._pick_best([hls, flv]) == flv, "prefers FLV even when HLS seen first")
+    check(tb._pick_best([flv, hls]) == flv, "keeps FLV when FLV seen first")
     check(tb._pick_best([flv, flv2]) == flv, "FLV-only: first-seen wins")
-    check(tb._pick_best([hls]) == hls, "single HLS returned")
+    check(tb._pick_best([hls]) == hls, "single HLS returned (fallback)")
 
 
 # ── pure helper: _netscape_to_playwright ──────────────────────────────────
@@ -228,12 +228,12 @@ def test_resolve_flow():
         check("sessionid" in injected, "session cookies injected into context")
         check(browser.closed, "browser closed after resolve")
 
-        # 2) Both FLV and HLS present → HLS wins (preference + grace)
+        # 2) Both FLV and HLS present → FLV wins (preference + grace)
         hls = "https://pull-c.tiktokcdn.com/stage/stream-1.m3u8?sign=a"
-        page2 = _FakePage([flv, hls])
+        page2 = _FakePage([hls, flv])
         _install_fake_pw(page2)
         url2 = asyncio.run(tb._resolve_async("u", cf, timeout_s=3))
-        check(url2 == hls, "prefers HLS when both FLV and HLS captured")
+        check(url2 == flv, "prefers FLV when both FLV and HLS captured")
 
         # 3) No pull URLs emitted → RuntimeError after timeout
         page3 = _FakePage(["https://www.tiktok.com/@u/live"])
