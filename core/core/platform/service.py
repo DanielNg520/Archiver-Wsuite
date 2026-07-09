@@ -59,6 +59,7 @@ def _log_paths(tag: str) -> "tuple[Path, Path]":
 
 if os.name == "nt":                                   # ── Windows / Task Scheduler ──
 
+    import csv as _csv
     import getpass
     import tempfile
     from xml.sax.saxutils import escape as _xesc
@@ -67,7 +68,10 @@ if os.name == "nt":                                   # ── Windows / Task Sc
         return _paths.config_dir(_paths.SUITE) / "logs"
 
     def _run(cmd: list[str]) -> "subprocess.CompletedProcess":
-        return subprocess.run(cmd, capture_output=True, text=True)
+        # errors="replace": schtasks output is localized text in the OEM
+        # codepage; a non-UTF8 byte must not raise mid-read under PYTHONUTF8=1.
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              errors="replace")
 
     def _task_xml(spec: JobSpec) -> str:
         out, err = _log_paths(spec.tag)
@@ -193,6 +197,34 @@ if os.name == "nt":                                   # ── Windows / Task Sc
         # None to signal "no managed pid available on this OS".
         return None
 
+    def job_state(label: str) -> "str | None":
+        """'running' | 'enabled' (registered, not currently running) |
+        'disabled' | None (not installed). Lets the monitor distinguish a
+        service-managed worker (crash-restart protection active) from one
+        started by hand, and surface a task someone disabled and forgot.
+
+        Status text comes from `schtasks /FO CSV` column 3 and is LOCALIZED;
+        this parse targets the en-US strings (the deployment target). An
+        unrecognized status degrades to 'enabled' — the definition exists —
+        rather than to a false alarm."""
+        r = _run(["schtasks", "/Query", "/TN", label, "/FO", "CSV", "/NH"])
+        if r.returncode != 0:
+            return None
+        for line in r.stdout.splitlines():
+            try:
+                fields = next(_csv.reader([line]))
+            except (StopIteration, _csv.Error):
+                continue
+            if len(fields) < 3:
+                continue
+            status = fields[2].strip().lower()
+            if status == "running":
+                return "running"
+            if status == "disabled":
+                return "disabled"
+            return "enabled"                      # "Ready", or a localized string
+        return None
+
 else:                                                 # ── POSIX / launchd ──
 
     _LAUNCH_AGENTS = Path("~/Library/LaunchAgents").expanduser()
@@ -314,3 +346,19 @@ else:                                                 # ── POSIX / launchd �
                 digits = "".join(c for c in s if c.isdigit())
                 return int(digits) if digits else None
         return None
+
+    def job_state(label: str) -> "str | None":
+        """'running' | 'enabled' | 'disabled' | None — the Windows twin's
+        contract, mapped onto launchd: a listed job with a PID is running,
+        listed without one is loaded/enabled, a plist on disk that launchctl
+        doesn't know is unloaded (≈ disabled), no plist means not installed."""
+        if running_pid(label) is not None:
+            return "running"
+        try:
+            out = subprocess.run(["launchctl", "list", label],
+                                 capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode == 0:
+            return "enabled"
+        return "disabled" if definition_exists(label) else None

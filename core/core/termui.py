@@ -42,14 +42,46 @@ _COLORS = {
 }
 
 
+def ensure_vt() -> bool:
+    """Enable ANSI/VT escape processing on the Windows console; True if the
+    stream can render ANSI. POSIX terminals always can (True unconditionally).
+
+    Windows consoles need ENABLE_VIRTUAL_TERMINAL_PROCESSING set per handle:
+    Windows Terminal pre-enables it, legacy conhost does not — without this a
+    colorized report prints raw `←[38;5;81m` garbage there. Idempotent and
+    cheap (two kernel32 calls), safe to call every render. Returns False when
+    stdout isn't a console (redirected → the caller should not emit ANSI)."""
+    if os.name != "nt":
+        return True
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    _ENABLE_VT = 0x0004
+    ok = False
+    for std in (-11, -12):                    # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        h = k32.GetStdHandle(std)
+        mode = ctypes.c_uint32()
+        if not h or not k32.GetConsoleMode(h, ctypes.byref(mode)):
+            continue                          # redirected / not a console
+        if mode.value & _ENABLE_VT or k32.SetConsoleMode(h, mode.value | _ENABLE_VT):
+            ok = True
+    return ok
+
+
 def color_enabled() -> bool:
-    """True when ANSI colour is safe: a real TTY with NO_COLOR unset."""
+    """True when ANSI colour is safe: a real TTY with NO_COLOR unset (and, on
+    Windows, VT processing successfully enabled). Deliberately does NOT require
+    TERM — macOS shells always export it, but PowerShell/Windows Terminal leave
+    it unset, and gating on it silently monochromes every worker feed there."""
     if os.environ.get("NO_COLOR") is not None:
         return False
+    if os.environ.get("TERM") == "dumb":
+        return False
     try:
-        return sys.stdout.isatty()
+        if not sys.stdout.isatty():
+            return False
     except (AttributeError, ValueError):
         return False
+    return ensure_vt()
 
 
 def paint(text: str, *styles: str, on: bool | None = None) -> str:

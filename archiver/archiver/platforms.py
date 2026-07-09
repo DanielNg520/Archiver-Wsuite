@@ -31,6 +31,7 @@ import abc
 import logging
 import sqlite3
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -684,7 +685,16 @@ class TikTokPlatform(Platform):
         # yt-dlp owns videos and gallery-dl owns photos, with no overlap.
         skip = ",".join(repr(e) for e in self._GDL_SKIP_EXTS)
         cmd = [
-            "gallery-dl",
+            # Invoke gallery-dl via OUR OWN interpreter, never the bare
+            # `gallery-dl` command. gallery_dl is a dependency of this venv
+            # (the X strategy imports it in-process), so this always runs a
+            # working copy — a bare name resolves through PATH, where a stale
+            # shim from an unrelated Python can shadow it (exactly how the
+            # recorder's bare `yt-dlp` broke: a dead `pip install --user` shim
+            # was first on PATH). Worse, this path swallows FileNotFoundError
+            # as "skip photo posts", so a broken shim would silently drop a
+            # feature rather than fail loudly.
+            sys.executable, "-m", "gallery_dl",
             "--cookies",     self.tt_cfg.cookies_file,
             "--directory",   str(user_dir),
             "--filename",    "{date:%Y%m%d}_{id}_{num}.{extension}",

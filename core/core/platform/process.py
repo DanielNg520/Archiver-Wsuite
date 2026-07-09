@@ -85,26 +85,104 @@ if os.name == "nt":                                   # ── Windows backend �
     import csv
     import io
     import json
+    import time as _time
+
+    # ── stats via ctypes (no subprocess) ──
+    # The old implementation shelled out to `tasklist` per call — at ops
+    # watch's refresh cadence that is a process spawn per worker per frame,
+    # forever, on a box meant to run 24/7. kernel32 answers the same questions
+    # in-process AND better: uptime + cumulative CPU from GetProcessTimes and
+    # working-set from K32GetProcessMemoryInfo (both fine under the
+    # QUERY_LIMITED_INFORMATION right we already use for pid_alive).
+
+    class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    _EPOCH_AS_FILETIME = 116444736000000000     # 1970-01-01 in 100ns-since-1601
+
+    def _ft_to_100ns(ft: wintypes.FILETIME) -> int:
+        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+    def _fmt_span(seconds: float) -> str:
+        s = int(max(0, seconds))
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        if h:
+            return f"{h}h{m:02d}m"
+        if m:
+            return f"{m}m{sec:02d}s"
+        return f"{sec}s"
 
     def proc_stats(pid: int) -> "str | None":
-        # tasklist gives image + mem; CPU% and uptime aren't cheaply available
-        # from a single call, so report memory (the field ops most cares about).
         try:
-            out = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pid = int(pid)
+        except (ValueError, TypeError):
             return None
-        line = out.stdout.strip().splitlines()
-        if out.returncode != 0 or not line or "No tasks" in out.stdout:
+        handle = _kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
             return None
         try:
-            fields = next(csv.reader([line[0]]))
-            mem = fields[4].replace("\xa0", " ")     # "110,240 K"
-        except (StopIteration, IndexError):
+            creation, exit_, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            if not _kernel32.GetProcessTimes(
+                    handle, ctypes.byref(creation), ctypes.byref(exit_),
+                    ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            started = (_ft_to_100ns(creation) - _EPOCH_AS_FILETIME) / 1e7
+            up = _fmt_span(_time.time() - started)
+            cpu = _fmt_span((_ft_to_100ns(kernel) + _ft_to_100ns(user)) / 1e7)
+            pmc = _PROCESS_MEMORY_COUNTERS()
+            pmc.cb = ctypes.sizeof(pmc)
+            mem = ""
+            if _kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                mem = f", mem {pmc.WorkingSetSize // (1024 * 1024)}MB"
+            return f"up {up}, cpu {cpu}{mem}"
+        finally:
+            _kernel32.CloseHandle(handle)
+
+    def _working_set(pid: int) -> int:
+        """Working-set bytes for a pid (0 when unreadable). Discovery uses it
+        to tell a real worker interpreter from its venv-redirector twin."""
+        handle = _kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return 0
+        try:
+            pmc = _PROCESS_MEMORY_COUNTERS()
+            pmc.cb = ctypes.sizeof(pmc)
+            if _kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                return int(pmc.WorkingSetSize)
+            return 0
+        finally:
+            _kernel32.CloseHandle(handle)
+
+    def _image_basename(pid: int) -> "str | None":
+        """Executable basename (lowercase) for a pid, or None. Used to verify a
+        cached worker pid hasn't been recycled for an unrelated process."""
+        handle = _kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
             return None
-        return f"mem {mem}"
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not _kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)):
+                return None
+            return buf.value.rsplit("\\", 1)[-1].lower()
+        finally:
+            _kernel32.CloseHandle(handle)
 
     def _cmdline_matches(cmdline: str, command: str, action: str) -> bool:
         """Does this process command line run `<command> <action>`? Token-wise
@@ -123,65 +201,136 @@ if os.name == "nt":                                   # ── Windows backend �
                 return True
         return False
 
-    def _pids_via_wmic(command: str, action: str) -> "int | None":
-        out = subprocess.run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
-            capture_output=True, text=True, timeout=6,
-        )
-        if out.returncode != 0:
-            return None
-        for row in out.stdout.splitlines():
-            if command not in row or action not in row:
-                continue
-            # CSV rows are Node,CommandLine,ProcessId
-            parts = row.rsplit(",", 1)
-            if len(parts) != 2 or not parts[1].strip().isdigit():
-                continue
-            if _cmdline_matches(parts[0], command, action):
-                return int(parts[1].strip())
-        return None
+    # ── one process-table snapshot, shared and short-lived ──
+    # Enumerating command lines needs wmic (removed on Win11 24H2+) or a
+    # PowerShell CIM call (~1s of startup EACH). ops health probes THREE
+    # workers per render and ops watch renders continuously, so per-worker
+    # spawns are the dominant cost of monitoring. Three layers keep it cheap:
+    #   1. a per-(command,action) pid memo, revalidated with two ctypes calls
+    #      (alive + image name) — the steady-state path, no subprocess at all;
+    #   2. a whole-table snapshot with a short TTL, so one spawn serves all
+    #      workers of a render burst (discovery / a worker died);
+    #   3. wmic tried once, then remembered as missing — on 24H2+ it would
+    #      otherwise add a failed spawn to every discovery.
+    _SNAP_TTL_S = 3.0
+    _snap: "tuple[float, list[tuple[int, str]]] | None" = None
+    _wmic_missing = False
+    _pid_memo: "dict[tuple[str, str], int]" = {}
 
-    def _pids_via_powershell(command: str, action: str) -> "int | None":
-        # wmic was removed from Windows 11 24H2+; CIM via PowerShell is the
-        # supported replacement and ships on every Windows this suite targets.
-        script = ("Get-CimInstance Win32_Process | "
+    def _snapshot_wmic() -> "list[tuple[int, str]] | None":
+        global _wmic_missing
+        if _wmic_missing:
+            return None
+        try:
+            # errors="replace": a stray non-UTF8 byte in ANY process's command
+            # line must mangle that line only, not kill the whole snapshot
+            # (text=True alone raises UnicodeDecodeError in the reader thread).
+            out = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine",
+                 "/FORMAT:CSV"],
+                capture_output=True, text=True, errors="replace", timeout=6,
+            )
+        except FileNotFoundError:
+            _wmic_missing = True                 # removed on Win11 24H2+
+            return None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode != 0:
+            _wmic_missing = True                 # present but broken: same cure
+            return None
+        rows: "list[tuple[int, str]]" = []
+        for row in out.stdout.splitlines():
+            parts = row.rsplit(",", 1)           # Node,CommandLine,ProcessId
+            if len(parts) == 2 and parts[1].strip().isdigit():
+                rows.append((int(parts[1].strip()), parts[0]))
+        return rows
+
+    def _snapshot_powershell() -> "list[tuple[int, str]] | None":
+        # [Console]::OutputEncoding pins the pipe to UTF-8 — PowerShell 5.1
+        # otherwise emits the OEM codepage, and one process with a non-ASCII
+        # command line (any localized app) corrupts the decode. errors=
+        # "replace" backstops even that: a mangled foreign cmdline is fine,
+        # a crashed monitor is not.
+        script = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+                  "Get-CimInstance Win32_Process | "
                   "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=15,
-        )
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 script],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
         if out.returncode != 0 or not out.stdout.strip():
             return None
         try:
-            rows = json.loads(out.stdout)
+            data = json.loads(out.stdout)
         except ValueError:
             return None
-        if isinstance(rows, dict):
-            rows = [rows]
-        for row in rows:
-            cmdline = row.get("CommandLine") or ""
-            if command in cmdline and action in cmdline \
-                    and _cmdline_matches(cmdline, command, action):
-                try:
-                    return int(row["ProcessId"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-        return None
+        if isinstance(data, dict):
+            data = [data]
+        rows: "list[tuple[int, str]]" = []
+        for row in data:
+            try:
+                rows.append((int(row["ProcessId"]), row.get("CommandLine") or ""))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return rows
+
+    def _process_table() -> "list[tuple[int, str]]":
+        global _snap
+        now = _time.time()
+        if _snap is not None and now - _snap[0] < _SNAP_TTL_S:
+            return _snap[1]
+        rows = _snapshot_wmic()
+        if rows is None:
+            rows = _snapshot_powershell() or []
+        _snap = (now, rows)
+        return rows
 
     def find_worker_pid(command: str, action: str) -> "int | None":
-        # Self-healing probe order: wmic (fast, but removed on Win11 24H2+) →
-        # PowerShell CIM (always present). Each layer degrades to the next on
-        # any failure so health reporting never hard-fails on tooling drift.
-        try:
-            pid = _pids_via_wmic(command, action)
-            if pid is not None:
-                return pid
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        try:
-            return _pids_via_powershell(command, action)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
+        # Steady state: revalidate the memoized pid with two ctypes calls. The
+        # image-name check guards against Windows recycling the pid for an
+        # unrelated process; a worker is either its venv interpreter or a
+        # launcher shim named after the command.
+        key = (command, action)
+        cached = _pid_memo.get(key)
+        if cached is not None:
+            image = _image_basename(cached)
+            if image is not None and pid_alive(cached) and (
+                    image.startswith("python")
+                    or image in (command.lower(), f"{command.lower()}.exe")):
+                return cached
+            _pid_memo.pop(key, None)
+
+        # Discovery: one shared snapshot. Several processes can match
+        # `<command> <action>`: the console-script launcher shim
+        # (`dispatcher.exe start`), the venv python.exe REDIRECTOR (on Windows
+        # it relays to the base interpreter as a child with an IDENTICAL
+        # command line), and the real interpreter doing the work. Stats read
+        # off a relay describe a ~1 MB stub, so prefer python-image candidates
+        # and, among those indistinguishable twins, the largest working set —
+        # a loaded worker dwarfs its redirector.
+        python_best: "tuple[int, int] | None" = None      # (working_set, pid)
+        shim = None
+        for pid, cmdline in _process_table():
+            if command not in cmdline or action not in cmdline:
+                continue
+            if not _cmdline_matches(cmdline, command, action):
+                continue
+            head = cmdline.split(None, 1)[0].strip('"').lower() if cmdline else ""
+            if "python" in head.rsplit("\\", 1)[-1]:
+                ws = _working_set(pid)
+                if python_best is None or ws > python_best[0]:
+                    python_best = (ws, pid)
+            elif shim is None:
+                shim = pid
+        winner = python_best[1] if python_best is not None else shim
+        if winner is not None:
+            _pid_memo[key] = winner
+        return winner
 
 else:                                                 # ── POSIX backend ──
 
