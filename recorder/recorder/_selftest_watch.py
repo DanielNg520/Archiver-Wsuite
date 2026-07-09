@@ -56,7 +56,11 @@ def test_active_recording(tmp: Path) -> None:
     check(watch._active_recording(cfg) is None,
           "no recordings dir / no files → None")
 
-    _touch(rec / "alice" / "alice_100.mp4", age_s=0, size=4096)
+    # alice is 5s old (well inside the recency window) rather than 0s: bob_77
+    # below is created at age 0 and must be STRICTLY newer — two age-0 files
+    # can tie within the filesystem timestamp tick (seen on NTFS), making
+    # "most recently touched" a coin flip.
+    _touch(rec / "alice" / "alice_100.mp4", age_s=5, size=4096)
     _touch(rec / "bob" / "bob_50.mp4", age_s=600)            # stale (10 min old)
     _touch(rec / "alice" / "alice_100_ytdlp.log", age_s=0)   # sidecar, not video
     act = watch._active_recording(cfg)

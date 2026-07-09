@@ -30,8 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 # ── tiny test harness ─────────────────────────────────────────────────────────
@@ -192,12 +195,16 @@ def test_dispatcher_instance_lock_seam(tmp: Path) -> None:
     from dispatcher.instance_lock import DispatcherInstanceLock
 
     session = str(tmp / "telegram-session")
+    # The child prints its OWN os.getpid(): on Windows a venv's python.exe is a
+    # redirector that spawns the base interpreter as a subprocess, so Popen.pid
+    # is the launcher, not the interpreter that holds the lock. The lock file
+    # records the interpreter pid (correctly) — assert against that.
     code = (
-        "import sys,time;"
+        "import os,sys,time;"
         "sys.path.insert(0,'dispatcher');"
         "from dispatcher.instance_lock import DispatcherInstanceLock;"
         f"lock=DispatcherInstanceLock({session!r});"
-        "lock.__enter__();print('locked',flush=True);time.sleep(30)"
+        "lock.__enter__();print(f'locked {os.getpid()}',flush=True);time.sleep(30)"
     )
     child = subprocess.Popen(
         [sys.executable, "-c", code],
@@ -206,10 +213,12 @@ def test_dispatcher_instance_lock_seam(tmp: Path) -> None:
         text=True,
     )
     try:
-        ok(child.stdout.readline().strip() == "locked",
+        first = child.stdout.readline().split()
+        ok(first and first[0] == "locked",
            "first dispatcher process acquires the session lock")
+        holder = int(first[1])
         probe = DispatcherInstanceLock(session)
-        ok(probe.holder_pid() == child.pid,
+        ok(probe.holder_pid() == holder,
            "holder_pid() probe names the owning process")
         err = ""
         try:
@@ -218,12 +227,26 @@ def test_dispatcher_instance_lock_seam(tmp: Path) -> None:
         except RuntimeError as e:
             acquired, err = False, str(e)
         ok(not acquired, "second dispatcher process is rejected")
-        ok(str(child.pid) in err,
+        ok(str(holder) in err,
            "rejection message names the holding pid (diagnosable, not opaque)")
     finally:
         child.terminate()
         child.wait(timeout=5)
+        # Windows venv redirector again: terminating `child` killed the
+        # launcher; the interpreter that actually holds the lock is its child
+        # and would sleep on for 30s. Kill the true holder too (no-op on
+        # POSIX, where child IS the holder and is already gone).
+        try:
+            os.kill(holder, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
 
+    # The kernel frees the lock when the holder dies, but process teardown is
+    # asynchronous — poll briefly instead of asserting on a race.
+    deadline = time.time() + 5
+    while (DispatcherInstanceLock(session).holder_pid() is not None
+           and time.time() < deadline):
+        time.sleep(0.1)
     ok(DispatcherInstanceLock(session).holder_pid() is None,
        "holder_pid() reports no owner once the process is gone")
     with DispatcherInstanceLock(session):

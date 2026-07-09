@@ -57,13 +57,16 @@ def copy_bytes(src: Path, dst: Path) -> None:
 # ── 1. ingest re-arms a failed twin ───────────────────────────────────────────
 
 def test_rearm_failed_twin(tmp: Path) -> None:
+    # Uses a REAL source (archiver): since the "drop-zones leave no trace"
+    # change, orphaned (chat_id-folder) ingest skips dedup-collapse entirely,
+    # so the re-arm contract only exists for real sources.
     print("\n── ingest re-arms a FAILED twin ──")
     store = ItemStore.open(str(tmp / "rearm.db"))
 
     p1 = tmp / "first.mp4"
     make_video(p1)
-    res1 = register_file(store, p1, source="orphaned", platform="orphaned",
-                         username="100", chat_id="100", caption="first.mp4")
+    res1 = register_file(store, p1, source="archiver", platform="x",
+                         username="u1", caption="first.mp4")
     check(res1.outcome is IngestOutcome.INSERTED, "first copy inserted")
 
     # Burn the row's retry budget → terminal 'failed'.
@@ -75,8 +78,8 @@ def test_rearm_failed_twin(tmp: Path) -> None:
     # Re-introduce identical bytes under a different name.
     p2 = tmp / "second.mp4"
     copy_bytes(p1, p2)
-    res2 = register_file(store, p2, source="orphaned", platform="orphaned",
-                         username="100", chat_id="100", caption="second.mp4")
+    res2 = register_file(store, p2, source="archiver", platform="x",
+                         username="u1", caption="second.mp4")
     check(res2.outcome is IngestOutcome.REARMED,
           f"re-introduced copy re-armed the failed twin (got {res2.outcome})")
     check(res2.inserted, "REARMED counts as newly enqueued (.inserted)")
@@ -98,8 +101,8 @@ def test_cancel_survives_reintroduction(tmp: Path) -> None:
 
     p1 = tmp / "first.mp4"
     make_video(p1)
-    res1 = register_file(store, p1, source="orphaned", platform="orphaned",
-                         username="100", chat_id="100", caption="first.mp4")
+    res1 = register_file(store, p1, source="archiver", platform="x",
+                         username="u1", caption="first.mp4")
     check(res1.outcome is IngestOutcome.INSERTED, "first copy inserted")
 
     # Deliberate abort: cancel parks the row in 'failed' with CANCELLED_MARKER.
@@ -109,8 +112,8 @@ def test_cancel_survives_reintroduction(tmp: Path) -> None:
     # Re-introduce identical bytes — must NOT resurrect the deliberate abort.
     p2 = tmp / "second.mp4"
     copy_bytes(p1, p2)
-    res2 = register_file(store, p2, source="orphaned", platform="orphaned",
-                         username="100", chat_id="100", caption="second.mp4")
+    res2 = register_file(store, p2, source="archiver", platform="x",
+                         username="u1", caption="second.mp4")
     check(res2.outcome is not IngestOutcome.REARMED,
           f"cancelled twin NOT re-armed by re-introduction (got {res2.outcome})")
     check(store.get(res1.item_id).status == "failed",
@@ -133,17 +136,41 @@ def test_pending_twin_still_dedups(tmp: Path) -> None:
 
     p1 = tmp / "a.mp4"
     make_video(p1)
-    register_file(store, p1, source="orphaned", platform="orphaned",
-                  username="200", chat_id="200", caption="a.mp4")
+    register_file(store, p1, source="archiver", platform="x",
+                  username="u2", caption="a.mp4")
 
     p2 = tmp / "b.mp4"
     copy_bytes(p1, p2)
-    res = register_file(store, p2, source="orphaned", platform="orphaned",
-                        username="200", chat_id="200", caption="b.mp4")
+    res = register_file(store, p2, source="archiver", platform="x",
+                        username="u2", caption="b.mp4")
     check(res.outcome in (IngestOutcome.DEDUP_DROPPED, IngestOutcome.DEDUP_ADOPTED),
           f"pending twin → dedup, not re-arm (got {res.outcome})")
     check(not res.inserted, "dedup does not count as a new enqueue")
     check(len(store.list_items(limit=100)) == 1, "still one row")
+    store.close()
+
+
+# ── 2b. orphaned drop-zone OPTS OUT of dedup (leaves no trace) ────────────────
+
+def test_orphaned_skips_dedup(tmp: Path) -> None:
+    print("\n── orphaned drop-zone re-add always re-enqueues (no dedup) ──")
+    store = ItemStore.open(str(tmp / "orphaned.db"))
+
+    p1 = tmp / "drop_a.mp4"
+    make_video(p1)
+    res1 = register_file(store, p1, source="orphaned", platform="orphaned",
+                         username="100", chat_id="100", caption="drop_a.mp4")
+    check(res1.outcome is IngestOutcome.INSERTED, "first drop inserted")
+
+    # Identical bytes re-dropped under a new name: a drop-zone must upload it
+    # AGAIN (leave-no-trace contract), never suppress it against the twin.
+    p2 = tmp / "drop_b.mp4"
+    copy_bytes(p1, p2)
+    res2 = register_file(store, p2, source="orphaned", platform="orphaned",
+                         username="100", chat_id="100", caption="drop_b.mp4")
+    check(res2.outcome is IngestOutcome.INSERTED,
+          f"re-added identical bytes re-enqueued, not deduped (got {res2.outcome})")
+    check(len(store.list_items(limit=100)) == 2, "two independent rows exist")
     store.close()
 
 
@@ -218,6 +245,7 @@ def main() -> None:
         test_rearm_failed_twin(tmp)
         test_cancel_survives_reintroduction(tmp)
         test_pending_twin_still_dedups(tmp)
+        test_orphaned_skips_dedup(tmp)
         test_reconcile_converts_ts(tmp)
         test_instance_lock(tmp)
     print(f"\nALL PASS ({_checks} checks)")
