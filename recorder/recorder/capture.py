@@ -43,11 +43,22 @@ PROCESS CONTROL (guide lesson, kept):
   against a threading.Event so the main thread can terminate cleanly.
 
 OUTPUT DISCOVERY:
-  yt-dlp's final filename isn't perfectly predictable (extension depends
-  on container negotiation). We snapshot the output dir's mtime before
-  start and, after the process exits, return files in our run's directory
-  newer than that snapshot. Simpler and more robust than parsing yt-dlp
-  stdout.
+  yt-dlp's final filename isn't perfectly predictable (the %(epoch)s and the
+  extension are chosen by yt-dlp at runtime). Rather than guess from the
+  directory, we have yt-dlp report the FINAL path of every completed file into
+  a per-run manifest (`--print-to-file after_move:filepath`) and read that back
+  authoritatively. This matters because a concurrent media_prep of the same
+  recording litters .tgprep/_segments.txt scratch into the same run dir; an
+  mtime-window directory scan can't tell that scratch from the recording and
+  used to sweep it in, enqueuing phantom "lost recording" rows. The manifest
+  lists only what THIS capture wrote, so scratch and prior-run leftovers can
+  never be mistaken for a recording.
+
+  A directory scan survives only as a scoped fallback: while a download is in
+  progress (byte measurement for the dead-stream guard) and on a hard kill /
+  Ctrl-C (after_move never fires, but --no-part leaves a usable partial), the
+  manifest is empty. The fallback is newer-than-start and excludes sidecars +
+  media_prep scratch so it recovers the partial without resurrecting byproducts.
 """
 
 from __future__ import annotations
@@ -79,12 +90,25 @@ class StreamCapture:
         self._started_at: float = 0.0
         self._log_fh = None  # yt-dlp stdout/stderr sink; closed in wait()
         self._log_path: Path | None = None  # the sink's path, for finalize()
+        # yt-dlp --print-to-file sink: the exact final path of each completed
+        # output. The authoritative source for output_files() (see module doc).
+        self._manifest_path: Path | None = None
 
     def start(self, stream_url: str, username: str) -> None:
         """Launch yt-dlp. Files land in output_dir/<username>/."""
         self._run_dir = self.output_dir / username
         self._run_dir.mkdir(parents=True, exist_ok=True)
         self._started_at = time.time()
+
+        # Fresh output manifest per run. Unlink any leftover at this exact path
+        # first: a crashed prior run that landed on the same wall-clock second
+        # must not seed this run's discovery with stale phantom paths.
+        self._manifest_path = (
+            self._run_dir / f"{username}_{int(self._started_at)}_files.txt")
+        try:
+            self._manifest_path.unlink()
+        except OSError:
+            pass
 
         # %(epoch)s keeps successive recordings of the same user from
         # colliding; the dispatcher later sends each file individually.
@@ -138,6 +162,14 @@ class StreamCapture:
             "--no-part",
             "--retries", "infinite",
             "--fragment-retries", "infinite",
+            # Authoritative output discovery: append the FINAL path of each
+            # completed file (after any move/merge) to our per-run manifest.
+            # output_files() reads this instead of scanning the dir, so a
+            # concurrent media_prep's .tgprep/_segments.txt scratch is never
+            # mistaken for a recording. Writes only to the file, not stdout, so
+            # it never pollutes the merged yt-dlp log.
+            "--print-to-file", "after_move:%(filepath)s",
+            str(self._manifest_path),
             "-o", out_template,
         ]
         if self.cookies_file:
@@ -268,9 +300,14 @@ class StreamCapture:
 
         The media stem survives the later -c copy remux (suffix-only change),
         so the pairing still holds for the uploaded .mp4."""
+        media = self.output_files()
+        # The manifest's paths are now consumed (the record loop snapshotted this
+        # run's files before calling finalize). Drop the sidecar so it doesn't
+        # accumulate next to recordings — it's keyed by wall clock, not the media
+        # stem, so cleanup_sidecars wouldn't pair it later.
+        self._unlink_manifest()
         if self._log_path is None:
             return
-        media = self.output_files()
         if not media:
             # TEMP DIAGNOSTIC (remove once the intermittent zero-byte failures
             # are understood): a dead-stream run is exactly the case we can't
@@ -298,10 +335,64 @@ class StreamCapture:
                 log.debug("capture: could not pair log with recording: %s", e)
 
     def output_files(self) -> list[Path]:
-        """Files written by this run: anything in the run dir with mtime
-        at or after our start time. Excludes yt-dlp sidecars/temp."""
+        """Files this run's yt-dlp actually produced.
+
+        Authoritative source: the --print-to-file manifest, into which yt-dlp
+        writes the final path of every completed download. Reading it (not the
+        directory) means files this capture did NOT write — chiefly a
+        concurrent media_prep's .tgprep/_segments.txt scratch, or leftovers
+        from a prior run — can never be swept in and enqueued as phantom "lost
+        recordings" (the failure this replaced).
+
+        Fallback: before any download completes (in-progress byte measurement
+        for the dead-stream guard) and on a hard kill / Ctrl-C (after_move
+        never fires, but --no-part leaves a usable partial), the manifest is
+        empty. Only then do we scan the run dir — scoped to files newer than
+        our start and excluding sidecars + media_prep scratch."""
         if self._run_dir is None or not self._run_dir.exists():
             return []
+        manifest = self._manifest_files()
+        if manifest:
+            return manifest
+        return self._scan_run_dir()
+
+    def _manifest_files(self) -> list[Path]:
+        """Parse the yt-dlp output manifest into existing files. Tolerates
+        absolute or CWD-relative paths (re-anchored by basename into the run
+        dir) and drops entries that no longer exist."""
+        if self._manifest_path is None or not self._manifest_path.exists():
+            return []
+        try:
+            lines = self._manifest_path.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        out: list[Path] = []
+        seen: set[Path] = set()
+        for line in lines:
+            name = line.strip()
+            if not name:
+                continue
+            p = Path(name)
+            if not p.is_absolute() and self._run_dir is not None:
+                # yt-dlp may print relative to its CWD; re-anchor by basename
+                # into our run dir so discovery is CWD-independent.
+                cand = self._run_dir / p.name
+                if cand.exists():
+                    p = cand
+            if p in seen:
+                continue
+            seen.add(p)
+            if p.is_file():
+                out.append(p)
+        return sorted(out)
+
+    def _scan_run_dir(self) -> list[Path]:
+        """mtime-window directory scan (fallback only, see output_files).
+        Kept deliberately narrow: it excludes media_prep scratch so an
+        interrupted-capture partial is recovered without also resurrecting a
+        concurrent prep's byproducts as phantom recordings."""
+        assert self._run_dir is not None
         out: list[Path] = []
         for p in self._run_dir.iterdir():
             if not p.is_file():
@@ -315,9 +406,29 @@ class StreamCapture:
                 continue
             if p.suffix in (".part", ".ytdl", ".temp", ".log"):
                 continue
+            # media_prep byproducts + our own manifest sidecar are never
+            # recordings. A concurrent prep of this same file litters
+            # <stem>.tgprep.mp4 / <stem>.tgprep_part*.mp4 / <stem>_segments.txt
+            # into the run dir; the mtime window can't tell them from the
+            # capture, so exclude them by name here too (defense in depth for
+            # the manifest-less path).
+            if ".tgprep" in p.name or p.name.endswith(
+                    ("_segments.txt", "_files.txt")):
+                continue
             try:
                 if p.stat().st_mtime >= self._started_at - 1:
                     out.append(p)
             except OSError:
                 continue
         return sorted(out)
+
+    def _unlink_manifest(self) -> None:
+        """Drop this run's output manifest once its paths are consumed, so the
+        sidecar doesn't accumulate next to recordings after upload."""
+        if self._manifest_path is None:
+            return
+        try:
+            self._manifest_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._manifest_path = None

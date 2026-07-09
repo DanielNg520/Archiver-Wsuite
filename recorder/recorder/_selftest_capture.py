@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import recorder.state as st                              # noqa: E402
+import recorder.capture as cap_mod                        # noqa: E402
 from recorder.capture import StreamCapture               # noqa: E402
 from core.platform import process as _process            # noqa: E402
 from core.platform import procgroup as _procgroup        # noqa: E402
@@ -182,6 +183,137 @@ def test_enqueue_skips_vanished_file(tmp: Path) -> None:
     check(calls == [], "vanished file is NOT enqueued (no phantom queue row)")
 
 
+def test_manifest_is_authoritative(tmp: Path) -> None:
+    print("\n── output_files: manifest wins over concurrent prep scratch ──")
+    run = tmp / "alice"
+    run.mkdir(parents=True, exist_ok=True)
+    rec = run / "alice_111.mp4"
+    rec.write_bytes(b"\0" * 4096)
+    # A concurrent media_prep of this same recording litters scratch into the
+    # SAME run dir — exactly what the old mtime scan swept up as phantom rows.
+    (run / "alice_111.tgprep.mp4").write_bytes(b"\0" * 4096)
+    (run / "alice_111.tgprep_part000.mp4").write_bytes(b"\0" * 4096)
+    (run / "alice_111_segments.txt").write_text("scratch\n")
+    manifest = run / "alice_111_files.txt"
+    manifest.write_text(str(rec) + "\n")           # yt-dlp reported only this
+
+    cap = StreamCapture(str(tmp), None)
+    cap._run_dir = run
+    cap._started_at = time.time()
+    cap._manifest_path = manifest
+
+    out = cap.output_files()
+    check(out == [rec],
+          f"only the recording is returned, no prep scratch ({[p.name for p in out]})")
+
+
+def test_manifest_drops_vanished_and_reanchors(tmp: Path) -> None:
+    print("\n── output_files: manifest drops vanished + re-anchors relative ──")
+    run = tmp / "dave"
+    run.mkdir(parents=True, exist_ok=True)
+    rec = run / "dave_333.mp4"
+    rec.write_bytes(b"\0" * 4096)
+    manifest = run / "dave_333_files.txt"
+    manifest.write_text("\n".join([
+        str(run / "dave_333_GONE.mp4"),   # listed but never on disk → dropped
+        "dave_333.mp4",                   # CWD-relative basename → re-anchored
+        "",                               # blank line ignored
+    ]) + "\n")
+
+    cap = StreamCapture(str(tmp), None)
+    cap._run_dir = run
+    cap._started_at = time.time()
+    cap._manifest_path = manifest
+
+    out = cap.output_files()
+    check(out == [rec],
+          f"vanished entry dropped, relative path re-anchored ({[p.name for p in out]})")
+
+
+def test_scan_fallback_excludes_scratch(tmp: Path) -> None:
+    print("\n── output_files: manifest-less fallback still excludes scratch ──")
+    run = tmp / "carol"
+    run.mkdir(parents=True, exist_ok=True)
+    rec = run / "carol_222.mp4"
+    rec.write_bytes(b"\0" * 4096)
+    # No manifest (hard kill / Ctrl-C: after_move never fired). The partial must
+    # still be recovered, but concurrent prep scratch must NOT be resurrected.
+    (run / "carol_222.tgprep.mp4").write_bytes(b"\0" * 4096)
+    (run / "carol_222_segments.txt").write_text("scratch\n")
+    (run / "carol_222_files.txt").write_text("")     # a stray manifest sidecar
+
+    cap = StreamCapture(str(tmp), None)
+    cap._run_dir = run
+    cap._started_at = time.time() - 1
+    cap._manifest_path = None                         # force the scan fallback
+
+    out = cap.output_files()
+    check(out == [rec],
+          f"scan returns the partial, excludes tgprep/_segments/_files ({[p.name for p in out]})")
+
+
+def test_finalize_removes_manifest(tmp: Path) -> None:
+    print("\n── finalize: the consumed manifest sidecar is dropped ──")
+    run = tmp / "erin"
+    run.mkdir(parents=True, exist_ok=True)
+    rec = run / "erin_444.mp4"
+    rec.write_bytes(b"\0" * 4096)
+    manifest = run / "erin_444_files.txt"
+    manifest.write_text(str(rec) + "\n")
+    logf = run / "erin_444_ytdlp.log"
+    logf.write_text("log\n")
+
+    cap = StreamCapture(str(tmp), None)
+    cap._run_dir = run
+    cap._started_at = time.time()
+    cap._manifest_path = manifest
+    cap._log_path = logf
+
+    cap.finalize()
+    check(not manifest.exists(), "finalize deletes the run's output manifest")
+    check(cap._manifest_path is None, "manifest handle cleared after finalize")
+
+
+def test_start_wires_manifest(tmp: Path) -> None:
+    print("\n── start: wires --print-to-file and resets a stale manifest ──")
+    run = tmp / "bob"
+    run.mkdir(parents=True, exist_ok=True)
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    seen: dict = {}
+    orig_popen = cap_mod.subprocess.Popen
+    orig_time = cap_mod.time.time
+    # Pin the clock so the epoch-keyed manifest name is deterministic, and stub
+    # Popen so no real yt-dlp launches — we only inspect the assembled command.
+    cap_mod.time.time = lambda: 1_000_000.0
+    cap_mod.subprocess.Popen = (
+        lambda cmd, **k: (seen.__setitem__("cmd", cmd) or _FakeProc()))
+    # A leftover manifest from a crashed prior run on the same second.
+    stale = run / "bob_1000000_files.txt"
+    stale.write_text("D:/old/phantom.mp4\n")
+    try:
+        cap = StreamCapture(str(tmp), None)
+        cap.start("https://example/live", "bob")
+        cap._close_log()                             # release the log fd we opened
+    finally:
+        cap_mod.subprocess.Popen = orig_popen
+        cap_mod.time.time = orig_time
+
+    cmd = seen["cmd"]
+    i = cmd.index("--print-to-file")
+    check(cmd[i + 1] == "after_move:%(filepath)s",
+          "print template is after_move:%(filepath)s")
+    check(cmd[i + 2] == str(cap._manifest_path),
+          "print-to-file targets this run's manifest")
+    check(cap._manifest_path.name == "bob_1000000_files.txt",
+          "manifest is named by user + epoch")
+    check(not stale.exists(),
+          "a stale manifest at the same path is cleared on start")
+
+
 def main() -> int:
     print("recorder capture-termination + remux integrity self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -201,6 +333,12 @@ def main() -> int:
             st.subprocess.run = orig_run
 
         test_enqueue_skips_vanished_file(root / "hq")
+
+        test_manifest_is_authoritative(root / "m1")
+        test_manifest_drops_vanished_and_reanchors(root / "m2")
+        test_scan_fallback_excludes_scratch(root / "m3")
+        test_finalize_removes_manifest(root / "m4")
+        test_start_wires_manifest(root / "m5")
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 
