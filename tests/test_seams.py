@@ -2227,6 +2227,41 @@ def test_hashtag_root_seam(tmp: Path) -> None:
        "the plain Nainoi album header is just 'Nainoi'")
 
 
+def test_noname_folder_seam(tmp: Path) -> None:
+    section("Seam 29: [noname] album folders drop per-file names from the caption")
+    from core import ItemStore, PolicyStore, BatchPolicy
+    from core.orphaned import ingest_chat_id_dirs
+
+    # An album folder tagged `[noname]` → caption is the folder's own text with
+    # the marker stripped, NO filenames. A sibling plain folder is unaffected.
+    _write_media(tmp / "-100444" / "[noname] Day at the beach" / "IMG_2201.jpg", b"B1")
+    _write_media(tmp / "-100444" / "[noname] Day at the beach" / "IMG_2202.jpg", b"B2")
+    _write_media(tmp / "-100444" / "Nainoi" / "x.jpg", b"XX")
+    _write_media(tmp / "-100444" / "Nainoi" / "y.jpg", b"YY")
+
+    db_file = str(tmp / "seam29.db")
+    store = ItemStore.open(db_file)
+    ingest_chat_id_dirs(store, tmp, known_platforms=set())
+    beach = store.get(store.id_of(
+        str(tmp / "-100444" / "[noname] Day at the beach" / "IMG_2201.jpg")))
+    ok(beach.group_key == "-100444/[noname] Day at the beach",
+       "a `[noname]` folder still albums by its subpath (plain, not a #root)")
+    store.close()
+
+    ps = PolicyStore()
+    ps.set(BatchPolicy.SIZE_KEY, 1)
+    fake = _FakeSend()
+    _drain_once(db_file, ps, fake, default_chat_id="-100999")
+
+    album_caps = sorted(fake.album_captions)
+    ok("Day at the beach" in album_caps,
+       "the `[noname]` album caption is just 'Day at the beach' — marker & names dropped")
+    ok(not any("IMG_2201" in c or "IMG_2202" in c for c in album_caps),
+       "no filename leaked into the `[noname]` album caption")
+    ok(any(c.startswith("Nainoi") and ("x" in c or "y" in c) for c in album_caps),
+       "the sibling plain Nainoi album still lists its filenames (unchanged)")
+
+
 def test_orphaned_mixed_album_seam(tmp: Path) -> None:
     section("Seam 30: chat_id folders — mixed photo+video album, grouped docs, media-first")
     from core import ItemStore, PolicyStore, BatchPolicy
@@ -2540,6 +2575,7 @@ def main() -> int:
         test_send_order_clustering_seam(tmp / "s26")
         test_video_metadata_backend_seam(tmp / "s27")
         test_hashtag_root_seam(tmp / "s28")
+        test_noname_folder_seam(tmp / "s29")
         test_orphaned_mixed_album_seam(tmp / "s30")
         test_orphaned_no_trace_and_pseudo_platform_seam(tmp / "s31")
         _reset_config()

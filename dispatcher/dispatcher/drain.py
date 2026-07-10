@@ -98,28 +98,57 @@ def with_live_tag(caption: str) -> str:
     return caption if "#live" in caption.split() else f"{caption} #live"
 
 
+# A folder whose name begins with this marker opts every batch under it out of
+# per-file names: the caption is just the folder's own text (marker stripped),
+# never the filenames. E.g. `[noname] Day at the beach` → `Day at the beach`.
+NONAME_MARKER = "[noname]"
+
+
+def _strip_noname(component: str) -> tuple[str, bool]:
+    """For one path component, return (display_text, is_noname). When it carries
+    the `[noname]` marker the marker is removed and the flag is True so callers
+    suppress filenames; otherwise the component is returned unchanged."""
+    if component.startswith(NONAME_MARKER):
+        return component[len(NONAME_MARKER):].strip(), True
+    return component, False
+
+
 def orphaned_caption(batch: list[Item]) -> str:
     """Caption for a chat_id-folder batch: the subfolder name as a header,
     then one line per file (its stem). Works for a single file or an album —
     Telegram shows only the first item's caption, so packing every filename
     into that one caption is how all of them stay visible. Matches the
     requested 'Beach day / John / Jess' shape (newline-separated). A top-level
-    loose file (no subfolder) → just its stem."""
+    loose file (no subfolder) → just its stem.
+
+    Opt-out: if any folder in the path is tagged `[noname]`, the filenames are
+    dropped for every batch in that album — the caption is just the folder
+    header with the marker stripped (`[noname] Day at the beach` → `Day at the
+    beach`)."""
     head = batch[0]
-    # Space-join the subpath components so a leading `#tag` folder renders as a
-    # real (clickable) Telegram hashtag: `#Asian/Eli Shaw` → `#Asian Eli Shaw`.
-    # A `/` in the header would break the hashtag link (`#Asian/Eli` isn't one).
-    sub = subfolder_of(head.chat_id, head.group_key).replace("/", " ")
+    raw_sub = subfolder_of(head.chat_id, head.group_key)
     stems = [media_prep.clean_upload_stem(it.file_path) for it in batch]
-    if not sub:
+    if not raw_sub:
         # Individual file (no album group_key). A file sitting directly in a
         # `#hashtag` root carries no group_key, so recover the tag from its
         # parent dir → `#tag file_name` (one line, tag stays clickable). A plain
-        # top-level loose file (numeric/@ chat_id parent) → just its stem.
+        # top-level loose file (numeric/@ chat_id parent) → just its stem. A
+        # `[noname]` parent drops the name → just the folder's own text.
         parent = Path(head.file_path).parent.name
+        label, noname = _strip_noname(parent)
+        if noname:
+            return label
         if parent.startswith("#"):
             return f"{parent} {stems[0]}"
         return "\n".join(stems)
+    # Space-join the subpath components so a leading `#tag` folder renders as a
+    # real (clickable) Telegram hashtag: `#Asian/Eli Shaw` → `#Asian Eli Shaw`.
+    # A `/` in the header would break the hashtag link (`#Asian/Eli` isn't one).
+    parts = [_strip_noname(c) for c in raw_sub.split("/")]
+    noname = any(flag for _, flag in parts)
+    sub = " ".join(text for text, _ in parts).strip()
+    if noname:
+        return sub
     return "\n".join([sub] + stems)
 
 
