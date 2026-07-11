@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -166,6 +167,16 @@ def caption_for(item: Item) -> str:
     return with_live_tag(caption) if is_tiktok_live(item) else caption
 
 
+# AutoSplitter names a split original's parts `<stem>_part000`, `_part001`, …
+# (ffmpeg `%03d`, so ≥3 digits). We strip that token from the split album's
+# caption so it reads like the unsplit original, not a raw part filename.
+_PART_SUFFIX_RE = re.compile(r"_part\d+")
+
+
+def _strip_part_suffix(text: str) -> str:
+    return _PART_SUFFIX_RE.sub("", text)
+
+
 def album_caption_for(batch: list[Item]) -> str:
     """A1 album header. Telegram shows a caption only on the album's first
     item, so per-file captions can't all be displayed; we use a single
@@ -173,11 +184,16 @@ def album_caption_for(batch: list[Item]) -> str:
     '📷 @user · platform' (📷 photos / 🎬 videos)."""
     head = batch[0]
     if is_split_group(head.group_key):
-        # A split original's parts: list every part name so all are visible
-        # (Telegram shows only the first item's caption). Works for both
-        # producers regardless of how each part is otherwise captioned.
-        return "\n".join(media_prep.clean_upload_stem(it.file_path)
-                         for it in batch)
+        # A split original's parts are ONE logical upload. Telegram shows only
+        # the first item's caption, so we emit a single header in the producer's
+        # normal format — with the `_partNNN` token stripped so it reads like the
+        # unsplit original (`… · name_part000 #live` → `… · name #live`), not a
+        # list of raw part filenames. Falls back to the (de-parted) part stem
+        # when a producer set no caption.
+        if head.caption:
+            caption = _strip_part_suffix(head.caption)
+            return with_live_tag(caption) if is_tiktok_live(head) else caption
+        return _strip_part_suffix(media_prep.clean_upload_stem(head.file_path))
     if head.source == ORPHANED_SOURCE:
         return orphaned_caption(batch)
     if head.caption:

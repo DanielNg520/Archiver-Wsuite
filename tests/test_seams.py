@@ -1773,7 +1773,8 @@ def test_split_album_seam(tmp: Path) -> None:
         # bind them, never a coincidentally-equal caption.
         store.add_item(source="archiver", platform="x", username="alice",
                        identifier=f"bigvideo_p{n}", file_path=str(f),
-                       priority=10, group_key=gk, caption=f"part {n}",
+                       priority=10, group_key=gk,
+                       caption=f"@alice · tiktok · live · bigvideo_part{n:03d} #live",
                        content_hash=full_hash(f))
     store.close()
 
@@ -1791,8 +1792,9 @@ def test_split_album_seam(tmp: Path) -> None:
         "bigvideo_part002.mp4"],
        "the album ships the real files incl. the .tgprep-marked part")
     cap = fake.album_captions[0]
-    ok(cap == "bigvideo_part000\nbigvideo_part001\nbigvideo_part002",
-       "caption lists clean part stems — the .tgprep marker is stripped, not leaked")
+    ok(cap == "@alice · tiktok · live · bigvideo #live",
+       "split album caption is the recorder format with the _partNNN token stripped, "
+       "named once — not a list of raw part filenames")
     store = ItemStore.open(db_file)
     ok(store.counts_by_status().get("sent", 0) == 3,
        "all three part rows are terminal 'sent'")
