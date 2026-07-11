@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -88,22 +90,48 @@ async def _resolve_async(uid: str, cookies_file: str | None, timeout_s: float) -
             f"from {cookies_file!r}"
         )
 
-    # Collected candidate pull URLs (insertion order preserved). An Event lets
-    # us return the instant a usable URL appears instead of always waiting the
-    # full timeout.
+    # Two capture channels, best first:
+    #   best[]  — HIGHEST-quality URL selected from the room-info JSON the page
+    #             fetches (authoritative: carries every quality variant). This
+    #             is how we record origin/uhd instead of whatever default the
+    #             player happened to load.
+    #   found[] — raw pull URLs sniffed off request/response URLs, used only as
+    #             a fallback when no room-info JSON could be parsed. This is the
+    #             player's default quality, so it's second choice.
+    # An Event lets us return promptly once either channel yields something.
+    best: list[str] = []
     found: list[str] = []
     got = asyncio.Event()
 
     def _consider(url: str) -> None:
         if _is_pull_url(url) and url not in found:
             found.append(url)
-            # Prefer HLS: only short-circuit immediately on an .m3u8; for an
-            # .flv give HLS a brief chance to also show up (handled by the
-            # wait loop's grace below).
+            got.set()
+
+    async def _consider_json(resp) -> None:
+        """Try to read a room-info response body and select its highest-quality
+        URL. Best-effort: non-JSON bodies, unretrievable bodies, and unexpected
+        shapes are ignored so the media-URL fallback still applies."""
+        url = resp.url
+        if "webcast" not in url or not any(
+            k in url for k in ("room/info", "room/enter", "/enter/", "reflow")
+        ):
+            return
+        try:
+            body = await resp.json()
+        except Exception:  # noqa: BLE001 - body may be non-JSON or gone
+            return
+        obj = _find_stream_url_obj(body)
+        if not obj:
+            return
+        from .tiktok import _extract_pull_url  # lazy: avoids import cycle
+        picked = _extract_pull_url({"stream_url": obj})
+        if picked and picked not in best:
+            best.append(picked)
             got.set()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await _launch_chromium(pw)
         try:
             ctx = await browser.new_context(
                 user_agent=(
@@ -116,6 +144,7 @@ async def _resolve_async(uid: str, cookies_file: str | None, timeout_s: float) -
             page = await ctx.new_page()
             page.on("request", lambda r: _consider(r.url))
             page.on("response", lambda r: _consider(r.url))
+            page.on("response", lambda r: asyncio.create_task(_consider_json(r)))
 
             await page.goto(
                 f"https://www.tiktok.com/@{uid}/live",
@@ -124,23 +153,121 @@ async def _resolve_async(uid: str, cookies_file: str | None, timeout_s: float) -
             )
             await _dismiss_age_prompt(page)
 
-            # Wait for the first pull URL, then a short grace so a preferred
-            # HLS URL can overtake an FLV one that arrived first.
+            # Wait for the first candidate, then a short grace so the room-info
+            # JSON (highest quality) can land even if a default-quality media
+            # URL was sniffed first.
             try:
                 await asyncio.wait_for(got.wait(), timeout_s)
             except asyncio.TimeoutError:
                 pass
-            if found:
-                await asyncio.sleep(2.0)  # grace for an HLS to also land
+            if found or best:
+                await asyncio.sleep(2.0)  # grace for the authoritative JSON
         finally:
             await browser.close()
 
-    if not found:
-        raise RuntimeError(
-            f"browser fallback could not capture a pull URL for @{uid} "
-            f"within {timeout_s:.0f}s (stream ended, or TikTok layout changed)"
+    # Prefer the authoritative highest-quality pick; fall back to the sniffed
+    # default-quality URL only if no room-info JSON was parseable.
+    if best:
+        return best[0]
+    if found:
+        return _pick_best(found)
+    raise RuntimeError(
+        f"browser fallback could not capture a pull URL for @{uid} "
+        f"within {timeout_s:.0f}s (stream ended, or TikTok layout changed)"
+    )
+
+
+def _find_stream_url_obj(obj):
+    """Recursively locate TikTok's `stream_url` object inside a decoded
+    room-info JSON body — the dict that carries `flv_pull_url` /
+    `live_core_sdk_data` / `hls_pull_url`. Room-info responses nest it under
+    varying wrappers (`data.stream_url`, `data[0].stream_url`, …), so we search
+    structurally rather than assume a path. Returns the first match or None.
+    Depth-bounded to keep a pathological body from blowing the stack."""
+    def _walk(node, depth):
+        if depth > 8 or not isinstance(node, (dict, list)):
+            return None
+        if isinstance(node, dict):
+            if any(k in node for k in
+                   ("flv_pull_url", "live_core_sdk_data", "hls_pull_url")):
+                return node
+            children = node.values()
+        else:
+            children = node
+        for child in children:
+            hit = _walk(child, depth + 1)
+            if hit is not None:
+                return hit
+        return None
+    return _walk(obj, 0)
+
+
+_install_lock = asyncio.Lock()
+_install_attempted = False
+
+
+async def _launch_chromium(pw):
+    """Launch headless Chromium, self-healing a missing/stale browser build.
+
+    Playwright pins an exact browser revision per library version. When pip or
+    pipx bumps `playwright` (e.g. to one wanting build 1228), the Chromium
+    binaries already on disk no longer match and `launch()` raises
+    "Executable doesn't exist at ...", which would otherwise fail EVERY
+    age-restricted recording until a human manually runs `playwright install`.
+
+    So on that specific error we run `python -m playwright install chromium`
+    for the *current* interpreter (the same venv this code runs in, so it
+    lands the revision this Playwright expects) exactly once per process, then
+    retry the launch. Any other launch error, or a still-failing retry, is
+    re-raised unchanged for the caller's start-failure handling."""
+    try:
+        return await pw.chromium.launch(headless=True)
+    except Exception as e:  # noqa: BLE001 - narrowed by message below
+        if "Executable doesn't exist" not in str(e):
+            raise
+        await _ensure_browser_installed()
+        # Retry once; a second failure is real (disk full, no network, etc.).
+        return await pw.chromium.launch(headless=True)
+
+
+async def _ensure_browser_installed() -> None:
+    """Run `playwright install chromium` for this interpreter, once per process.
+
+    Guarded by a lock + flag so concurrent age-restricted resolves don't kick
+    off duplicate downloads. The download is blocking, so it runs in a thread
+    to avoid stalling the event loop."""
+    global _install_attempted
+    async with _install_lock:
+        if _install_attempted:
+            return
+        _install_attempted = True
+        log.warning(
+            "tiktok-browser: Chromium build missing/stale for the installed "
+            "Playwright; auto-running `playwright install chromium` (one-time)"
         )
-    return _pick_best(found)
+        await asyncio.to_thread(_run_playwright_install)
+
+
+def _run_playwright_install() -> None:
+    """Blocking `python -m playwright install chromium`. Logs but never raises
+    here — a failure surfaces on the launch retry with Playwright's own error."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode == 0:
+            log.warning("tiktok-browser: Chromium install complete")
+        else:
+            log.error(
+                "tiktok-browser: `playwright install chromium` exited %d: %s",
+                proc.returncode,
+                (proc.stderr or proc.stdout or "").strip()[-500:],
+            )
+    except Exception as e:  # noqa: BLE001 - launch retry will surface the real state
+        log.error("tiktok-browser: `playwright install chromium` failed: %s", e)
 
 
 async def _dismiss_age_prompt(page) -> None:

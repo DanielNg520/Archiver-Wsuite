@@ -76,7 +76,8 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | `state.py` | state machine LISTENING→RECORDING→HANDOFF→STOPPED + producer/consumer uploader thread; **lock held only around active recording** |
 | `capture.py` | yt-dlp wrapper (ffmpeg HLS, MPEG-TS, --no-part, infinite retries); **process-group kill** (no orphaned ffmpeg); reconnect on premature still-live exit |
 | `platforms/base.py` | `LivePlatform` Protocol (structural) |
-| `platforms/tiktok.py` | TikTokLive lib (sync↔async bridge per call) |
+| `platforms/tiktok.py` | TikTokLive lib (sync↔async bridge per call); `_extract_pull_url` picks **highest-possible quality** (origin→uhd→hd→sd→ld via `live_core_sdk_data` levels, else name-rank; **FLV breaks ties**); age-restricted → `tiktok_browser` fallback |
+| `platforms/tiktok_browser.py` | age-restricted (18+) fallback: headless Chromium (Playwright) drives the live page so TikTok's JS signs the pull URL; sniffs room-info JSON → same highest-quality selector (falls back to default-quality media-URL sniff); **self-healing browser install** (auto `playwright install chromium` on a stale/missing build, once per process) |
 | `enqueue.py` | `register_file` at `priority=5` (before archiver's 10), min-batch exempt |
 | `startup_sweep.py` | reconcile disk↔queue once at start (sent→del, pending/sending→leave, failed→re-arm, new→ingest, drop empty dirs) |
 | `lock.py` | `TikTokLock` writes pid-stamped heartbeat (via core.heartbeat + core.paths) |

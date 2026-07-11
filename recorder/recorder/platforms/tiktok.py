@@ -189,40 +189,119 @@ class TikTokLivePlatform:
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _extract_pull_url(room_info: dict) -> str | None:
-    """Pull the best stream URL out of TikTok room info.
+# Quality ranking for TikTok live variants. TikTok labels each variant with a
+# quality name (origin/uhd/hd/sd/ld, sometimes suffixed like HD1/SD1/SD2 or
+# FULL_HD1). Higher score = better. Used only when the authoritative sdk
+# `options.qualities` levels are absent — otherwise we trust TikTok's own
+# `level` int. Unknown names score 0 (below every known quality but still
+# selectable if nothing else exists).
+_QUALITY_RANK = {
+    "origin": 100, "or4": 100,
+    "uhd": 90, "4k": 90,
+    "full_hd": 80, "fullhd": 80,
+    "hd": 70,
+    "sd": 50, "md": 55,
+    "ld": 30,
+}
 
-    PREFER FLV over HLS. TikTok serves two edge families for a live: the
-    HLS playlist edges (`pull-hls-*.tiktokcdn.com`) and the continuous-FLV
-    edges (`pull-f5-*.tiktokcdn.com`). Observed in prod (Beelink box, SG-origin
-    streams): the HLS edges complete the TLS handshake but then STALL the
-    playlist/segment response — yt-dlp hangs on "Downloading webpage" until its
-    socket timeout, exits rc=1 with zero bytes, and the state machine reads that
-    as a dead stream. The FLV edge for the SAME stream returns 200 and streams
-    immediately. FLV is also a single long-lived connection (no per-segment
-    fetches, no m3u8 rotation), so it sidesteps the segment-404 and URL-rotation
-    reconnect churn entirely. yt-dlp's ffmpeg downloader ingests FLV natively.
-    HLS is kept as a fallback for the case where only it is present.
-    Returns None if nothing matches."""
+
+def _quality_rank(name: str) -> int:
+    """Score a TikTok quality label so the highest-possible variant sorts
+    first. Case-insensitive; a trailing index (HD1, SD2) is stripped so it
+    ranks with its base quality. Unknown labels score 0."""
+    key = (name or "").strip().lower().rstrip("0123456789").rstrip("_")
+    return _QUALITY_RANK.get(key, 0)
+
+
+def _urls_from_sdk_stream_data(stream: dict) -> list[tuple[int, str, str]]:
+    """Parse TikTok's authoritative multi-quality blob
+    `stream_url.live_core_sdk_data.pull_data` into a ranked candidate list of
+    (rank, kind, url), best first. `stream_data` is a JSON *string* mapping
+    each quality name → {"main": {"flv": ..., "hls": ...}}; `options.qualities`
+    (when present) carries a per-quality `level` int we trust over our name
+    table. Returns [] if the blob is missing or unparseable."""
+    out: list[tuple[int, str, str]] = []
     try:
-        stream = room_info.get("stream_url", {})
-        # Prefer continuous FLV (most reliable edge family here).
-        flv = stream.get("flv_pull_url")
-        if isinstance(flv, dict) and flv:
-            return next(iter(flv.values()))
+        pull = (stream.get("live_core_sdk_data") or {}).get("pull_data") or {}
+        data = json.loads(pull.get("stream_data") or "{}").get("data") or {}
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        return out
+    if not isinstance(data, dict):
+        return out
+    # Authoritative levels, if TikTok provided them: {quality_name: level}.
+    levels: dict[str, int] = {}
+    try:
+        for q in (pull.get("options") or {}).get("qualities") or []:
+            nm = q.get("name") or q.get("sdk_key")
+            if nm is not None and isinstance(q.get("level"), int):
+                levels[str(nm).lower()] = q["level"]
+    except (AttributeError, TypeError):
+        levels = {}
+    for name, variant in data.items():
+        main = (variant or {}).get("main") if isinstance(variant, dict) else None
+        if not isinstance(main, dict):
+            continue
+        rank = levels.get(str(name).lower(), _quality_rank(str(name)))
+        flv, hls = main.get("flv"), main.get("hls")
+        # Prefer FLV within a quality (single long-lived connection, sidesteps
+        # the HLS-edge stall — see below); HLS is the same-quality fallback.
         if isinstance(flv, str) and flv:
-            return flv
-        # Fallback: explicit HLS pull URL.
-        hls = stream.get("hls_pull_url")
-        if hls:
-            return hls
-        # Fallback: multi-quality HLS map.
-        hls_map = stream.get("hls_pull_url_map") or {}
-        if isinstance(hls_map, dict) and hls_map:
-            # Pick the highest-listed quality deterministically.
-            return next(iter(hls_map.values()))
-    except AttributeError:
+            out.append((rank, "flv", flv))
+        if isinstance(hls, str) and hls:
+            out.append((rank, "hls", hls))
+    # Highest quality first; FLV before HLS at equal quality.
+    out.sort(key=lambda t: (t[0], t[1] == "flv"), reverse=True)
+    return out
+
+
+def _extract_pull_url(room_info: dict) -> str | None:
+    """Pull the HIGHEST-POSSIBLE-quality stream URL out of TikTok room info.
+
+    Quality: TikTok offers a ladder of variants (origin/uhd/hd/sd/ld). We pick
+    the best the source actually exposes, walking down the ladder to the first
+    present — never an arbitrary map entry. The authoritative source is the
+    `live_core_sdk_data` sdk blob (carries every quality + TikTok's own `level`
+    ranking); the flat `flv_pull_url`/`hls_pull_url_map` dicts are the fallback
+    when that blob is absent.
+
+    Edge family: PREFER FLV over HLS *at equal quality*. TikTok serves HLS
+    playlist edges (`pull-hls-*`) and continuous-FLV edges (`pull-f5-*`).
+    Observed in prod (Beelink box, SG-origin streams): the HLS edges complete
+    the TLS handshake but then STALL the playlist/segment response — yt-dlp
+    hangs until its socket timeout, exits rc=1 with zero bytes, and the state
+    machine reads that as a dead stream. The FLV edge for the SAME stream
+    returns 200 and streams immediately, over a single long-lived connection
+    (no per-segment fetches, no m3u8 rotation), sidestepping the segment-404 /
+    URL-rotation reconnect churn. yt-dlp's ffmpeg downloader ingests FLV
+    natively. So FLV wins ties, but a strictly-higher quality wins over FLV.
+    Returns None if nothing matches."""
+    if not isinstance(room_info, dict):
         return None
+    stream = room_info.get("stream_url")
+    if not isinstance(stream, dict):
+        return None
+
+    # 1. Authoritative multi-quality sdk blob — highest quality, FLV-preferred.
+    ranked = _urls_from_sdk_stream_data(stream)
+    if ranked:
+        return ranked[0][2]
+
+    # 2. Fallback: flat flv_pull_url map, ranked by quality name (FLV first).
+    flv = stream.get("flv_pull_url")
+    if isinstance(flv, dict) and flv:
+        return max(flv.items(), key=lambda kv: _quality_rank(kv[0]))[1]
+    if isinstance(flv, str) and flv:
+        return flv
+
+    # 3. Fallback: multi-quality HLS map, ranked by quality name.
+    hls_map = stream.get("hls_pull_url_map")
+    if isinstance(hls_map, dict) and hls_map:
+        return max(hls_map.items(), key=lambda kv: _quality_rank(kv[0]))[1]
+
+    # 4. Last resort: the single default HLS pull URL.
+    hls = stream.get("hls_pull_url")
+    if isinstance(hls, str) and hls:
+        return hls
     return None
 
 

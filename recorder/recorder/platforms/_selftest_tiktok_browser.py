@@ -17,7 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import json  # noqa: E402
+
 from recorder.platforms import tiktok_browser as tb   # noqa: E402
+from recorder.platforms import tiktok as tk           # noqa: E402
 
 OK = "✓"
 _passed = 0
@@ -75,6 +78,101 @@ def test_pick_best():
     check(tb._pick_best([flv, hls]) == flv, "keeps FLV when FLV seen first")
     check(tb._pick_best([flv, flv2]) == flv, "FLV-only: first-seen wins")
     check(tb._pick_best([hls]) == hls, "single HLS returned (fallback)")
+
+
+# ── quality selection: _quality_rank / _extract_pull_url ──────────────────
+
+def test_quality_rank():
+    print("_quality_rank (highest-possible ordering):")
+    r = tk._quality_rank
+    check(r("origin") > r("uhd") > r("hd") > r("sd") > r("ld"),
+          "origin > uhd > hd > sd > ld")
+    check(r("HD1") == r("hd"), "trailing index stripped (HD1 == hd)")
+    check(r("FULL_HD1") > r("hd"), "full_hd outranks hd")
+    check(r("SD2") == r("sd"), "SD2 == sd")
+    check(r("weird") == 0, "unknown label scores 0")
+
+
+def _sdk_room_info(data: dict, qualities=None, flat_flv=None) -> dict:
+    """Build a room_info whose stream_url carries a live_core_sdk_data blob
+    (and optionally a competing flat flv_pull_url map, which must LOSE)."""
+    pull: dict = {"stream_data": json.dumps({"data": data})}
+    if qualities is not None:
+        pull["options"] = {"qualities": qualities}
+    stream = {"live_core_sdk_data": {"pull_data": pull}}
+    if flat_flv is not None:
+        stream["flv_pull_url"] = flat_flv
+    return {"stream_url": stream}
+
+
+def test_extract_pull_url():
+    print("_extract_pull_url (highest-possible + FLV tiebreak):")
+    ex = tk._extract_pull_url
+
+    # 1) sdk blob with authoritative levels → highest level, FLV preferred,
+    #    beating a flat flv_pull_url map that only offers lower qualities.
+    ri = _sdk_room_info(
+        data={
+            "sd":     {"main": {"flv": "flv_sd", "hls": "hls_sd"}},
+            "origin": {"main": {"flv": "flv_origin", "hls": "hls_origin"}},
+            "hd":     {"main": {"flv": "flv_hd", "hls": "hls_hd"}},
+        },
+        qualities=[{"name": "origin", "level": 5},
+                   {"name": "hd", "level": 3},
+                   {"name": "sd", "level": 1}],
+        flat_flv={"HD1": "flat_hd", "SD1": "flat_sd"},
+    )
+    check(ex(ri) == "flv_origin", "sdk: picks highest level, FLV, over flat map")
+
+    # 2) highest quality only offers HLS → quality beats the FLV edge-pref.
+    ri2 = _sdk_room_info(
+        data={
+            "hd":     {"main": {"flv": "flv_hd"}},
+            "origin": {"main": {"hls": "hls_origin"}},
+        },
+        qualities=[{"name": "origin", "level": 5}, {"name": "hd", "level": 3}],
+    )
+    check(ex(ri2) == "hls_origin", "sdk: origin-HLS beats hd-FLV (quality first)")
+
+    # 3) no options.levels → falls back to name-rank inside the sdk data.
+    ri3 = _sdk_room_info(data={
+        "sd":  {"main": {"flv": "flv_sd"}},
+        "uhd": {"main": {"flv": "flv_uhd"}},
+    })
+    check(ex(ri3) == "flv_uhd", "sdk without levels: name-rank picks uhd")
+
+    # 4) no sdk blob → flat flv_pull_url map ranked by name (FULL_HD1 wins).
+    ri4 = {"stream_url": {"flv_pull_url": {
+        "SD2": "u_sd2", "HD1": "u_hd1", "FULL_HD1": "u_fhd"}}}
+    check(ex(ri4) == "u_fhd", "flat flv map: highest-named quality wins")
+
+    # 5) no flv → multi-quality HLS map ranked by name.
+    ri5 = {"stream_url": {"hls_pull_url_map": {"SD1": "h_sd", "HD1": "h_hd"}}}
+    check(ex(ri5) == "h_hd", "hls map: highest-named quality wins")
+
+    # 6) last resort: single hls_pull_url string.
+    ri6 = {"stream_url": {"hls_pull_url": "only_hls"}}
+    check(ex(ri6) == "only_hls", "single hls_pull_url used as last resort")
+
+    # 7) garbage / empty → None (no raise).
+    check(ex({"stream_url": {}}) is None, "empty stream_url → None")
+    check(ex({}) is None, "no stream_url → None")
+    check(ex({"stream_url": {"live_core_sdk_data":
+              {"pull_data": {"stream_data": "not json"}}}}) is None,
+          "unparseable stream_data → None")
+
+
+def test_find_stream_url_obj():
+    print("_find_stream_url_obj (browser-path room-info dig):")
+    f = tb._find_stream_url_obj
+    inner = {"flv_pull_url": {"HD1": "x"}}
+    check(f({"data": {"stream_url": inner}}) is inner,
+          "digs stream_url out of data.stream_url wrapper")
+    check(f({"data": [{"stream_url": inner}]}) is inner,
+          "digs through a list wrapper (data[0].stream_url)")
+    check(f({"live_core_sdk_data": {"pull_data": {}}}).get("live_core_sdk_data"),
+          "matches on live_core_sdk_data too")
+    check(f({"nope": 1}) is None, "no stream_url present → None")
 
 
 # ── pure helper: _netscape_to_playwright ──────────────────────────────────
@@ -302,6 +400,9 @@ def main():
     print("tiktok_browser selftest\n" + "─" * 40)
     test_is_pull_url()
     test_pick_best()
+    test_quality_rank()
+    test_extract_pull_url()
+    test_find_stream_url_obj()
     test_cookie_parse()
     test_resolve_flow()
     test_resolve_no_cookies()

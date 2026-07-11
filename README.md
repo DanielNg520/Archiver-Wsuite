@@ -102,7 +102,9 @@ pipx inject --editable recorder       .\core
 pipx inject --editable media-archiver .\core   # archiver's package name
 pipx inject --editable ops            .\core
 
-# 3. Recorder's one-time headless-browser download (age-restricted lives).
+# 3. Recorder's headless-browser download (age-restricted lives). OPTIONAL:
+#    the recorder self-heals a missing/stale Chromium on first use (auto-runs
+#    this once), but pre-running it avoids a one-time inline delay mid-stream.
 & "$env:USERPROFILE\pipx\venvs\recorder\Scripts\python.exe" -m playwright install chromium
 ```
 
