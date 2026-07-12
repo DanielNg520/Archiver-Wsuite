@@ -382,6 +382,65 @@ def cmd_config_priority(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── banned (auto-retired accounts) ───────────────────────────────────────────
+
+def cmd_banned(args: argparse.Namespace) -> int:
+    """List auto-banned TikTok accounts or restore one — the recorder-side
+    mirror of `archiver banned`. Bans are written by the recorder's two-stage
+    unstartable gate (state._maybe_ban_unstartable) onto this app's
+    config.toml roster via core.PolicyStore; unban reverses the roster entry
+    AND brings the quarantined folder back out of .deleted/."""
+    from core import PolicyStore, restore_user
+
+    store  = PolicyStore(CONFIG_TOML)
+    action = getattr(args, "banned_cmd", None)
+
+    if action == "unban":
+        username = args.user.lstrip("@")
+        if not store.unban_user("tiktok", username):
+            log.error("@%s is not on the banned list.", username)
+            return 1
+        log.info("Removed @%s from the banned list.", username)
+        config = RecorderConfig.load()
+        restored = restore_user(config.output_dir, "tiktok", username)
+        if restored is not None:
+            log.info("Restored quarantined folder → %s", restored)
+        else:
+            log.info("No quarantined folder to restore (none was moved, or a "
+                     "live folder already exists).")
+        if args.re_add:
+            data = _load_toml()
+            users = _get_users(data)
+            if username not in users:
+                users.append(username)
+                _set_users(data, users)
+                _save_toml(data)
+                log.info("Re-added @%s to the priority list (rank %d).",
+                         username, len(users))
+            else:
+                log.info("@%s already in the priority list.", username)
+        else:
+            log.info("Not re-added to the priority list — "
+                     "`recorder config add --user %s` to resume recording "
+                     "(or re-run unban with --re-add).", username)
+        log.info("Note: a running recorder won't see this until it restarts.")
+        return 0
+
+    # Default / "list": show the banned roster.
+    details = store.banned_details("tiktok")
+    if not details:
+        print("(no banned users)")
+        return 0
+    for u, meta in details.items():
+        line = f"@{u}"
+        if meta.get("detected_at"):
+            line += f"  [{meta['detected_at']}]"
+        if meta.get("reason"):
+            line += f"  {meta['reason']}"
+        print(line)
+    return 0
+
+
 # ── parser ──────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -406,6 +465,15 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="seconds between refreshes (default 2)")
     core_cli.add_stats_parser(sub)   # shared `stats` noun (DB counts)
 
+    p_ban = sub.add_parser("banned", help="list/restore auto-banned accounts")
+    ban_sub = p_ban.add_subparsers(dest="banned_cmd", required=False)
+    ban_sub.add_parser("list", help="show the banned roster (default)")
+    p_unban = ban_sub.add_parser("unban", help="remove a user from the roster "
+                                               "and restore their folder")
+    p_unban.add_argument("--user", required=True)
+    p_unban.add_argument("--re-add", action="store_true",
+                         help="also re-add to the priority list")
+
     p_cfg = sub.add_parser("config", help="manage the user list")
     cfg_sub = p_cfg.add_subparsers(dest="config_command", required=True)
 
@@ -426,6 +494,7 @@ _DISPATCH = {
     ("status", None):             cmd_status,
     ("watch", None):              cmd_watch,
     ("stats", None):              cmd_stats,
+    ("banned", None):             cmd_banned,
     ("config", "add"):            cmd_config_add,
     ("config", "remove"):         cmd_config_remove,
     ("config", "list"):           cmd_config_list,

@@ -48,6 +48,7 @@ from .capture import StreamCapture
 from .config import RecorderConfig
 from .lock import TikTokLock
 from .platforms.base import LivePlatform
+from .unstartable import UnstartableTracker
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,16 @@ _SKIP_AFTER_FAILS = 3
 # and re-cools (bounded ~1 attempt-burst per cooldown, no hot-spin), while a
 # recovered one is picked back up automatically with no restart.
 _SKIP_COOLDOWN_S = 600.0
+
+# ── Auto-ban escalation (two-stage gate, see _maybe_ban_unstartable) ──────────
+# Stage 1 (cheap): only a user benched at least _BAN_AFTER_COOLDOWNS times whose
+# FIRST failure is at least _BAN_MIN_AGE_S old is even considered — a burst of
+# failures inside one bad evening can't fast-track a ban. Stage 2 (confirm): the
+# profile page must explicitly say the account is gone (ban_check.GONE); every
+# other verdict keeps the user in the ordinary cooldown loop. The tally persists
+# across restarts in state_dir/unstartable.json (recorder.unstartable).
+_BAN_AFTER_COOLDOWNS = 6
+_BAN_MIN_AGE_S = 24 * 3600.0
 
 
 def _safe_size(p: Path) -> int:
@@ -206,6 +217,12 @@ class StateMachine:
         # In-memory only — a restart re-enables everyone immediately.
         self._skipped: dict[str, float] = {}
         self._consec_fail: dict[str, int] = {}
+        # Long-window escalation tally (persists across restarts) + the users
+        # auto-banned DURING this session. config.tiktok_users is a frozen
+        # tuple already filtered against the roster at load; _banned covers
+        # bans that land while the process is up.
+        self._unstartable = UnstartableTracker(config.state_dir)
+        self._banned: set[str] = set()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -316,6 +333,8 @@ class StateMachine:
         for username in self.config.tiktok_users:   # priority order
             if self._stop.is_set():
                 return
+            if username in self._banned:             # auto-banned this session
+                continue
             if self._is_skipped(username):           # benched (cooldown)
                 continue
             if self.platform.is_live(username):
@@ -364,6 +383,7 @@ class StateMachine:
             self._note_start_failure(username)
             return False
         self._consec_fail.pop(username, None)      # started → reset fail count
+        self._unstartable.clear(username)          # startable → no escalation
         return True
 
     def _note_start_failure(self, username: str) -> None:
@@ -401,6 +421,56 @@ class StateMachine:
         log.warning("recorder: benching @%s (%s) — skipping for %.0fs then "
                     "retrying", username, reason, _SKIP_COOLDOWN_S,
                     extra={"ev": "skip"})
+        self._unstartable.note_cooldown(username)
+        self._maybe_ban_unstartable(username)
+
+    def _maybe_ban_unstartable(self, username: str) -> None:
+        """Two-stage auto-ban for a chronically unstartable user.
+
+        Stage 1 (cheap, no network): at least _BAN_AFTER_COOLDOWNS persisted
+        cooldowns AND the first failure at least _BAN_MIN_AGE_S old. Stage 2
+        (confirm): the profile page must EXPLICITLY say the account is gone —
+        ALIVE/PRIVATE/UNKNOWN all keep the user in the cooldown loop, so
+        network hiccups and bot-walls can never ban anyone.
+
+        A confirmed ban lands on the recorder's config.toml roster (filtered
+        out of tiktok_users on the next load), quarantines the user's folder
+        via core.quarantine, evicts the escalation entry, and drops the user
+        from this session's poll set. Never raises — a failed ban attempt just
+        leaves the user benched as before."""
+        if (self._unstartable.cycles(username) < _BAN_AFTER_COOLDOWNS or
+                self._unstartable.age_seconds(username) < _BAN_MIN_AGE_S):
+            return
+        try:
+            from .ban_check import profile_check, ProfileStatus
+            status = profile_check(username, self.config.tiktok_cookies_file)
+            if status is not ProfileStatus.GONE:
+                log.info("recorder: @%s unstartable for a while but profile "
+                         "says %s — staying in cooldown", username, status.value)
+                return
+
+            from datetime import datetime, timezone
+            from core import PolicyStore, quarantine_user, LOCKED_SKIPPED
+            from .config import CONFIG_TOML
+            reason = (f"unstartable for "
+                      f"{self._unstartable.cycles(username)} cooldowns and "
+                      f"profile page confirms account gone")
+            PolicyStore(CONFIG_TOML).ban_user(
+                "tiktok", username, reason=reason,
+                detected_at=datetime.now(timezone.utc)
+                            .isoformat(timespec="seconds"))
+            moved = quarantine_user(self.config.output_dir, "tiktok", username)
+            self._unstartable.clear(username)
+            self._banned.add(username)
+            self._skipped.pop(username, None)
+            log.warning("recorder: @%s BANNED — %s; folder: %s. Reverse with "
+                        "`recorder banned unban --user %s`", username, reason,
+                        "deferred (live recording)" if moved is LOCKED_SKIPPED
+                        else (moved or "none"), username,
+                        extra={"ev": "banned"})
+        except Exception as e:
+            log.error("recorder: auto-ban check for @%s failed: %s — user "
+                      "stays benched", username, e)
 
     def _confirm_still_live(self, username: str | None) -> bool:
         """Re-check whether `username` is still broadcasting after a capture
@@ -541,6 +611,8 @@ class StateMachine:
         for username in self.config.tiktok_users:
             if self._stop.is_set():
                 return
+            if username in self._banned:             # auto-banned this session
+                continue
             if self._is_skipped(username):           # benched (cooldown)
                 continue
             if self.platform.is_live(username):

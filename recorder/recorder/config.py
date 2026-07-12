@@ -88,6 +88,17 @@ class RecorderConfig:
         tt  = rec.get("tiktok", {})
         users = tuple(tt.get("users", []))
 
+        # Banned roster: auto-detected gone accounts land under
+        # [platform.tiktok.banned] in this same config.toml (layout owned by
+        # core.PolicyStore — the write side of `recorder banned`). Filter them
+        # out of the poll list here so a banned user costs zero fetches, while
+        # their entry (reason/detected_at) survives for `banned list`/`unban`.
+        banned = (toml_data.get("platform", {})
+                           .get("tiktok", {})
+                           .get("banned", {}))
+        if isinstance(banned, dict) and banned:
+            users = tuple(u for u in users if u not in banned)
+
         cookies = _opt("TIKTOK_COOKIES_FILE") or None
 
         return cls(
