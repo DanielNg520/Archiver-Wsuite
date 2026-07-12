@@ -1,5 +1,10 @@
 # Archiver Suite → Windows Conversion Plan
 
+> **HISTORICAL (completed 2026-07).** The conversion shipped — kept as a period
+> record. Paths cited below (`%APPDATA%` config, etc.) reflect the layout at
+> port time; config has since moved to `.archive\.config` (2026-07-12 — see
+> [README.md](README.md) and ops/RUNBOOK.md "Config migration").
+
 > Planning workspace. The source lives in `../Archiver suite`. This document is a
 > self-contained execution plan for porting the macOS/POSIX suite to Windows.
 > It supersedes/expands the in-repo `WINDOWS_PORT.md` with a concrete file
