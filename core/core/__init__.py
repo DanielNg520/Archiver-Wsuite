@@ -24,7 +24,8 @@ from .files import cleanup_sidecars, orphaned_kind, album_bucket
 from .deletion import DeletionGuard
 from .dedup import dedup_user, DedupReport, DupGroup
 from .ingest import (
-    register_file, register_media, IngestResult, IngestOutcome, PreparedResult,
+    register_file, register_media, recover_oversize_failed, IngestResult,
+    IngestOutcome, PreparedResult,
 )
 from .routing import is_chat_id, CHAT_ID_RE, Route, parse_route
 from .grouping import split_group_key, is_split_group, SPLIT_GROUP_PREFIX
@@ -49,7 +50,8 @@ __all__ = [
     "validate_overrides", "cleanup_sidecars", "orphaned_kind", "album_bucket",
     "DeletionGuard",
     "dedup_user", "DedupReport", "DupGroup",
-    "register_file", "register_media", "IngestResult", "IngestOutcome",
+    "register_file", "register_media", "recover_oversize_failed",
+    "IngestResult", "IngestOutcome",
     "PreparedResult",
     "is_chat_id", "CHAT_ID_RE", "Route", "parse_route",
     "split_group_key", "is_split_group", "SPLIT_GROUP_PREFIX",

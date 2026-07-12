@@ -43,7 +43,7 @@ from .reconcile import (
 
 from core import (
     ItemStore, DeletePolicy, DedupPolicy, DownloadPolicy, DeletionGuard,
-    dedup_user, cleanup_sidecars, parse_route,
+    dedup_user, cleanup_sidecars, parse_route, recover_oversize_failed,
     validate_overrides as _validate_policies,
 )
 
@@ -271,6 +271,19 @@ class Archiver:
 
             await asyncio.to_thread(
                 self._maybe_ingest_orphaned, known_platform_names)
+
+            # Self-healing for oversize-quarantined rows (FilePartsInvalid):
+            # split → requeue parts → retire the poison row. Backstop only —
+            # ingest + the dispatcher preflight prevent NEW oversize rows —
+            # and bounded to one split per sweep so a multi-GB ffmpeg pass
+            # can't wedge the sweeper. See core.ingest.recover_oversize_failed.
+            try:
+                n = await asyncio.to_thread(recover_oversize_failed, self.db)
+                if n:
+                    log.info("ingest-sweep: recovered %d oversize failed "
+                             "row(s)", n)
+            except Exception:                    # pragma: no cover — defensive
+                log.exception("ingest-sweep: oversize recovery pass failed")
         return inserted
 
     def _maybe_backfill_hashes(self) -> None:

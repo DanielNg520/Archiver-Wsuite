@@ -62,8 +62,9 @@ from typing import Any
 
 from telethon import TelegramClient, helpers, utils as tg_utils
 from telethon.errors import (
-    AuthKeyError, FloodWaitError, ImageProcessFailedError, MediaEmptyError,
-    MediaInvalidError, UnauthorizedError,
+    AuthKeyError, FilePartsInvalidError, FloodWaitError,
+    ImageProcessFailedError, MediaEmptyError, MediaInvalidError,
+    UnauthorizedError,
 )
 from telethon.tl import functions, types as tg_types
 
@@ -107,6 +108,14 @@ def _video_attributes(file_path: str):
         duration=meta.duration, w=meta.width, h=meta.height,
         supports_streaming=True,
     )]
+
+
+class OversizeFileError(Exception):
+    """Preflight refusal: the file exceeds media_prep.max_upload_bytes(), so
+    Telegram would reject it with FilePartsInvalid AFTER the full upload. Raised
+    BEFORE the first byte moves; handled with FilePartsInvalidError as a
+    deterministic first-hit quarantine (message carries the 'FilePartsInvalid'
+    signature so core.store classifies it permanent — needs an upstream split)."""
 
 
 class SessionUnauthorized(RuntimeError):
@@ -1035,6 +1044,23 @@ class TelethonSendStrategy(SendStrategy):
         # cleaned string), so the attribute shape grouping depends on is unchanged.
         # For the single/document paths this is idempotent: `attributes` already
         # carries this exact display name, so we just re-assert it.
+        # PREFLIGHT upload ceiling: Telegram's SaveBigFilePart caps at ~8000
+        # 512 KiB parts, so a file over media_prep.max_upload_bytes() can NEVER
+        # upload — it fails FilePartsInvalid only AFTER the full multi-GB
+        # upload, once per retry. Refuse before the first byte moves; the error
+        # text keeps the FilePartsInvalid signature so store's failure
+        # classifier quarantines it as permanent (needs an upstream split).
+        try:
+            _size = Path(send_path).stat().st_size
+        except OSError:
+            _size = 0
+        _cap = media_prep.max_upload_bytes()
+        if _size > _cap:
+            raise OversizeFileError(
+                f"FilePartsInvalid (preflight): {Path(send_path).name} is "
+                f"{_size} B > {_cap} B upload ceiling — needs split, "
+                f"not uploaded")
+
         display = self._display_name(send_path)
         handle = await fast_upload.upload_file(
             self._sender, send_path, file_name=display,
@@ -1113,6 +1139,23 @@ class TelethonSendStrategy(SendStrategy):
                     ok=False,
                     error=f"{type(e).__name__}: {e}",
                     image_process_failed=True,
+                )
+
+            except (FilePartsInvalidError, OversizeFileError) as e:
+                # Deterministic oversize: the file needs >8000 parts (over
+                # ~3.9 GiB), so every retry fails identically — and each retry
+                # of the RPC form re-uploads the ENTIRE file first. Bail on the
+                # first hit and quarantine; the fix is an upstream split, then
+                # `reset failed`. (OversizeFileError is our preflight twin that
+                # refuses before uploading at all.)
+                log.warning(
+                    "telethon: oversize — can never upload (%s): %s — "
+                    "quarantining (split the file, then `reset failed`)",
+                    what, e,
+                )
+                return SendResult(
+                    ok=False,
+                    error=f"{type(e).__name__}: {e}",
                 )
 
             except (MediaEmptyError, MediaInvalidError) as e:
