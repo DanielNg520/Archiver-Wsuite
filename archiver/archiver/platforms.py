@@ -44,6 +44,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 from core.files import MEDIA_EXTENSIONS  # one definition, shared suite-wide
+# Gone-account signals live in core so the archiver extractors and the recorder
+# ban check share one verdict. Aliased to the historical private names so the
+# call sites below read unchanged.
+from core.account_gone import (
+    ACCOUNT_GONE_SIGNALS as _ACCOUNT_GONE_SIGNALS,
+    match_account_gone as _match_account_gone,
+)
 
 
 # ── Status types ──────────────────────────────────────────────────────────────
@@ -72,40 +79,6 @@ class AccountGoneError(RuntimeError):
     Distinct from AuthError on purpose: an auth failure is recoverable (refresh
     cookies) and trips the circuit breaker; a gone account never comes back and
     should be retired, not retried."""
-
-
-# Lowercased substrings that, in an extractor's error output, unambiguously mean
-# the ACCOUNT is gone (not merely a single missing item, a format error, or a
-# transient hiccup). Kept conservative on purpose — banning removes a user from
-# the active list, so a false positive is worse than a false negative (a missed
-# ban just wastes one more run's fetch; a wrong ban silently stops archiving a
-# live account). Per-item 404s are NOT in here; gallery-dl signals a gone
-# profile via NotFoundError, which we catch by type instead.
-_ACCOUNT_GONE_SIGNALS = (
-    "account is suspended",
-    "account suspended",
-    "has been suspended",
-    "user not found",
-    "account does not exist",
-    "user does not exist",
-    "no longer exists",
-    "could not find user",
-    "unable to find user",
-    "no longer available",
-    "account is unavailable",
-    "account has been banned",
-    "user has been banned",
-    "account was banned",
-)
-
-
-def _match_account_gone(text: str) -> str:
-    """Return the first matching gone-signal substring (the human-readable
-    reason), or '' if none match. `text` should already be lowercased."""
-    for sig in _ACCOUNT_GONE_SIGNALS:
-        if sig in text:
-            return sig
-    return ""
 
 
 class _ExtractorErrorDetector(logging.Handler):

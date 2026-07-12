@@ -26,6 +26,7 @@ from .dedup import dedup_user, DedupReport, DupGroup
 from .ingest import (
     register_file, register_media, IngestResult, IngestOutcome, PreparedResult,
 )
+from .account_gone import ACCOUNT_GONE_SIGNALS, match_account_gone
 from .routing import is_chat_id, CHAT_ID_RE, Route, parse_route
 from .grouping import split_group_key, is_split_group, SPLIT_GROUP_PREFIX
 from .sanitize import Sanitizer, ReloadingSanitizer, load_words
@@ -51,6 +52,7 @@ __all__ = [
     "dedup_user", "DedupReport", "DupGroup",
     "register_file", "register_media", "IngestResult", "IngestOutcome",
     "PreparedResult",
+    "ACCOUNT_GONE_SIGNALS", "match_account_gone",
     "is_chat_id", "CHAT_ID_RE", "Route", "parse_route",
     "split_group_key", "is_split_group", "SPLIT_GROUP_PREFIX",
     "Sanitizer", "ReloadingSanitizer", "load_words",
