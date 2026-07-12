@@ -216,7 +216,11 @@ def reconcile_recordings(
             split_threshold_bytes=split_threshold,
         ))
 
-    for user_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+    for user_dir in sorted(p for p in root.iterdir()
+                           if p.is_dir() and not p.name.startswith(".")):
+        # Skip dot-dirs: `.deleted/` is the quarantine bucket for banned users
+        # (core.quarantine) — reconciling it would resurrect banned usernames
+        # as phantom archives.
         if lock_held and recording_user in (None, user_dir.name):
             log.info("reconcile: skipping %s — a live recorder is recording "
                      "%s", user_dir.name,
