@@ -330,6 +330,109 @@ def register_media(
     return result
 
 
+# Failure-signature marking a quarantined row as OVERSIZE (Telegram's ~8000
+# part ceiling). Matches both the server error ("FilePartsInvalidError: ...")
+# and the dispatcher's preflight ("OversizeFileError: FilePartsInvalid
+# (preflight): ..."). Deliberately the same substring store.py's transient
+# classifier EXCLUDES — these rows never auto-re-arm, so without this pass
+# they wait for a manual split + `reset failed`.
+_OVERSIZE_ERROR_SIG = "filepartsinvalid"
+
+
+def recover_oversize_failed(store, *, max_splits: int = 1) -> int:
+    """Self-healing pass for oversize-quarantined rows: split the file, requeue
+    the parts, retire the poison row. Returns rows recovered (split or re-armed).
+
+    A row lands here when a file over the upload ceiling reached the queue —
+    historically the keep-original-as-document hole, now guarded at ingest AND
+    by the dispatcher's preflight, so this pass is the backstop for rows queued
+    by pre-fix code or any future producer bug. Design mirrors the manual
+    recovery procedure (ops/RUNBOOK.md "FilePartsInvalid"):
+
+      • stream-copy split (media_prep.split_for_upload — full quality, prep-
+        locked) into `<stem>_partNNN` files beside the original;
+      • each part registered with the ROW's own routing (source/platform/
+        username/chat_id/topic_id/priority) under a synthetic album key minted
+        from `<stem> [original]` — distinct from the converted-parts key, so
+        the two albums never merge;
+      • the original is deleted (its bytes live on in the parts) BEFORE the row
+        (stores.delete contract: a row deleted while its file remains would be
+        re-ingested — and a re-ingest would re-CONVERT, duplicating content);
+        if the unlink fails the quarantined row is kept as the tombstone that
+        blocks re-ingest, and the pass retries next sweep.
+
+    A row whose file is now UNDER the ceiling (user replaced it) is simply
+    re-armed; a row whose file is gone is left for the dispatcher's
+    delete_failed_missing GC. `max_splits` bounds ffmpeg work per pass (a split
+    is minutes for a multi-GB file) — the sweep cadence heals a backlog
+    incrementally without wedging the sweeper. Never raises for an expected
+    condition."""
+    try:
+        rows = store.list_items(status=Status.FAILED.value, limit=200)
+    except Exception:                            # pragma: no cover — defensive
+        log.exception("recover_oversize: could not list failed rows")
+        return 0
+    recovered = splits = 0
+    for row in rows:
+        if _OVERSIZE_ERROR_SIG not in (row.last_error or "").lower():
+            continue
+        path = Path(row.file_path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue                 # file gone → dispatcher's GC owns the row
+        if size <= media_prep.max_upload_bytes():
+            if store.rearm_failed(row.id):
+                log.info("recover_oversize: %s now under ceiling — re-armed "
+                         "id=%d", path.name, row.id)
+                recovered += 1
+            continue
+        if splits >= max_splits:
+            continue                             # next sweep takes the next one
+        splits += 1
+        parts = media_prep.split_for_upload(path)
+        if parts is None:
+            continue                 # busy / AutoSplitter missing — retry later
+        gk = split_group_key(row.platform, row.username,
+                             f"{path.stem} [original]")
+        accounted = 0
+        for part in parts:
+            try:
+                res = register_file(
+                    store, part,
+                    source    = row.source,
+                    platform  = row.platform,
+                    username  = row.username,
+                    chat_id   = row.chat_id,
+                    topic_id  = row.topic_id,
+                    group_key = gk,
+                    caption   = part.name,
+                    priority  = row.priority,
+                )
+            except Exception:                    # pragma: no cover — defensive
+                log.exception("recover_oversize: register_file on %s", part)
+                continue
+            if res.outcome not in (IngestOutcome.HASH_FAILED,
+                                   IngestOutcome.UNSTABLE):
+                accounted += 1
+        if accounted != len(parts):
+            log.warning("recover_oversize: %s — only %d/%d parts registered; "
+                        "original + row kept, retrying next sweep",
+                        path.name, accounted, len(parts))
+            continue
+        try:
+            cleanup_sidecars(row.file_path)      # delete file first (see above)
+        except OSError as e:
+            log.warning("recover_oversize: could not remove %s (%s) — row kept "
+                        "as tombstone", path.name, e)
+            continue
+        store.delete(row.id)
+        recovered += 1
+        log.info("recover_oversize: %s (%.2f GB) split into %d part(s), row "
+                 "id=%d retired", path.name, size / 1e9, len(parts), row.id)
+    return recovered
+
+
 def _collapse(
     store:  ProducerStore,
     incoming: Path,

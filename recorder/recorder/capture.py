@@ -194,8 +194,17 @@ class StreamCapture:
         # data loss, observed in prod). The OS-specific spawn flag (POSIX
         # start_new_session / Windows CREATE_NEW_PROCESS_GROUP) comes from the
         # core.platform.procgroup adapter.
+        # Pin the child's working directory to this run's own output dir (always
+        # under output_dir on the internal drive, and just created above) rather
+        # than inheriting the launcher's cwd. A stale inherited cwd — e.g. a
+        # shell or service started on a drive that was later removed/formatted
+        # (D:\ post-migration) — makes CreateProcess fail with
+        # `[WinError 3] cannot find the path specified: 'D:\\'` before yt-dlp
+        # ever runs. _run_dir is guaranteed to exist, so this can't reintroduce
+        # the same failure.
         self._proc = subprocess.Popen(
             cmd, stdout=self._log_fh, stderr=subprocess.STDOUT,
+            cwd=self._run_dir,
             **_procgroup.popen_kwargs(),
         )
 

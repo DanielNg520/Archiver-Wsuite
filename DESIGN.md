@@ -6,7 +6,7 @@ Verify `file:line` against code before trusting — comments may lag.
 
 ## TL;DR topology
 
-Four processes + ops, pivoting on **one SQLite file** (`~/.config/archiver-suite/suite.db`).
+Four processes + ops, pivoting on **one SQLite file** (`C:\Users\danie\.archive\.config\archiver-suite\suite.db`).
 No IPC sockets; they coordinate via the DB + on-disk artifacts.
 
 ```
@@ -16,7 +16,7 @@ archiver (download+reconcile) ─┐                   ┌─ recorder (TikTok l
                                           │ dispatcher claims pending
                                           ▼
                                    dispatcher ──► Telegram (Telethon/MTProto)
-   ops: reads on-disk artifacts + launchd ONLY (imports core, never a worker)
+   ops: reads on-disk artifacts + Task Scheduler ONLY (imports core, never a worker)
    core: the shared lib every worker imports
 ```
 
@@ -31,15 +31,15 @@ other. ops imports no *worker* (core is fine). Installs are pipx venvs with an
 | `schema.py` | DDL + connection factory; WAL+busy_timeout; `SCHEMA_VERSION=4`, keyed migrations via `user_version` | `connect`, `db_path`, `DEFAULT_DB_PATH`, `SchemaVersionError` |
 | `models.py` | Item dataclass + status state machine | `Item`, `Status{PENDING,SENDING,SENT,FAILED}`, `TERMINAL` |
 | `store.py` / `stores.py` | concrete `ItemStore` + role views (`ProducerStore`/`QueueStore`/`AdminStore`); `claim_batch` (homogeneous album claim; bucket is **source-aware** via `album_bucket` — orphaned rows group mixed `media` vs `document`, and a document group is held while a same-subfolder media sibling is still pending = media-before-documents), `add_pending`, `reset_stuck_sending`, dedup queries | `ItemStore`, `claim_batch`, `sent_twin`, `mark_*` |
-| `ingest.py` | THE enqueue primitive: stabilize→hash→dedup-collapse→insert (every producer) | `register_file`, `IngestResult`, `IngestOutcome` |
+| `ingest.py` | THE enqueue primitive: stabilize→hash→dedup-collapse→insert (every producer); `recover_oversize_failed` — self-healing backstop for FilePartsInvalid-quarantined rows (split → requeue parts → retire row; run by the archiver's ingest sweep, 1 split/pass) | `register_file`, `recover_oversize_failed`, `IngestResult`, `IngestOutcome` |
 | `dedup.py`/`hashing.py`/`backfill.py` | content-hash dedup; backfill hashes for legacy rows | `dedup_user`, `backfill_content_hashes` |
 | `identity.py` | resolve (identifier,date,title) from sidecar/filename/hash | `resolve` |
 | `stability.py` | skip half-written files | `is_stable` |
-| `orphaned.py` | chat_id-folder ingest + subfolder→album routing | `ingest_chat_id_dirs`, `ORPHANED_SOURCE`, `subfolder_of` |
+| `orphaned.py` | chat_id-folder ingest + subfolder→album routing; keep-original-as-document for converted sources (an OVERSIZE original is stream-copy split into its own doc album — never registered raw, the 2026-07-12 FilePartsInvalid fix) | `ingest_chat_id_dirs`, `ORPHANED_SOURCE`, `subfolder_of` |
 | `routing.py` | canonicalize chat_id/`.t<topic>` token (dash-free→`-100…`) | `parse_route`, `Route`, `is_chat_id` |
 | `grouping.py` | split-part album group keys | `split_group_key`, `is_split_group` |
 | `files.py` | media-type sets (`PHOTO_EXTS`/`VIDEO_EXTS`/`MEDIA_EXTENSIONS`, `ALBUM_MAX`) + album buckets: `media_bucket` (photo/video/single, all producers) and `orphaned_kind` (`media` = photos+inline video, `document` = `.mkv`/`.gif`/other — chat_id folders), unified by source-aware `album_bucket`; sidecar-aware delete. Leaf module — also THE home of `ORPHANED_SOURCE_NAME` (re-exported by `orphaned.py` as `ORPHANED_SOURCE`) | `media_bucket`, `orphaned_kind`, `album_bucket`, `cleanup_sidecars` |
-| `media_prep.py` | make file Telegram-compatible pre-enqueue: remux/re-encode video, split >ceiling (or a caller-supplied `split_threshold_bytes` — recorder split mode); `streamable_temp` (send-time net), `is_nonstreamable_video` (doc decision). Gated to `PREP_VIDEO_EXTS` (photos never become video) | `prepare`, `streamable_temp`, `is_nonstreamable_video` |
+| `media_prep.py` | make file Telegram-compatible pre-enqueue: remux/re-encode video, split >ceiling (or a caller-supplied `split_threshold_bytes` — recorder split mode); ceiling holds even when ffprobe fails or reports no size (an unprobeable oversize file is split or REFUSED, never passthrough-registered raw); `split_for_upload` (public split-only, lock-guarded); `streamable_temp` (send-time net), `is_nonstreamable_video` (doc decision). Gated to `PREP_VIDEO_EXTS` (photos never become video) | `prepare`, `split_for_upload`, `streamable_temp`, `is_nonstreamable_video` |
 | **`ffprobe.py`** | shared ffprobe: subprocess+json+timeout | `probe_json` |
 | **`ffmpeg.py`** | shared ffmpeg runner (bool, never raises) | `run_ffmpeg` |
 | **`heartbeat.py`** | cross-proc status files: atomic write + liveness/staleness read + **`pid_alive`** (the one liveness primitive) | `write_atomic`, `read_live`, `clear`, `pid_alive` |
@@ -89,7 +89,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | module | purpose |
 |---|---|
 | `drain.py` | `drain_forever`: serial claim→send→mark; circuit breaker (`_CIRCUIT_TRIP_AT=8`/60s); `run_housekeeping` (failed-missing GC→prune→**transient auto-recover** (`reset_failed_transient`, default on)→opt-in blanket `auto_retry_failed`→stuck watchdog, every 15min); missing-file+dedup pre-filter; `recover_media_empty` (atomic-album per-item fallback) |
-| `send.py` | `TelethonSendStrategy`: FloodWait+backoff+stall-watchdog+reconnect; video/photo/doc paths; **proactive photo compat** (single+album); **fail-fast `SessionUnauthorized`** (startup `is_user_authorized`, mid-send `UnauthorizedError`/`AuthKeyError`). Single video sends attach explicit ffprobe attrs; native video **albums** rely on Telethon's own per-item geometry → **`hachoir` is a hard dep** (without it album videos ship as 1×1 images; `cli._assert_video_metadata_backend` fails fast). Chat_id-folder albums: MIXED photo+video in one group (`_send_mixed_album`, photo preflight kept) and grouped `.mkv`/`.gif` originals as a **document album** (`send_album(as_documents=True)` → `force_document`), shipped after the subfolder's media. **Optional burner**: `_client_for(peer)` picks primary vs burner per destination (`_sender`/`_active_client`; serial drain ⇒ single field safe); burner built lazily, unauthorized→log+primary fallback; `None` burner short-circuits to primary (inert) |
+| `send.py` | `TelethonSendStrategy`: FloodWait+backoff+stall-watchdog+reconnect; video/photo/doc paths; **proactive photo compat** (single+album); **fail-fast `SessionUnauthorized`** (startup `is_user_authorized`, mid-send `UnauthorizedError`/`AuthKeyError`). Single video sends attach explicit ffprobe attrs; native video **albums** rely on Telethon's own per-item geometry → **`hachoir` is a hard dep** (without it album videos ship as 1×1 images; `cli._assert_video_metadata_backend` fails fast). Chat_id-folder albums: MIXED photo+video in one group (`_send_mixed_album`, photo preflight kept) and grouped `.mkv`/`.gif` originals as a **document album** (`send_album(as_documents=True)` → `force_document`), shipped after the subfolder's media. **Optional burner**: `_client_for(peer)` picks primary vs burner per destination (`_sender`/`_active_client`; serial drain ⇒ single field safe); burner built lazily, unauthorized→log+primary fallback; `None` burner short-circuits to primary (inert). **Oversize guard**: `_upload_document` preflights `st_size > media_prep.max_upload_bytes()` (`OversizeFileError`, no bytes uploaded) and `FilePartsInvalidError`/`OversizeFileError` bail first-hit → quarantine (permanent; fix = upstream split) |
 | `fast_upload.py` | FastTelethon parallel multi-conn upload (home DC, shared auth key); always falls back to serial |
 | `tg_router.py` | (platform,user)→`Destination(chat_id,topic_id)` env chain; row chat_id overrides; `peer_chat_id` = inverse of `_resolve_peer` (match a peer against the burner chat set) | 
 | `media_meta.py` | ffprobe geometry→`DocumentAttributeVideo` + poster thumbnail (via core.ff*) |
@@ -101,7 +101,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | CLI: `start`, `status`, `stats`, `check-routes`, `banned-words`, `queue{list,retry,cancel}`, `config`, `burner{login,chats,status}` |
 
 ## ops/ops/
-`health.py` (reads suite.db RO + core.paths artifacts + launchd; liveness via core.heartbeat), `logrotate.py` (copytruncate), `cli.py` (`install/uninstall/health/watch/load/unload/restart/logrotate`). launchd labels `com.duy.{dispatcher,recorder,archiver}`.
+`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `cli.py` (`install/uninstall/health/watch/load/unload/restart/logrotate`). Service seam is `core.platform.service` (Task Scheduler on Windows, launchd on macOS); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env → `~\.archive\.config` (self-contained, when its `archiver-suite` dir exists) → legacy `%APPDATA%` (Windows) / `~/.config` (POSIX); migrated by `tools/migrate_config_to_archive.py`.
 
 ## Seams (cross-process contracts; tests/test_seams.py, 210 checks, 30 seams)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
@@ -145,14 +145,15 @@ logrotate.
 - Required env fails loud; optional env warns+defaults.
 
 ## Run / test (from a NEUTRAL cwd — repo root lets ./core shadow the install)
-```
-PP=core:archiver:recorder:dispatcher:ops
-PY=~/.local/pipx/venvs/dispatcher/bin/python   # only venv with all of core+dispatcher+telethon
+Windows PowerShell; note `;` (not `:`) is the PYTHONPATH separator.
+```powershell
+$env:PYTHONPATH = "core;archiver;recorder;dispatcher;ops"
+$PY = "$env:USERPROFILE\pipx\venvs\dispatcher\Scripts\python.exe"  # only venv with all of core+dispatcher+telethon
 # seam suite + any selftest:
-PYTHONPATH=$PP $PY tests/test_seams.py
-PYTHONPATH=$PP $PY core/core/_selftest_media_prep.py   # etc.
+& $PY tests\test_seams.py
+& $PY core\core\_selftest_media_prep.py   # etc.
 # logrotate selftest is module-mode:
-PYTHONPATH=ops $PY -m ops._selftest_logrotate
+$env:PYTHONPATH = "ops"; & $PY -m ops._selftest_logrotate
 ```
 Full battery = 13 files: core{_selftest,_fixes,_media_prep,_safebrake,_termui},
 dispatcher/_fast_upload, recorder{_capture,_reconnect,_ui,_watch,platforms/_tiktok_browser},
@@ -160,7 +161,7 @@ ops/_logrotate(-m), tests/test_seams.
 
 ## Gotchas
 - **Editable installs import the working tree** → a worker restart loads whatever
-  branch is checked out. (archiver/recorder run under launchd; dispatcher manual.)
+  branch is checked out. (all four run under Task Scheduler once `ops load`ed.)
 - No single pipx venv has every package; use `media-archiver` venv OR `PYTHONPATH`
   over the dispatcher venv for cross-worker tests.
 - ops soft-imports core (try/except + sys.path fallback to repo); deps=[].

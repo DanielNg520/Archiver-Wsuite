@@ -38,8 +38,23 @@ RECORDER = "recorder"
 
 
 def _config_home() -> Path:
-    """The per-user config root for the current OS (no app segment)."""
+    """The per-user config root for the current OS (no app segment).
+
+    Windows (since 2026-07): the suite is SELF-CONTAINED under the archive
+    root — ``~\\.archive\\.config`` holds every per-app config dir, so config,
+    DB, sessions, cookies, logs, locks and media all live under one tree.
+    Detection is by presence of the migrated ``archiver-suite`` dir so a
+    pre-migration install keeps resolving to the legacy ``%APPDATA%`` layout
+    untouched until ``tools/migrate_config_to_archive.py --apply`` moves it.
+    ``ARCHIVER_CONFIG_HOME`` overrides everything (any OS) for non-standard
+    archive roots and tests."""
+    override = os.environ.get("ARCHIVER_CONFIG_HOME")
+    if override:
+        return Path(override)
     if os.name == "nt":
+        selfc = Path.home() / ".archive" / ".config"
+        if (selfc / SUITE).is_dir():
+            return selfc
         appdata = os.environ.get("APPDATA")
         if appdata:
             return Path(appdata)

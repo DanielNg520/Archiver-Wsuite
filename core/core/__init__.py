@@ -24,7 +24,8 @@ from .files import cleanup_sidecars, orphaned_kind, album_bucket
 from .deletion import DeletionGuard
 from .dedup import dedup_user, DedupReport, DupGroup
 from .ingest import (
-    register_file, register_media, IngestResult, IngestOutcome, PreparedResult,
+    register_file, register_media, recover_oversize_failed, IngestResult,
+    IngestOutcome, PreparedResult,
 )
 from .account_gone import ACCOUNT_GONE_SIGNALS, match_account_gone
 from .quarantine import quarantine_user, restore_user, LOCKED_SKIPPED
@@ -54,7 +55,8 @@ __all__ = [
     "validate_overrides", "cleanup_sidecars", "orphaned_kind", "album_bucket",
     "DeletionGuard",
     "dedup_user", "DedupReport", "DupGroup",
-    "register_file", "register_media", "IngestResult", "IngestOutcome",
+    "register_file", "register_media", "recover_oversize_failed",
+    "IngestResult", "IngestOutcome",
     "PreparedResult",
     "ACCOUNT_GONE_SIGNALS", "match_account_gone",
     "quarantine_user", "restore_user", "LOCKED_SKIPPED",

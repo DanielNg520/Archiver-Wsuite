@@ -327,24 +327,52 @@ def ingest_folder(
         # excluded: only their converted .mp4 is kept, the original is deleted.
         keep_original_as_doc = (
             prep.converted and f.suffix.lower() not in KEEP_ORIGINAL_SKIP_EXTS)
+        # UPLOAD CEILING for the kept original. prepare() ceilings only its
+        # OUTPUTS — the source it leaves in place — so registering the original
+        # raw here was the one path that could enqueue a >~3.9 GiB file, which
+        # Telegram hard-rejects with FilePartsInvalid (>8000 parts) AFTER the
+        # whole file uploads, once per retry, then poisons the queue. An
+        # oversize original is instead stream-copy split (full quality kept)
+        # and shipped as an ordered document album; if the split fails we skip
+        # the doc copy — the converted outputs still deliver the content and
+        # the original stays on disk.
+        doc_targets: list[Path] = [f]
+        doc_gk: str | None = None
+        if keep_original_as_doc and f.stat().st_size > media_prep.max_upload_bytes():
+            parts = media_prep.split_for_upload(f)
+            if parts is None:
+                rep.errors.append(
+                    f"{f.name}: original over upload ceiling and split failed "
+                    f"— document copy skipped (converted copy still sent)")
+                keep_original_as_doc = False
+            else:
+                doc_targets = parts
+                # A DISTINCT album key from the converted parts' key (minted
+                # below from the bare stem) so the two albums never merge.
+                doc_gk = split_group_key(
+                    ORPHANED_PLATFORM, chat_id, f"{f.stem} [original]")
+        doc_accounted = 0
         if keep_original_as_doc:
-            try:
-                res = register_file(
-                    store, f,
-                    source    = ORPHANED_SOURCE,
-                    platform  = ORPHANED_PLATFORM,
-                    username  = chat_id,
-                    chat_id   = chat_id,
-                    topic_id  = topic_id,
-                    group_key = None,
-                    caption   = f.name,
-                    priority  = priority,
-                )
-                setattr(rep, _OUTCOME_TALLY[res.outcome],
-                        getattr(rep, _OUTCOME_TALLY[res.outcome]) + 1)
-            except Exception as e:           # pragma: no cover — defensive
-                rep.errors.append(f"{f.name}: keep-original {e}")
-                log.exception("orphaned: register_file (keep-original) on %s", f)
+            for doc in doc_targets:
+                try:
+                    res = register_file(
+                        store, doc,
+                        source    = ORPHANED_SOURCE,
+                        platform  = ORPHANED_PLATFORM,
+                        username  = chat_id,
+                        chat_id   = chat_id,
+                        topic_id  = topic_id,
+                        group_key = doc_gk,
+                        caption   = doc.name if doc_gk else f.name,
+                        priority  = priority,
+                    )
+                    doc_accounted += 1
+                    setattr(rep, _OUTCOME_TALLY[res.outcome],
+                            getattr(rep, _OUTCOME_TALLY[res.outcome]) + 1)
+                except Exception as e:       # pragma: no cover — defensive
+                    rep.errors.append(f"{doc.name}: keep-original {e}")
+                    log.exception(
+                        "orphaned: register_file (keep-original) on %s", doc)
 
         # Register every output. Split parts of one original share a synthetic
         # group_key so the dispatcher albums them (ordered) as a single batch;
@@ -393,8 +421,20 @@ def ingest_folder(
         # A kept non-streamable original (registered as a document above) is the
         # archive copy — never delete it at ingest; memoize (mtime-keyed) so the
         # next sweep skips it even if its row was dedup-collapsed onto a twin.
+        # EXCEPT when the oversize path replaced it with split doc parts: the
+        # parts now carry the original bytes, so the source retires like any
+        # transformed original — but only once every part AND every converted
+        # output is accounted for.
         if keep_original_as_doc:
-            if mtime is not None:
+            if doc_gk is not None:
+                all_accounted = (doc_accounted == len(doc_targets)
+                                 and len(outcomes) == len(prep.outputs))
+                removed = (all_accounted
+                           and _delete_replaced_original(guard, chat_id, f))
+                if not removed and mtime is not None:
+                    prepped[key] = mtime
+                    p_dirty = True
+            elif mtime is not None:
                 prepped[key] = mtime
                 p_dirty = True
             continue

@@ -1,5 +1,11 @@
 # Windows Port Plan — Archiver Suite
 
+> **HISTORICAL (completed 2026-07).** The port shipped; the suite runs on
+> Windows under Task Scheduler. This early plan was superseded by
+> [CONVERSION_PLAN.md](CONVERSION_PLAN.md) (fuller file inventory) — kept as a
+> period record. Paths below reflect the pre-port tree; for the current layout
+> see [README.md](README.md).
+
 > Execution plan for porting the suite (macOS/POSIX → Windows). Read
 > `PROJECT_MAP.md` first. The suite is POSIX-bound in exactly four places; the
 > DB spine, media pipeline, and Telethon path are already portable. Work is

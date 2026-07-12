@@ -1,7 +1,7 @@
 # User Guide
 
 Task-oriented reference for daily use. Architecture is in **README.md**;
-the dense code map is in **DESIGN.md**; unattended/launchd setup is in
+the dense code map is in **DESIGN.md**; unattended (Task Scheduler) setup is in
 **AUTOMATION.md**.
 
 The model in one line: **producers write file-rows into one `suite.db`; the
@@ -123,7 +123,7 @@ Telegram-compatible) into ≤2 GiB parts — each shipped as one ordered album �
 turn on split mode in the recorder's config:
 
 ```toml
-# ~/.config/recorder/config.toml
+# C:\Users\danie\.archive\.config\recorder\config.toml
 [recorder]
 split_at_chunk_size = true   # split recordings over the chunk size
 split_chunk_gib     = 2.0    # part size / split trigger (default 2 GiB)
@@ -191,3 +191,6 @@ Restart the dispatcher after registering. Full details: **dispatcher/README.md**
 3. **Loose folder not a chat_id?** Folders that aren't a chat_id or known
    platform are skipped — rename to the chat_id or use `ingest --path … --chat`.
 4. **Dispatcher running?** The queue is durable; rows wait at `pending`.
+5. **`failed` with `FilePartsInvalid`?** The file is over Telegram's ~3.9 GiB
+   upload ceiling and can never send whole — it needs a split, not a retry.
+   See [ops/RUNBOOK.md](ops/RUNBOOK.md) "FilePartsInvalid".

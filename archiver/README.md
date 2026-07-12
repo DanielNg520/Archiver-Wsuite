@@ -2,8 +2,12 @@
 
 Unified downloader for X (Twitter), TikTok, and Instagram. It discovers and
 downloads media, then writes pending rows into the shared
-`~/.config/archiver-suite/suite.db` database. The dispatcher is the only
+`C:\Users\danie\.archive\.config\archiver-suite\suite.db` database. The dispatcher is the only
 process that talks to Telegram.
+
+> Install, on-disk layout, and how the four processes fit together live in the
+> root [README.md](../README.md). This doc is the archiver's own env-var and CLI
+> reference.
 
 Version 1.1 highlights:
 - **Instagram support** (posts + reels by default; stories/highlights opt-in)
@@ -44,20 +48,21 @@ Version 1.1 highlights:
 └── pyproject.toml
 ```
 
-**User config lives in `~/.config/archiver-suite/.env`** (outside the project).
+**User config lives in `C:\Users\danie\.archive\.config\archiver-suite\.env`** (outside the project).
 User lists and behavior policies live in
-`~/.config/archiver-suite/config.toml`.
+`C:\Users\danie\.archive\.config\archiver-suite\config.toml`.
 
-## First-time setup (new install)
+## First-time setup
 
-```bash
-pipx install . --python 3.13
-pipx inject --editable media-archiver ../core
-mkdir -p ~/.config/archiver-suite
-cp .env.example ~/.config/archiver-suite/.env
+Install the whole suite per the root [README.md](../README.md). The
+archiver-specific step is seeding its config, then filling in the env vars
+documented below:
+
+```powershell
+Copy-Item .env.example $env:USERPROFILE\.archive\.config\archiver-suite\.env
 # Fill in env vars — see Env reference below.
 archiver health
-archiver run
+archiver start --once
 ```
 
 ## Migrating an EXISTING archive
@@ -120,7 +125,7 @@ RECONCILE_AFTER_RUN=false
 When true, each `archiver run` finishes with a disk sweep that dedups platform
 folders, then queues any stable files missing from the shared dispatcher DB.
 That sweep also checks the recorder output directory from
-`~/.config/recorder/config.toml`.
+`C:\Users\danie\.archive\.config\recorder\config.toml`.
 
 ### Delete after upload (3-level chain)
 ```bash
@@ -130,7 +135,7 @@ DELETE_AFTER_UPLOAD_X_ALICE=false          # per-user
 ```
 
 Run `archiver policy` to see the resolved decision per (platform, user).
-Policy changes are stored in `~/.config/archiver-suite/config.toml`.
+Policy changes are stored in `C:\Users\danie\.archive\.config\archiver-suite\config.toml`.
 
 ### X
 ```bash
@@ -262,16 +267,12 @@ for sanity-checking what "incremental from where?" means at any point.
 
 ## Automation
 
-Same as before. `archiver loop` for long-running mode, cron for fixed
-schedules. See the loop subcommand's `--help` for flags.
+Unattended, the archiver runs `archiver loop` under Task Scheduler (registered
+by `ops install` / started by `ops load`) — full setup in
+[../AUTOMATION.md](../AUTOMATION.md). `archiver loop --help` lists the interval
+and ingest-sweeper flags.
 
-```bash
-caffeinate -d -i archiver loop              # macOS: also prevent sleep
-tail -f .archiver/loop.log                  # watch loop health
-tail -f .archiver/archiver.log              # watch what each run does
-```
-
-Cron alternative:
-```cron
-0 */6 * * * /Users/duynguyen/.local/bin/archiver run >> /tmp/archiver-cron.log 2>&1
+```powershell
+archiver loop --min 3600 --max 7200         # run it in the foreground to watch
+Get-Content -Wait $env:USERPROFILE\.archive\.config\archiver-suite\logs\archiver.out.log
 ```

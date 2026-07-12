@@ -636,6 +636,16 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
     if path.suffix.lower() not in PREP_VIDEO_EXTS:
         return PrepResult.passthrough(path)        # images / non-video untouched
 
+    ceiling = max_upload_bytes()
+    chunk_target = split_chunk_bytes()
+    # Optional lower split trigger: split at the caller's threshold instead of
+    # the upload ceiling, and never produce a part larger than it. Only ever
+    # tightens the limits (min), so a misconfigured huge value can't raise the
+    # trigger above the hard ceiling.
+    if split_threshold_bytes is not None and split_threshold_bytes > 0:
+        ceiling = min(ceiling, split_threshold_bytes)
+        chunk_target = min(chunk_target, split_threshold_bytes)
+
     probe = _probe(path)
     if probe is None:
         # Unreadable or not actually a video. Leave it to the normal ingest path
@@ -648,19 +658,32 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
         # ingest layer's stabilize-before-prep gate (register_media, orphaned, and
         # reconcile all is_stable() first), so a half-written file never reaches
         # prep to be passthrough-registered raw.
-        return PrepResult.passthrough(path)
+        #
+        # ONE exception to the raw fallback: the upload ceiling needs NO probe —
+        # st_size alone decides. Passing an over-ceiling file through raw
+        # enqueues a guaranteed FilePartsInvalid (Telegram hard-rejects >8000
+        # parts), which quarantines only after uploading the whole multi-GB file
+        # per attempt. Try a split (AutoSplitter runs its own integrity check);
+        # if the file really is unreadable the split fails and we refuse, so an
+        # undeliverable file is never registered.
+        raw_size = _stat_size(path)
+        if raw_size <= ceiling:
+            return PrepResult.passthrough(path)
+        with _prep_lock(path) as acquired:
+            if not acquired:
+                return PrepResult.busy_()
+            parts = _split(path, chunk_target)
+            if parts is None:
+                return PrepResult.failed(
+                    f"unprobeable and over the upload ceiling "
+                    f"({raw_size} B > {ceiling} B), split failed: {path.name}")
+            return PrepResult(outputs=parts, transformed=True, individual=True)
 
     streamable = _is_streamable(probe)
-    ceiling = max_upload_bytes()
-    chunk_target = split_chunk_bytes()
-    # Optional lower split trigger: split at the caller's threshold instead of
-    # the upload ceiling, and never produce a part larger than it. Only ever
-    # tightens the limits (min), so a misconfigured huge value can't raise the
-    # trigger above the hard ceiling.
-    if split_threshold_bytes is not None and split_threshold_bytes > 0:
-        ceiling = min(ceiling, split_threshold_bytes)
-        chunk_target = min(chunk_target, split_threshold_bytes)
-    oversize = probe.size > ceiling if probe.size > 0 else False
+    # ffprobe occasionally reports no/zero size — fall back to stat so the
+    # ceiling gate never goes blind on a probeable file.
+    known_size = probe.size if probe.size > 0 else _stat_size(path)
+    oversize = known_size > ceiling if known_size > 0 else False
 
     if streamable and not oversize:
         return PrepResult.passthrough(path)        # already perfect
@@ -706,6 +729,31 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
         assert converted is not None
         return PrepResult(outputs=[converted], transformed=True, individual=False,
                           converted=True)
+
+
+def _stat_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
+def split_for_upload(path: Path) -> list[Path] | None:
+    """Split `path` into <=1 GiB parts beside it (stream-copy, quality
+    preserved) under the cross-worker prep lock. Returns the verified part
+    paths, or None on any failure INCLUDING lock contention.
+
+    Public entry for callers that must ship a file's ORIGINAL bytes but find it
+    over the upload ceiling — chiefly the orphaned sweep's keep-original-as-
+    document path, whose source file prepare() deliberately leaves untouched
+    (its outputs are the converted copies, not the original). The caller owns
+    registering the parts and retiring the source."""
+    with _prep_lock(path) as acquired:
+        if not acquired:
+            log.info("media_prep: %s busy (another worker) — split skipped",
+                     path.name)
+            return None
+        return _split(path)
 
 
 def _unlink(path: Path | None) -> None:

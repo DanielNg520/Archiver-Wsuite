@@ -7,44 +7,25 @@ pending rows from the shared `suite.db` / `items` table populated by
 (priority 10). One file at a time;
 FloodWait-aware; crash-safe via a startup watchdog.
 
-Architectural context: see the root `README.md` and `DESIGN.md`.
-
-## Install
-
-pipx-managed, with the shared `core` package injected into the isolated
-dispatcher venv:
-
-```
-pipx install ./dispatcher --python 3.13
-pipx inject --editable dispatcher ./core
-```
-
-That puts `dispatcher` on your PATH via `~/.local/bin/dispatcher`, isolated
-in its own venv at `~/.local/pipx/venvs/dispatcher/`.
+Architectural context, install, and layout: see the root
+[README.md](../README.md) and [DESIGN.md](../DESIGN.md). This doc is the
+dispatcher's own CLI reference, burner-account guide, and queue smoke test.
 
 `hachoir` is a declared dependency and installs automatically — it is Telethon's
 video-metadata backend. Without it, native album sends emit a degenerate 1×1/0s
 video attribute and Telegram renders every album video as a static image, so the
-dispatcher **refuses to start** if it's missing (`pipx inject dispatcher hachoir`
-to repair an old venv).
-
-After dispatcher source edits, reinstall to pick them up:
-
-```
-pipx reinstall dispatcher --python 3.13
-```
-
-Edits to `core` are picked up immediately because it is injected editable.
+dispatcher **refuses to start** if it's missing (`python -m pipx inject
+dispatcher hachoir` to repair an old venv). After dispatcher source edits,
+`python -m pipx reinstall dispatcher` to pick them up; `core` edits are live immediately
+(injected editable).
 
 ## First-run setup
 
-```
-mkdir -p ~/.config/dispatcher
-cp .env.example ~/.config/dispatcher/.env
-chmod 600 ~/.config/dispatcher/.env
+```powershell
+Copy-Item .env.example $env:USERPROFILE\.archive\.config\dispatcher\.env
 ```
 
-Edit `~/.config/dispatcher/.env` to fill in `TELEGRAM_API_ID`,
+Edit `C:\Users\danie\.archive\.config\dispatcher\.env` to fill in `TELEGRAM_API_ID`,
 `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, and `TELEGRAM_CHAT_ID`.
 
 Optional Telegram routing overrides live in the same file. TikTok videos use
@@ -54,7 +35,7 @@ use `TELEGRAM_CHAT_ID_TIKTOK_LIVE`, or
 
 First time you run `dispatcher start`, Telethon will prompt for the SMS
 auth code interactively and write a session file at
-`~/.config/dispatcher/session`. After that, sessions persist.
+`C:\Users\danie\.archive\.config\dispatcher\session.session`. After that, sessions persist.
 
 ## Commands
 
@@ -121,24 +102,25 @@ Policies are read at startup — **restart the dispatcher** after changing them.
 
 ## Smoke test (no archiver involvement)
 
-```
+```powershell
 dispatcher status
 
-sqlite3 ~/.config/archiver-suite/suite.db
+sqlite3 $env:USERPROFILE\.archive\.config\archiver-suite\suite.db
 ```
 
-Then in the sqlite shell:
+Then in the sqlite shell (use a real image path you created, forward slashes are
+fine):
 
 ```
 INSERT INTO items
   (source, platform, username, identifier, file_path, discovered_at, status, priority, attempts)
 VALUES
-  ('test', 'x', 'testuser', 'manual_smoke', '/tmp/test_image.jpg',
+  ('test', 'x', 'testuser', 'manual_smoke', 'C:/Users/danie/test_image.jpg',
    strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'pending', 10, 0);
 .quit
 ```
 
-Drop a real image at `/tmp/test_image.jpg`, then:
+Drop a real image at that path, then:
 
 ```
 dispatcher start
