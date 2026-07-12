@@ -1045,6 +1045,16 @@ class ItemStore:
         ).fetchall()
         return {r["status"]: r["n"] for r in rows}
 
+    def user_status_counts(self, platform: str, username: str) -> dict[str, int]:
+        """Per-user status → count. Backs the manual-delete sweeper's
+        "is everything sent?" gate (core.manual_delete)."""
+        rows = self.conn.execute(
+            """SELECT status, COUNT(*) AS n FROM items
+               WHERE platform=? AND username=? GROUP BY status""",
+            (platform, username),
+        ).fetchall()
+        return {r["status"]: r["n"] for r in rows}
+
     def last_sent_at(self) -> str | None:
         """ISO-8601 UTC timestamp of the most recent successful send, or None.
         The one-line liveness signal for `status` displays: a healthy drain

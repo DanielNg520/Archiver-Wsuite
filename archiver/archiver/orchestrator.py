@@ -226,6 +226,7 @@ class Archiver:
                         await self._reconcile_one_platform(platform, user_filter)
             self._maybe_ingest_orphaned(known_platform_names)
         self._maybe_backfill_hashes()
+        self._process_pending_deletions()
         # NOTE: failed-queue maintenance (delete missing-file tombstones +
         # auto_retry_failed re-queue) lives in the DISPATCHER's housekeeping
         # (dispatcher.drain), not here — the dispatcher owns the upload queue,
@@ -356,6 +357,28 @@ class Archiver:
                 or rep.errors:
             log.info("auto-sort — %s", rep, extra={"ev": "sort"})
 
+    def _process_pending_deletions(self) -> None:
+        """Manual-delete sweeper (core.manual_delete): trash fully-uploaded
+        roster users to the Recycle Bin, GC their rows after the retention
+        window. Never fatal — a failed sweep just retries next run."""
+        from core import process_pending_deletions
+
+        try:
+            rep = process_pending_deletions(
+                self.db, self.config.policy_store, self.config.output_dir)
+        except Exception as e:
+            log.warning("manual-delete sweep failed (%s) — will retry next "
+                        "run", e)
+            return
+        if rep:
+            log.info("manual-delete — %s", rep, extra={"ev": "delete"})
+
+    def _deleting_users(self, platform_name: str) -> frozenset[str]:
+        """Users mid-deletion for one platform. Their folder still exists
+        until the sweeper trashes it, so folder-scan discovery would silently
+        re-adopt them — every user-list consumer filters through this."""
+        return frozenset(self.config.policy_store.list_deleting(platform_name))
+
     def _maybe_ingest_orphaned(self, known_platform_names: set[str]) -> None:
         """When the auto_ingest_orphaned policy is on, scan output_dir's
         chat_id-named folders and enqueue loose files — the automated form of
@@ -410,6 +433,9 @@ class Archiver:
                 continue
 
             users = platform.users
+            deleting = self._deleting_users(platform.name)
+            if deleting:
+                users = tuple(u for u in users if u not in deleting)
             if user_filter:
                 users = tuple(u for u in users if u == user_filter)
                 if not users:
@@ -557,13 +583,18 @@ class Archiver:
             return (user_filter.lstrip("@"),)
 
         platform_dir = Path(self.config.output_dir) / platform.name
+        # Dot-dirs are never users: `.deleted/` is the ban quarantine bucket
+        # (core.quarantine) and would otherwise be reconciled as a phantom.
         disk_users = {
             p.name
             for p in platform_dir.iterdir()
-            if p.is_dir()
+            if p.is_dir() and not p.name.startswith(".")
         } if platform_dir.exists() else set()
 
-        users = set(platform.users) | disk_users
+        # Mid-deletion users still have a folder until the sweeper trashes it;
+        # re-adopting them here would undo `archiver delete` every cycle.
+        users = (set(platform.users) | disk_users) \
+            - self._deleting_users(platform.name)
         return tuple(sorted(users))
 
     # ── Per-user cycle ───────────────────────────────────────────────────────

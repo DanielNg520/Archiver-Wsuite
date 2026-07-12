@@ -28,6 +28,9 @@ from .ingest import (
 )
 from .account_gone import ACCOUNT_GONE_SIGNALS, match_account_gone
 from .quarantine import quarantine_user, restore_user, LOCKED_SKIPPED
+from .manual_delete import (
+    process_pending_deletions, DeletionSweepReport, RETENTION_DAYS,
+)
 from .routing import is_chat_id, CHAT_ID_RE, Route, parse_route
 from .grouping import split_group_key, is_split_group, SPLIT_GROUP_PREFIX
 from .sanitize import Sanitizer, ReloadingSanitizer, load_words
@@ -55,6 +58,7 @@ __all__ = [
     "PreparedResult",
     "ACCOUNT_GONE_SIGNALS", "match_account_gone",
     "quarantine_user", "restore_user", "LOCKED_SKIPPED",
+    "process_pending_deletions", "DeletionSweepReport", "RETENTION_DAYS",
     "is_chat_id", "CHAT_ID_RE", "Route", "parse_route",
     "split_group_key", "is_split_group", "SPLIT_GROUP_PREFIX",
     "Sanitizer", "ReloadingSanitizer", "load_words",

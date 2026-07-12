@@ -348,6 +348,97 @@ class PolicyStore:
             self._persist()
             return True
 
+    # ── Deletion roster ───────────────────────────────────────────────────
+    #
+    # Users the operator asked to DELETE (manual, terminal — distinct from the
+    # auto-ban quarantine). Stored under `[platform.<name>.deleting]` keyed by
+    # username → {requested_at, trashed_at?}, parallel to `banned`. The entry
+    # drives the deferred-trash sweeper (core.manual_delete): folder → Recycle
+    # Bin once every row is sent, rows GC'd 30 days after the trash.
+
+    def list_deleting(self, platform: str) -> tuple[str, ...]:
+        with self._lock:
+            d = (self._data.get("platform", {})
+                           .get(platform, {})
+                           .get("deleting", {}))
+            return tuple(d.keys()) if isinstance(d, dict) else ()
+
+    def deleting_details(self, platform: str) -> dict[str, dict[str, Any]]:
+        """username → {requested_at, trashed_at?} for every pending deletion.
+        Returns a copy; mutating it does not touch the store."""
+        with self._lock:
+            d = (self._data.get("platform", {})
+                           .get(platform, {})
+                           .get("deleting", {}))
+            if not isinstance(d, dict):
+                return {}
+            return {
+                u: (dict(meta) if isinstance(meta, dict) else {})
+                for u, meta in d.items()
+            }
+
+    def mark_deleting(self, platform: str, username: str, *,
+                      requested_at: str = "") -> bool:
+        """Request deletion: record the user under `deleting`. Does NOT touch
+        the active `users` list — the caller pairs this with remove_user (the
+        same two-step shape as ban_user, kept separate so `cancel` can restore
+        cleanly). Returns True iff this is a new request; a repeat is a no-op
+        (the original requested_at is authoritative)."""
+        with self._lock:
+            section = self._resolve_section(platform, None, create=True)
+            deleting = section.setdefault("deleting", {})
+            if username in deleting:
+                return False
+            entry: dict[str, Any] = {}
+            if requested_at:
+                entry["requested_at"] = requested_at
+            deleting[username] = entry
+            self._persist()
+            return True
+
+    def set_deleting_field(self, platform: str, username: str,
+                           key: str, value: Any) -> bool:
+        """Stamp one field (e.g. trashed_at) onto an existing deletion entry.
+        Returns False if the user has no entry."""
+        with self._lock:
+            section = self._resolve_section(platform, None, create=False)
+            deleting = (section or {}).get("deleting", {})
+            if not isinstance(deleting, dict) or username not in deleting:
+                return False
+            entry = deleting[username]
+            if not isinstance(entry, dict):
+                entry = deleting[username] = {}
+            entry[key] = value
+            self._persist()
+            return True
+
+    def platforms_with_deletions(self) -> tuple[str, ...]:
+        """Every platform that has at least one pending deletion entry — the
+        sweeper's iteration set (a roster can outlive the platform's presence
+        in the configured list, so this comes from the store, not the config)."""
+        with self._lock:
+            return tuple(
+                name for name, data in self._data.get("platform", {}).items()
+                if isinstance(data, dict) and isinstance(data.get("deleting"), dict)
+                and data["deleting"]
+            )
+
+    def unmark_deleting(self, platform: str, username: str) -> bool:
+        """Evict a deletion entry (GC done, or `deleting cancel`). Returns
+        True iff an entry was removed."""
+        with self._lock:
+            section = self._resolve_section(platform, None, create=False)
+            if section is None:
+                return False
+            deleting = section.get("deleting", {})
+            if not isinstance(deleting, dict) or username not in deleting:
+                return False
+            del deleting[username]
+            if not deleting:
+                del section["deleting"]
+            self._persist()
+            return True
+
     # ── Diagnostics ───────────────────────────────────────────────────────
 
     def iter_user_overrides(self) -> Iterator[tuple[str, str, dict[str, Any]]]:

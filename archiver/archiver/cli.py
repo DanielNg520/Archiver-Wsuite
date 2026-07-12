@@ -359,6 +359,29 @@ def build_parser() -> argparse.ArgumentParser:
     bu.add_argument("--re-add", action="store_true",
                     help="Also re-add the account to the active user list")
 
+    # ── delete / deleting (manual user deletion lifecycle) ───
+    s_del = sub.add_parser(
+        "delete",
+        help="Request FULL deletion of a user: drop from the active list now; "
+             "folder → Recycle Bin once every upload is sent; DB rows purged "
+             "30 days after that. Reversible until the row GC via "
+             "`archiver deleting cancel`.")
+    s_del.add_argument("--platform", choices=PLATFORM_CHOICES, required=True)
+    s_del.add_argument("--user", metavar="USERNAME", required=True)
+
+    s_deleting = sub.add_parser(
+        "deleting",
+        help="Show or cancel pending manual deletions")
+    deleting_sub = s_deleting.add_subparsers(dest="deleting_cmd",
+                                             required=False, metavar="ACTION",
+                                             help="omit to list; 'cancel' to abort")
+    dl = deleting_sub.add_parser("list", help="List pending deletions")
+    dl.add_argument("--platform", choices=PLATFORM_CHOICES)
+    dc = deleting_sub.add_parser(
+        "cancel", help="Cancel a pending deletion (before row GC)")
+    dc.add_argument("--platform", choices=PLATFORM_CHOICES, required=True)
+    dc.add_argument("--user", metavar="USERNAME", required=True)
+
     # ── platform (run enablement) ───
     s_plat = sub.add_parser(
         "platform",
@@ -1422,6 +1445,105 @@ def cmd_banned(args, config: Config, db: ItemStore) -> int:
     return 0
 
 
+# ── delete / deleting (manual user deletion lifecycle) ───────────────────────
+
+def cmd_delete(args, config: Config, db: ItemStore) -> int:
+    """Request a manual, terminal deletion of one user. Only the roster entry
+    and the active-list drop happen here — files and rows are handled later by
+    the per-cycle sweeper (core.manual_delete): folder → Recycle Bin once every
+    row is `sent`, rows GC'd 30 days after that."""
+    from datetime import datetime, timezone
+
+    store = config.policy_store
+    platform = args.platform
+    username = args.user.lstrip("@")
+
+    newly = store.mark_deleting(
+        platform, username,
+        requested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    if not newly:
+        log.info("@%s [%s] is already marked for deletion — "
+                 "`archiver deleting list` for status.", username, platform)
+        return 0
+    store.remove_user(platform, username)
+
+    counts = db.user_status_counts(platform, username)
+    unsent = sum(n for s, n in counts.items() if s != "sent")
+    log.info("@%s [%s] marked for deletion.", username, platform)
+    if unsent:
+        log.info("%d un-sent row(s) remain — the folder moves to the Recycle "
+                 "Bin only after they all upload (checked every cycle).", unsent)
+    else:
+        log.info("All rows sent — the folder moves to the Recycle Bin on the "
+                 "next archiver cycle.")
+    log.info("DB rows are purged 30 days after the trash. Cancel with "
+             "`archiver deleting cancel --platform %s --user %s`.",
+             platform, username)
+    log.info("Note: a running `archiver loop` won't see this change until "
+             "its next cycle.")
+    return 0
+
+
+def cmd_deleting(args, config: Config, db: ItemStore) -> int:
+    """Show pending deletions (requested_at / trashed_at / GC countdown) or
+    cancel one before the row GC completes it."""
+    from datetime import datetime, timezone
+    from core import RETENTION_DAYS
+
+    store  = config.policy_store
+    action = getattr(args, "deleting_cmd", None)
+
+    if action == "cancel":
+        platform = args.platform
+        username = args.user.lstrip("@")
+        details = store.deleting_details(platform)
+        if username not in details:
+            log.error("@%s [%s] is not marked for deletion.", username, platform)
+            return 1
+        trashed_at = details[username].get("trashed_at", "")
+        store.unmark_deleting(platform, username)
+        if trashed_at:
+            log.info("Cancelled — the 30-day row GC will NOT run; DB rows are "
+                     "kept.")
+            log.info("The folder was already trashed (%s) — restore it from "
+                     "the Windows Recycle Bin yourself if you want the files "
+                     "back.", trashed_at)
+        else:
+            store.add_user(platform, username)
+            log.info("Cancelled before any trash — @%s restored to the [%s] "
+                     "active user list; nothing was moved or deleted.",
+                     username, platform)
+        return 0
+
+    # Default / "list".
+    platforms = ([args.platform] if getattr(args, "platform", None)
+                 else store.platforms_with_deletions())
+    now = datetime.now(timezone.utc)
+    total = 0
+    for plat in platforms:
+        for u, meta in store.deleting_details(plat).items():
+            total += 1
+            req = meta.get("requested_at", "?")
+            trashed = meta.get("trashed_at", "")
+            if not trashed:
+                counts = db.user_status_counts(plat, u)
+                unsent = sum(n for s, n in counts.items() if s != "sent")
+                stage = (f"waiting on {unsent} un-sent row(s)" if unsent
+                         else "ready to trash next cycle")
+            else:
+                try:
+                    t0 = datetime.fromisoformat(trashed)
+                    left = RETENTION_DAYS - (now - t0).days
+                    stage = (f"trashed {trashed} — rows purge in ~{left}d"
+                             if left > 0 else "rows purge next cycle")
+                except ValueError:
+                    stage = f"trashed {trashed}"
+            log.info("  @%s [%s] — requested %s · %s", u, plat, req, stage)
+    if not total:
+        log.info("(no pending deletions)")
+    return 0
+
+
 # ── platform (run enablement, backed by ENABLED_PLATFORMS in .env) ───────────
 
 def cmd_platform(args, config: Config, db: ItemStore) -> int:
@@ -1911,7 +2033,7 @@ def main() -> int:
         "config", "platform", "run-settings", "migrate", "policy",
         "dedup-policy", "safebrake", "purge-sent", "stats", "ingest", "queue",
         "backfill", "auto-ingest", "local", "download", "sort", "auto-sort",
-        "auto-retry", "banned",
+        "auto-retry", "banned", "delete", "deleting",
     }
     if args.cmd == "reset" and args.reset_cmd in {"failed", "user"}:
         config_only = True
@@ -1958,6 +2080,8 @@ def main() -> int:
             "loop":         cmd_loop,
             "config":       cmd_config,
             "banned":       cmd_banned,
+            "delete":       cmd_delete,
+            "deleting":     cmd_deleting,
             "platform":     cmd_platform,
             "run-settings": cmd_run_settings,
             "policy":       cmd_policy,
