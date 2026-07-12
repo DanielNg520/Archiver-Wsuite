@@ -396,7 +396,8 @@ class Archiver:
                 log.info("  pseudo-platform %s", rep, extra={"ev": "ingest"})
 
         reports = ingest_chat_id_dirs(
-            self.db, self.config.output_dir,
+            self.db, self.config.routes_dir,   # chat_id folders may live on
+                                               # a different volume (ROUTES_DIR)
             known_platforms=known_platform_names,
             guard=self.deletion_guard,
             pseudo_ingest=_pseudo,

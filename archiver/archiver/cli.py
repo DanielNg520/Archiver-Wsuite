@@ -583,14 +583,14 @@ def cmd_ingest(args, config: Config, db: ItemStore) -> int:
               f"known {rep.already_known}, deleted {rep.deleted_dupes} dup")
 
     reports = ingest_chat_id_dirs(
-        db, config.output_dir,
+        db, config.routes_dir,
         known_platforms=list(PLATFORM_CHOICES) + list(config.local_platforms),
         priority=args.priority,
         guard=guard,
         pseudo_ingest=_pseudo,
     )
     if not reports:
-        print("No chat_id folders found under", config.output_dir)
+        print("No chat_id folders found under", config.routes_dir)
         return 0
     total_inserted = 0
     for rep in reports:

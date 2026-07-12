@@ -193,6 +193,13 @@ class Config:
     policy_store: PolicyStore
 
     output_dir: str = "./downloads"
+    # Where the top-level chat_id route folders live. Defaults to output_dir
+    # (the historical single-tree layout) so every install is byte-identical
+    # until ROUTES_DIR is set; the two-root split (downloads/records internal,
+    # routes on another volume) sets it explicitly. ONLY the chat_id ingest
+    # scan reads this — platform downloads, archives and quarantine stay under
+    # output_dir.
+    routes_dir: str = ""
     db_path:    str = ""   # resolved in load() via core.db_path()
     log_file:   str = "./.archiver/archiver.log"
     state_dir:  str = "./.archiver"
@@ -248,12 +255,14 @@ class Config:
                 f"includes that platform in .env. (config.toml: {store.path})"
             )
 
+        output_dir = _opt("OUTPUT_DIR", "./downloads")
         return cls(
             x                 = x_cfg,
             tiktok            = tt_cfg,
             instagram         = ig_cfg,
             policy_store      = store,
-            output_dir        = _opt("OUTPUT_DIR", "./downloads"),
+            output_dir        = output_dir,
+            routes_dir        = _opt("ROUTES_DIR", "") or output_dir,
             db_path           = str(_core_db_path()),
             log_file          = _opt("LOG_FILE",   "./.archiver/archiver.log"),
             state_dir         = _opt("STATE_DIR",  "./.archiver"),
