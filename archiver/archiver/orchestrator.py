@@ -299,9 +299,18 @@ class Archiver:
         newly = self.config.policy_store.ban_user(
             platform, username, reason=reason, detected_at=detected_at,
         )
+        # Quarantine the on-disk folder so folder-scan discovery stops
+        # re-adopting the user (move to .deleted/, reversible via `unban`).
+        # LOCKED_SKIPPED = a live recorder holds the user; the roster entry
+        # stands and the folder is swept on a later run's re-detection.
+        from core import quarantine_user, LOCKED_SKIPPED
+        moved = quarantine_user(self.config.output_dir, platform, username)
         self._banned_this_run.append({
             "platform": platform, "username": username,
             "reason": reason, "newly": newly,
+            "quarantined": str(moved) if isinstance(moved, Path) else
+                           ("deferred (live recording)" if moved is LOCKED_SKIPPED
+                            else "no folder"),
         })
         if newly:
             log.warning("@%s [%s] appears banned/deleted — removed from active "
@@ -320,6 +329,9 @@ class Archiver:
         log.warning("%d account%s retired this run — their queued uploads still "
                     "deliver; manage with `archiver banned`", n,
                     "" if n == 1 else "s", extra={"ev": "banned"})
+        for b in self._banned_this_run:
+            log.warning("  @%s [%s] — folder: %s", b["username"], b["platform"],
+                        b.get("quarantined", "?"), extra={"ev": "banned"})
 
     def _fetches(self, platform: Platform) -> bool:
         """Does this platform download new media this run? False for a
