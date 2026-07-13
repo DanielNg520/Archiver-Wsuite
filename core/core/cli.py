@@ -39,19 +39,50 @@ def add_stats_parser(sub: _SubParsersAction) -> None:
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
 
+def human_eta(seconds: float | None) -> str:
+    """~2d 4h / ~3h 12m / ~45m / ~30s — coarse on purpose; it's an estimate."""
+    if seconds is None:
+        return "n/a"
+    s = int(seconds)
+    if s < 60:
+        return f"~{s}s"
+    if s < 3600:
+        return f"~{s // 60}m"
+    if s < 86400:
+        return f"~{s // 3600}h {s % 3600 // 60}m"
+    return f"~{s // 86400}d {s % 86400 // 3600}h"
+
+
 def handle_stats(store: ItemStore, args: Namespace) -> int:
-    st = store.stats(getattr(args, "platform", None),
-                     getattr(args, "username", None))
+    platform = getattr(args, "platform", None)
+    username = getattr(args, "username", None)
+    st = store.stats(platform, username)
+    eta = store.drain_eta(platform=platform, username=username)
     if getattr(args, "json", False):
-        print(_json.dumps(st))
+        print(_json.dumps({**st, "eta": eta}))
         return 0
     scope = "global"
-    if getattr(args, "platform", None):
-        scope = args.platform + (f"/@{args.username}" if getattr(args, "username", None) else "")
+    if platform:
+        scope = platform + (f"/@{username}" if username else "")
     print(f"[{scope}] total={st['total']} "
           f"pending={st['pending']} sending={st['sending']} "
           f"sent={st['sent']} failed={st['failed']} "
           f"({st['total_mb']:.1f} MB)")
+    if eta["remaining_files"] == 0:
+        print("upload eta: done — nothing pending")
+    elif eta["eta_seconds"] is None:
+        print(f"upload eta: n/a — nothing sent in the last "
+              f"{eta['window_minutes']}m to measure a rate "
+              f"({eta['remaining_files']} file(s), "
+              f"{eta['remaining_bytes'] / 1e9:.2f} GB remaining)")
+    else:
+        rate = (f" @ {eta['rate_bps'] / 1e6:.1f} MB/s"
+                if eta["rate_bps"] else "")
+        print(f"upload eta: {human_eta(eta['eta_seconds'])} — "
+              f"{eta['remaining_files']} file(s), "
+              f"{eta['remaining_bytes'] / 1e9:.2f} GB remaining"
+              f"{rate} (rate over last {eta['window_minutes']}m; "
+              f"batch gating may hold small batches longer)")
     return 0
 
 

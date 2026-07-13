@@ -322,6 +322,72 @@ def dispatcher_queue_counts() -> dict[str, int] | None:
 
 
 @_memo()
+def drain_eta_fields(window_minutes: int = 60) -> dict | None:
+    """Upload-drain ETA from observed throughput: bytes sent in the trailing
+    window vs bytes still pending+sending. Same math as ItemStore.drain_eta
+    but read-only against the DB artifact (ops imports no worker package).
+    None when the DB is unreadable; eta_seconds None when nothing was sent in
+    the window (no rate → "n/a", never a guess)."""
+    conn = _connect_ro(SUITE_DB)
+    if conn is None:
+        return None
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=window_minutes)
+                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sent = conn.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(file_size_bytes),0) AS b,
+                      MIN(sent_at) AS first
+               FROM items WHERE status='sent' AND sent_at >= ?""",
+            (cutoff,),
+        ).fetchone()
+        rem = conn.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(file_size_bytes),0) AS b
+               FROM items WHERE status IN ('pending','sending')""",
+        ).fetchone()
+        rate_bps = eta = None
+        if sent["n"] and sent["first"]:
+            try:
+                first = datetime.strptime(
+                    sent["first"], "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
+                span = max(
+                    60.0,
+                    (datetime.now(timezone.utc) - first).total_seconds())
+            except ValueError:
+                span = window_minutes * 60.0
+            if rem["n"]:
+                if sent["b"] and rem["b"]:
+                    rate_bps = sent["b"] / span
+                    eta = rem["b"] / rate_bps
+                else:
+                    eta = rem["n"] / (sent["n"] / span)
+            else:
+                eta = 0.0
+        return {"remaining_files": rem["n"], "remaining_bytes": rem["b"],
+                "rate_bps": rate_bps, "eta_seconds": eta,
+                "window_minutes": window_minutes}
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _humanize_eta(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    s = int(seconds)
+    if s < 60:
+        return f"~{s}s"
+    if s < 3600:
+        return f"~{s // 60}m"
+    if s < 86400:
+        return f"~{s // 3600}h {s % 3600 // 60}m"
+    return f"~{s // 86400}d {s % 86400 // 3600}h"
+
+
+@_memo()
 def queue_health() -> dict | None:
     """Early-warning signals the counts alone don't show: how long the oldest
     pending row has waited, whether anything is wedged in 'sending', and how
@@ -685,6 +751,21 @@ def render(anim: "int | None" = None) -> str:
             _c(f"last send {_humanize_age(last) if last else 'never'}", _TEXT)
             + _c(f"  ·  {dd['sent_1h']:,} in 1h  ·  {dd['sent_24h']:,} in 24h",
                  _DIM)))
+        de = drain_eta_fields()
+        if de is not None and de["remaining_files"]:
+            if de["eta_seconds"] is not None:
+                eta_txt = _c(_humanize_eta(de["eta_seconds"]), _WHITE, bold=True)
+                rate_txt = (_c(f"  @ {de['rate_bps'] / 1e6:.1f} MB/s", _DIM)
+                            if de["rate_bps"] else "")
+            else:
+                eta_txt = _c("n/a (no sends in the last "
+                             f"{de['window_minutes']}m)", _DIM)
+                rate_txt = ""
+            rows.append(_row("drain eta",
+                eta_txt
+                + _c(f"  ·  {de['remaining_files']:,} file(s), "
+                     f"{de['remaining_bytes'] / 1e9:.2f} GB left", _DIM)
+                + rate_txt))
         up = upload_progress_fields()
         if up:
             spin_up = _spin(anim)

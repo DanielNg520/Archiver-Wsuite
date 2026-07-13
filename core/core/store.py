@@ -1045,6 +1045,66 @@ class ItemStore:
         ).fetchall()
         return {r["status"]: r["n"] for r in rows}
 
+    def drain_eta(self, *, window_minutes: int = 60,
+                  platform: str | None = None,
+                  username: str | None = None) -> dict:
+        """Estimated time until the upload queue drains, from observed
+        throughput: bytes actually delivered in the trailing window vs the
+        bytes still waiting (pending + sending). Returns
+          {remaining_files, remaining_bytes, sent_files, sent_bytes,
+           rate_bps, eta_seconds, window_minutes}
+        with rate_bps/eta_seconds None when nothing was sent in the window
+        (no rate → no honest estimate; display "n/a", never a guess).
+
+        platform/username scope the REMAINING side only — the rate is always
+        global, because one dispatcher drains the whole queue serially, so a
+        scoped backlog still moves at the global rate (and shares it with
+        every other scope; the estimate is a lower bound for a busy queue).
+
+        Estimate quality caveats (deliberate): batch gating can hold small
+        platform batches beyond the estimate, and rows with NULL
+        file_size_bytes fall back to a files/sec rate. Good enough for "can I
+        reboot tonight?" — not a promise."""
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=window_minutes)
+                  ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sent = self.conn.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(file_size_bytes),0) AS b,
+                      MIN(sent_at) AS first
+               FROM items WHERE status='sent' AND sent_at >= ?""",
+            (cutoff,),
+        ).fetchone()
+        clause, params = "status IN ('pending','sending')", []
+        if platform:
+            clause += " AND platform=?"; params.append(platform)
+        if username:
+            clause += " AND username=?"; params.append(username)
+        rem = self.conn.execute(
+            f"""SELECT COUNT(*) AS n, COALESCE(SUM(file_size_bytes),0) AS b
+                FROM items WHERE {clause}""", params,
+        ).fetchone()
+
+        rate_bps = eta = None
+        if sent["n"] and sent["first"]:
+            # Span from the first send in the window to now (floor 60s so one
+            # freshly-sent row can't fabricate an absurd rate).
+            span = max(60.0, _age_seconds(sent["first"]))
+            if rem["n"]:
+                if sent["b"] and rem["b"]:
+                    rate_bps = sent["b"] / span
+                    eta = rem["b"] / rate_bps
+                else:                       # NULL-bytes rows → files/sec
+                    eta = rem["n"] / (sent["n"] / span)
+            else:
+                eta = 0.0
+                rate_bps = (sent["b"] / span) if sent["b"] else None
+        return {
+            "remaining_files": rem["n"], "remaining_bytes": rem["b"],
+            "sent_files": sent["n"], "sent_bytes": sent["b"],
+            "rate_bps": rate_bps, "eta_seconds": eta,
+            "window_minutes": window_minutes,
+        }
+
     def user_status_counts(self, platform: str, username: str) -> dict[str, int]:
         """Per-user status → count. Backs the manual-delete sweeper's
         "is everything sent?" gate (core.manual_delete)."""
