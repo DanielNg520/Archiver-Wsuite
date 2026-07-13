@@ -41,7 +41,8 @@ def check(cond: bool, label: str) -> None:
 
 def _shim(tmp: Path, tracker: UnstartableTracker) -> types.SimpleNamespace:
     cfg = types.SimpleNamespace(tiktok_cookies_file=None,
-                                output_dir=str(tmp / "records"))
+                                output_dir=str(tmp / "records"),
+                                db_path=str(tmp / "suite.db"))
     return types.SimpleNamespace(config=cfg, _unstartable=tracker,
                                  _banned=set(), _skipped={})
 
@@ -97,7 +98,9 @@ def main() -> int:
 
     tracker = UnstartableTracker(state_dir)
     shim = _shim(tmp, tracker)
-    (tmp / "records" / "tiktok" / "goner").mkdir(parents=True)
+    # Real recordings layout: DIRECTLY under output_dir, no platform segment.
+    (tmp / "records" / "goner").mkdir(parents=True)
+    (tmp / "records" / "goner" / "old_live.mp4").write_bytes(b"x" * 128)
 
     ban_check.profile_check = _stub(ProfileStatus.GONE)
 
@@ -129,6 +132,15 @@ def main() -> int:
         check(calls == ["goner"] and "goner" not in shim._banned,
               f"stage-2 {status.value}: profile checked, NO ban")
 
+    # A queued (pending) recording of the doomed user — its row must follow
+    # the folder into .deleted/ so the pending upload still delivers.
+    from core import ItemStore
+    db = ItemStore.open(str(tmp / "suite.db"))
+    db.add_item(source="recorder", platform="tiktok", username="goner",
+                identifier="rec1",
+                file_path=str(tmp / "records" / "goner" / "old_live.mp4"))
+    db.close()
+
     calls.clear()
     ban_check.profile_check = _stub(ProfileStatus.GONE)
     shim._skipped["goner"] = 99.0
@@ -136,9 +148,15 @@ def main() -> int:
     check("goner" in shim._banned, "stage-2 GONE: banned")
     check("goner" in PolicyStore(toml_path).list_banned("tiktok"),
           "ban lands on the config.toml roster")
-    check((tmp / "records" / "tiktok" / ".deleted" / "goner").is_dir()
-          and not (tmp / "records" / "tiktok" / "goner").exists(),
-          "folder quarantined into .deleted/")
+    check((tmp / "records" / ".deleted" / "goner" / "old_live.mp4").exists()
+          and not (tmp / "records" / "goner").exists(),
+          "recordings folder quarantined into .records-style .deleted/")
+    db = ItemStore.open(str(tmp / "suite.db"))
+    row = db.list_items(limit=5)[0]
+    check(row.file_path == str(tmp / "records" / ".deleted" / "goner"
+                               / "old_live.mp4"),
+          "queued recording row repointed (upload still deliverable)")
+    db.close()
     check(UnstartableTracker(state_dir).cycles("goner") == 0,
           "escalation entry evicted after ban")
     check("goner" not in shim._skipped, "cooldown bench entry dropped")

@@ -1402,7 +1402,8 @@ def cmd_banned(args, config: Config, db: ItemStore) -> int:
         # auto-ban move). None = nothing was quarantined, or a live folder
         # already exists at the destination (restore refuses to clobber).
         from core import restore_user
-        restored = restore_user(config.output_dir, args.platform, username)
+        restored = restore_user(config.output_dir, args.platform, username,
+                                db=db)
         if restored is not None:
             log.info("Restored quarantined folder → %s", restored)
         else:

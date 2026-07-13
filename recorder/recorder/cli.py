@@ -390,7 +390,7 @@ def cmd_banned(args: argparse.Namespace) -> int:
     unstartable gate (state._maybe_ban_unstartable) onto this app's
     config.toml roster via core.PolicyStore; unban reverses the roster entry
     AND brings the quarantined folder back out of .deleted/."""
-    from core import PolicyStore, restore_user
+    from core import ItemStore, PolicyStore, restore_user
 
     store  = PolicyStore(CONFIG_TOML)
     action = getattr(args, "banned_cmd", None)
@@ -402,7 +402,13 @@ def cmd_banned(args: argparse.Namespace) -> int:
             return 1
         log.info("Removed @%s from the banned list.", username)
         config = RecorderConfig.load()
-        restored = restore_user(config.output_dir, "tiktok", username)
+        # Recordings live directly under output_dir (no platform segment);
+        # repoint any still-queued rows back to the restored location.
+        db = ItemStore.open(config.db_path)
+        try:
+            restored = restore_user(config.output_dir, "", username, db=db)
+        finally:
+            db.close()
         if restored is not None:
             log.info("Restored quarantined folder → %s", restored)
         else:

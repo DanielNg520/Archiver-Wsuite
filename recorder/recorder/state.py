@@ -450,7 +450,9 @@ class StateMachine:
                 return
 
             from datetime import datetime, timezone
-            from core import PolicyStore, quarantine_user, LOCKED_SKIPPED
+            from core import (
+                ItemStore, PolicyStore, quarantine_user, LOCKED_SKIPPED,
+            )
             from .config import CONFIG_TOML
             reason = (f"unstartable for "
                       f"{self._unstartable.cycles(username)} cooldowns and "
@@ -459,7 +461,16 @@ class StateMachine:
                 "tiktok", username, reason=reason,
                 detected_at=datetime.now(timezone.utc)
                             .isoformat(timespec="seconds"))
-            moved = quarantine_user(self.config.output_dir, "tiktok", username)
+            # Recordings live DIRECTLY under output_dir (.records/<user>/ —
+            # no platform segment), so platform="" with the tiktok lock gate
+            # kept explicit. A short-lived ItemStore repoints the user's
+            # queued rows onto .deleted/ so pending uploads still deliver.
+            db = ItemStore.open(self.config.db_path)
+            try:
+                moved = quarantine_user(self.config.output_dir, "", username,
+                                        lock_platform="tiktok", db=db)
+            finally:
+                db.close()
             self._unstartable.clear(username)
             self._banned.add(username)
             self._skipped.pop(username, None)

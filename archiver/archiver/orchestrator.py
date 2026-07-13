@@ -318,7 +318,8 @@ class Archiver:
         # LOCKED_SKIPPED = a live recorder holds the user; the roster entry
         # stands and the folder is swept on a later run's re-detection.
         from core import quarantine_user, LOCKED_SKIPPED
-        moved = quarantine_user(self.config.output_dir, platform, username)
+        moved = quarantine_user(self.config.output_dir, platform, username,
+                                db=self.db)
         self._banned_this_run.append({
             "platform": platform, "username": username,
             "reason": reason, "newly": newly,

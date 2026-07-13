@@ -116,6 +116,62 @@ def main() -> int:
     check(isinstance(quarantine_user(root, "tiktok", "streamer"), Path),
           "tiktok user quarantines once the lock clears")
 
+    # ── no platform segment (recorder .records layout) ──────────────────────
+    rec = root / "records"
+    (rec / "streamer2").mkdir(parents=True)
+    (rec / "streamer2" / "live.flv").write_bytes(b"x" * 128)
+    d = quarantine_user(rec, "", "streamer2", lock_platform="tiktok")
+    check(d == rec / ".deleted" / "streamer2" and d.is_dir(),
+          'platform="" quarantines directly under output_dir')
+    q.recorder_lock.live_recording_user = lambda: (True, "streamer2")
+    (rec / "streamer2").mkdir()
+    check(quarantine_user(rec, "", "streamer2", lock_platform="tiktok")
+          is LOCKED_SKIPPED,
+          "lock_platform gates the no-segment layout on the tiktok lock")
+    q.recorder_lock.live_recording_user = _no_lock
+    check(restore_user(rec, "", "streamer2") is None,
+          'restore with platform="" refuses to overwrite the live folder')
+
+    # ── db repoint: queued rows follow the moved folder ─────────────────────
+    from core import ItemStore
+    db = ItemStore.open(str(root / "suite.db"))
+    _make_user(root, "ig", "carla", "v1.mp4")
+    old = str(root / "ig" / "carla" / "v1.mp4")
+    db.add_item(source="archiver", platform="ig", username="carla",
+                identifier="c1", file_path=old)
+    # a mixed-slash row must repoint too (the DB holds both styles)
+    _make_user(root, "ig", "carla", "v2.mp4")
+    db.add_item(source="archiver", platform="ig", username="carla",
+                identifier="c2",
+                file_path=str(root / "ig" / "carla" / "v2.mp4").replace("\\", "/"))
+    dest = quarantine_user(root, "ig", "carla", db=db)
+    paths = {r.identifier: r.file_path for r in db.list_items(limit=20)
+             if r.username == "carla"}
+    check(paths["c1"] == str(dest / "v1.mp4"),
+          "backslash row repointed into .deleted")
+    check(paths["c2"] == str(dest / "v2.mp4"),
+          "forward-slash row repointed too")
+    check(Path(paths["c1"]).exists(), "repointed path resolves on disk")
+    restore_user(root, "ig", "carla", db=db)
+    paths = {r.identifier: r.file_path for r in db.list_items(limit=20)
+             if r.username == "carla"}
+    check(paths["c1"] == old, "restore repoints rows back")
+    db.close()
+
+    # ── Windows open-handle rename refusal → deferred, not a crash ──────────
+    import os
+    _make_user(root, "x", "held", "h.mp4")
+    fh = open(root / "x" / "held" / "h.mp4", "rb")
+    try:
+        r = quarantine_user(root, "x", "held")
+        if os.name == "nt":
+            check(r is LOCKED_SKIPPED and (root / "x" / "held").exists(),
+                  "open handle inside → move deferred (LOCKED_SKIPPED)")
+        else:                                    # POSIX renames succeed anyway
+            check(r is not None, "open handle: POSIX move proceeds")
+    finally:
+        fh.close()
+
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 
