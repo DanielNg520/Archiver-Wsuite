@@ -167,6 +167,7 @@ picked up until `tools/migrate_config_to_archive.py --apply` moves them —
 |------|----------------------|
 | config / DB / sessions / cookies / logs / locks | `%CONFIG%\archiver-suite`, `%CONFIG%\dispatcher`, `%CONFIG%\recorder` |
 | media output (`OUTPUT_DIR`) | `C:\Users\danie\.archive` |
+| chat_id route folders (`ROUTES_DIR`) | defaults to `OUTPUT_DIR` (single-tree layout); set it to move ONLY the route folders to another volume — everything else stays put |
 | recorder output | `C:\Users\danie\.archive\.records` (dot-prefixed so the orphaned scanner skips it) |
 | worker logs (service capture) | `%CONFIG%\archiver-suite\logs` |
 | AutoSplitter (oversize-video splitter) | `C:\Users\danie\Documents\Coding\autosplitter` — sibling checkout, auto-discovered by `core.media_prep`; no config needed |
@@ -177,7 +178,7 @@ picked up until `tools/migrate_config_to_archive.py --apply` moves them —
                             + metadata (+ -wal, -shm while running)
     config.toml             shared policy store (user lists + per-user
                             delete-after-upload / dedup policies)
-    .env                    OUTPUT_DIR + shared tunables
+    .env                    OUTPUT_DIR, ROUTES_DIR + shared tunables
     cookies\ , logs\ , locks\ , launchers\
 
 %CONFIG%\dispatcher\
@@ -191,13 +192,20 @@ picked up until `tools/migrate_config_to_archive.py --apply` moves them —
 
 C:\Users\danie\.archive\
     x\ tiktok\ instagram\ …   platform download folders (per-user subfolders)
-    <chat_id>\                orphaned route folders (loose files → a chat)
+    <platform>\.deleted\      quarantined banned users (moved, not deleted —
+                              restored by `banned unban`; scanners skip dot-dirs)
+    <chat_id>\                orphaned route folders (loose files → a chat) —
+                              live under ROUTES_DIR once the two-root split is
+                              applied; here while ROUTES_DIR is unset
     .records\                 recorder output
 ```
 
-> The unified `.archive` root is the current **interim** storage layout; a
-> planned two-root split (downloads/records internal, chat_id route folders on a
-> separate volume) is tracked in `REFACTOR_PLAN_bans_and_paths.md`.
+> **Two-root split:** `ROUTES_DIR` (unset ⇒ `= OUTPUT_DIR`, byte-identical
+> single-tree behavior) points the chat_id ingest scan at a separate volume;
+> platform downloads, `.records` and the `.deleted\` quarantine always stay
+> under `OUTPUT_DIR`. Apply the physical move with
+> `tools/migrate_split_roots.py` (workers stopped → `--apply` → set
+> `ROUTES_DIR` → restart). Design history: `REFACTOR_PLAN_bans_and_paths.md`.
 
 ---
 

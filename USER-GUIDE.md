@@ -87,12 +87,16 @@ output_dir/-1001234567890/Beach day/John.jpg    → album, caption "Beach day\nJ
 - **In a subfolder** → one album per subfolder, subfolder name + filenames.
 
 ```bash
-archiver ingest                                  # scan chat_id folders under output_dir
+archiver ingest                                  # scan chat_id folders under the routes root
 archiver ingest --path "/any/folder" --chat -100123   # ingest an arbitrary folder
 archiver auto-ingest set --enabled true          # do it automatically every cycle
 ```
 A top-level folder that's neither a known/local platform nor a valid chat_id is
 skipped with a warning — never guessed.
+
+The chat_id scan root is `ROUTES_DIR` (`.env`), which defaults to `OUTPUT_DIR` —
+set it to keep route folders on a different volume than the platform downloads
+(the two-root split; see README "On-disk layout").
 
 ---
 
@@ -141,6 +145,50 @@ folder is enqueued within minutes, then the dispatcher uploads it. (A *running*
 loop won't see this code or a changed `--ingest-interval` until it restarts.)
 
 ---
+
+## Banned accounts (automatic quarantine)
+
+When an account is detected gone (banned / suspended / deleted), it's retired
+automatically: dropped from the active list, recorded on the app's banned
+roster, and its folder moved to `<platform>\.deleted\<user>\` — **moved, not
+deleted**, so an unban restores everything.
+
+- **Archiver:** the extractors detect it during a run (explicit "account
+  suspended"-style errors only; a private or flaky account never trips it).
+- **Recorder:** a TikTok user unstartable for **≥6 cooldowns across ≥24 h**
+  AND whose profile page explicitly says the account is gone is auto-banned.
+  Network errors, bot-walls and private accounts never ban — they just stay
+  in the normal retry cooldown.
+
+```bash
+archiver banned                       # roster + reason + when
+archiver banned unban --platform tiktok --user someone --re-add
+recorder banned                       # recorder's own roster
+recorder banned unban --user someone --re-add
+```
+`unban` also moves the folder back out of `.deleted\`. The two rosters are
+independent — banning in one app doesn't ban in the other.
+
+## Deleting a user (manual, goes to the Recycle Bin)
+
+Distinct from a ban: `archiver delete` is intentional and terminal, but staged
+so nothing un-uploaded is ever lost:
+
+1. **Request** — dropped from the active list immediately; files and DB rows
+   untouched.
+2. **Trash** — once **every** row is uploaded, the folder goes to the Windows
+   **Recycle Bin** (checked every cycle; never while a live recording holds
+   the user).
+3. **Purge** — 30 days after the trash, the DB rows are deleted. (This also
+   forgets dedup memory — re-adding the user later could re-upload old bytes.)
+
+```bash
+archiver delete --platform x --user someone     # start the lifecycle
+archiver deleting                               # status + purge countdown
+archiver deleting cancel --platform x --user someone
+```
+`cancel` before the trash restores the user completely; after the trash it
+stops the row purge (recover the folder from the Recycle Bin yourself).
 
 ## Inspecting & fixing the queue
 
@@ -192,5 +240,7 @@ Restart the dispatcher after registering. Full details: **dispatcher/README.md**
    platform are skipped — rename to the chat_id or use `ingest --path … --chat`.
 4. **Dispatcher running?** The queue is durable; rows wait at `pending`.
 5. **`failed` with `FilePartsInvalid`?** The file is over Telegram's ~3.9 GiB
-   upload ceiling and can never send whole — it needs a split, not a retry.
-   See [ops/RUNBOOK.md](ops/RUNBOOK.md) "FilePartsInvalid".
+   upload ceiling and can never send whole. Since 2026-07-12 this self-heals:
+   the archiver's sweep splits it and requeues the parts automatically (one
+   split per cycle). Details: [ops/RUNBOOK.md](ops/RUNBOOK.md)
+   "FilePartsInvalid".
