@@ -281,6 +281,37 @@ config here.*
 
 ---
 
+## Two-root split (chat_id route folders → ROUTES_DIR)
+
+`ROUTES_DIR` (archiver `.env`) is the scan root for **chat_id route folders**;
+unset it equals `OUTPUT_DIR` (single-tree, byte-identical old behavior). Set it
+to keep route folders on a separate volume from the platform downloads/records.
+Route folders are named `[<label>~]<chat_id>[.t<topic>]` — the `<label>~`
+prefix is cosmetic (stripped before routing), `.t<topic>` targets a forum topic.
+
+```powershell
+ops unload                                            # workers MUST be down
+python tools\migrate_split_roots.py --dest D:\routes  # dry-run: inspect
+python tools\migrate_split_roots.py --dest D:\routes --apply
+# then set ROUTES_DIR=D:\routes in .archive\.config\archiver-suite\.env
+ops load
+```
+
+> **⚠ Only route-named folders belong under `ROUTES_DIR`.** The auto-ingest
+> scan treats every *other* top-level folder there as a pseudo-platform and
+> uploads it — never point `ROUTES_DIR` at a directory that already holds
+> unrelated content.
+>
+> The move is **cross-drive** (copy+delete), so the destination volume needs
+> free space ≥ the route folders' total size; the source stays intact until
+> each folder's copy completes. `WinError 112` mid-run = destination full —
+> free space and re-run (already-moved folders are skipped as clashes).
+
+*Status (2026-07-17): `ROUTES_DIR=D:\routes` is set; the physical folder move is
+being done manually (D: was full at attempt time).*
+
+---
+
 ## Disk filling up
 
 `ops health` shows the free-space figure. If it's getting tight:

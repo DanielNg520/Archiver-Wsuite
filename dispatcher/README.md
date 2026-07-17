@@ -95,8 +95,11 @@ dispatcher** after registering, so `start` picks the burner up.
   dispatcher config set min_batch_size 10        # or 1 to disable
   dispatcher config set min_batch_max_wait_h 168 --platform x
   ```
-- **chat_id routing.** Rows from `output_dir/<chat_id>/…` carry an explicit
-  `chat_id` and route there; an unresolvable chat_id fails the batch cleanly.
+- **chat_id routing.** Rows from route folders (under `ROUTES_DIR`, which
+  defaults to `OUTPUT_DIR`) carry an explicit `chat_id` and route there; an
+  unresolvable chat_id fails the batch cleanly. The folder may carry a cosmetic
+  `<label>~` prefix and/or a `.t<topic>` suffix, but those are resolved
+  archiver-side — the row's stored `chat_id` is always the bare canonical id.
 
 Policies are read at startup — **restart the dispatcher** after changing them.
 

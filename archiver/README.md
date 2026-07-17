@@ -186,7 +186,10 @@ archiver download set --platform instagram --enabled false
 archiver download                           # show resolved on/off per platform
 
 # chat_id (orphaned) folders → loose files to a specific chat
-archiver ingest                             # scan output_dir/<chat_id>/ folders
+archiver ingest                             # scan ROUTES_DIR (defaults to OUTPUT_DIR)
+#   folder name = destination: [<label>~]<chat_id>[.t<topic>]
+#   e.g.  family-chat~-1001234567890   or   memes~-100123.t42   or bare -100123
+#   the <label>~ prefix is cosmetic (stripped before routing); split on last `~`
 archiver ingest --path "/any/dir" --chat -100123   # ingest an arbitrary folder
 archiver auto-ingest set --enabled true     # auto-ingest every cycle (default off)
 

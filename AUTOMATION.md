@@ -223,6 +223,7 @@ archiver local add mylibrary
 archiver download set --platform instagram --enabled false
 
 # Auto-ingest chat_id folders each cycle (default off)
+# folder name = destination: [<label>~]<chat_id>[.t<topic>] under ROUTES_DIR
 archiver auto-ingest set --enabled true
 
 # Upload batching (dispatcher; restart it to apply)

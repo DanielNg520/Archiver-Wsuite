@@ -18,7 +18,7 @@ and let it run.
 | Capture a TikTok live | (recorded automatically) | TikTok-live chat |
 | Send a hand-managed library like a platform | `output_dir/<localname>/<user>/` after `archiver local add` | per-`localname`/user chat |
 | Keep a built-in platform but manage files yourself | `output_dir/instagram/<user>/` + `archiver download set --platform instagram --enabled false` | that platform's chat |
-| Send loose files to a specific channel | `output_dir/<chat_id>/…` | that chat_id |
+| Send loose files to a specific channel | `routes_dir/[<label>~]<chat_id>[.t<topic>]/…` | that chat_id (+ topic) |
 
 ---
 
@@ -253,7 +253,8 @@ Restart the dispatcher after registering. Full details: **dispatcher/README.md**
    (and the copy deleted). Check the dispatcher log for "suppressed as
    duplicate".
 3. **Loose folder not a chat_id?** Folders that aren't a chat_id or known
-   platform are skipped — rename to the chat_id or use `ingest --path … --chat`.
+   platform are skipped — rename to `[<label>~]<chat_id>[.t<topic>]` (don't lead
+   with a `.`) or use `ingest --path … --chat`.
 4. **Dispatcher running?** The queue is durable; rows wait at `pending`.
 5. **`failed` with `FilePartsInvalid`?** The file is over Telegram's ~3.9 GiB
    upload ceiling and can never send whole. Since 2026-07-12 this self-heals:
