@@ -693,7 +693,7 @@ def cmd_auto_retry(args, config: Config, db: ItemStore) -> int:
 
 def cmd_local(args, config: Config, db: ItemStore) -> int:
     """Manage the list of user-managed 'local' platforms (no download)."""
-    from core import is_chat_id
+    from core import parse_route
 
     store   = config.policy_store
     current = list(store.get("local_platforms", default=[]) or [])
@@ -707,8 +707,11 @@ def cmd_local(args, config: Config, db: ItemStore) -> int:
         if name in PLATFORM_CHOICES:
             log.error("local add: '%s' is a built-in platform", name)
             return 2
-        if is_chat_id(name):
-            log.error("local add: '%s' looks like a chat_id — that's an "
+        # parse_route (not bare is_chat_id) so a labeled `<label>~<chat_id>` or
+        # topic-suffixed `<chat_id>.t<topic>` folder is rejected too — those are
+        # orphaned destinations, not local platforms.
+        if parse_route(name) is not None:
+            log.error("local add: '%s' looks like a chat_id route — that's an "
                       "orphaned destination, not a local platform", name)
             return 2
         if name in current:

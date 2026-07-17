@@ -94,6 +94,22 @@ archiver auto-ingest set --enabled true          # do it automatically every cyc
 A top-level folder that's neither a known/local platform nor a valid chat_id is
 skipped with a warning — never guessed.
 
+**Name a route folder for humans.** Prefix any route folder with a readable
+label and a `~`, and/or suffix it with a forum topic `.t<topic_id>`:
+
+```
+output_dir/family-chat~-1001234567890/…          → chat -100…, General topic
+output_dir/memes~-1001234567890.t42/…            → chat -100…, forum topic 42
+output_dir/-1001234567890/…                      → still works (bare id, no label)
+```
+The label is cosmetic — it's stripped before routing, so files still go to the
+bare chat_id. Split is on the **last** `~`, so the label may contain spaces,
+underscores, or dots. (Avoid `[name]_chat_id`-style names: `_` is a legal
+`@handle` character and `[ ]` are PowerShell/shell wildcards.) Do **not** start
+the folder name with a `.` — a leading dot marks a hidden/working dir and the
+whole folder is skipped by the scanner (`.name~<chat_id>` never routes;
+`name.surname~<chat_id>` is fine).
+
 The chat_id scan root is `ROUTES_DIR` (`.env`), which defaults to `OUTPUT_DIR` —
 set it to keep route folders on a different volume than the platform downloads
 (the two-root split; see README "On-disk layout").

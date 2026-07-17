@@ -17,6 +17,24 @@ These cover every value _resolve_peer in the dispatcher router can turn into a
 Telethon peer. A numeric id is matched by the signed-integer branch; an @handle
 by the username branch.
 
+HUMAN LABEL — a route folder may carry a leading human-readable label so the
+folder reads as e.g. `family-chat~-1001234567890` instead of a bare id. The
+label is joined to the chat_id with `~` and is split off on the LAST `~`, e.g.
+
+    family-chat~-1001234567890      →  chat -100…, label "family-chat"
+    memes~@mychannel.t42            →  @mychannel, topic 42, label "memes"
+    -1001234567890                  →  chat -100…, no label
+
+`~` is chosen for the same reasons `.` was chosen for the topic suffix: it is
+filesystem-safe everywhere, needs no shell/URL quoting mid-word, and is
+grammar-disjoint from the chat part — a chat_id (`-?\d+`) and an @handle
+(`[A-Za-z0-9_]`) can NEVER contain a `~`, so the final `~` is unambiguously the
+label delimiter no matter what the label itself holds (spaces, underscores,
+dots, even more tildes). The label is purely cosmetic: it is stripped here and
+NEVER reaches items.chat_id, so the dispatcher always routes on the bare
+canonical id. (`[name]_chat_id` would be ambiguous — `_` is a legal @handle
+char — and `[ ]` are PowerShell/shell wildcards hostile to path cmdlets.)
+
 FORUM TOPICS — a route may target a specific forum topic by suffixing the
 chat_id with `.t<topic_id>` (a forum's message_thread_id), e.g.
 
@@ -46,8 +64,12 @@ from dataclasses import dataclass
 # Signed integer (covers -100…, legacy -…, and positive ids) OR an @username.
 _CHAT_ID = r"(?:-?\d+|@\w{5,})"
 CHAT_ID_RE = re.compile(rf"^{_CHAT_ID}$")
-# Same chat grammar plus an optional `.t<digits>` forum-topic suffix.
-ROUTE_RE = re.compile(rf"^(?P<chat>{_CHAT_ID})(?:\.t(?P<topic>\d+))?$")
+# Optional cosmetic `<label>~` prefix. Greedy `.*` consumes up to the LAST `~`;
+# since the chat part can never contain a `~`, that final `~` is unambiguously
+# the delimiter. A folder with no `~` matches this group as empty (no label).
+_LABEL = r"(?:(?P<name>.*)~)?"
+# label + chat grammar + an optional `.t<digits>` forum-topic suffix.
+ROUTE_RE = re.compile(rf"^{_LABEL}(?P<chat>{_CHAT_ID})(?:\.t(?P<topic>\d+))?$")
 
 
 def is_chat_id(name: str) -> bool:
@@ -63,9 +85,12 @@ def is_chat_id(name: str) -> bool:
 @dataclass(frozen=True)
 class Route:
     """A parsed destination: a chat_id and an optional forum topic. topic_id is
-    None for the chat's General topic (no message thread)."""
+    None for the chat's General topic (no message thread). name is the cosmetic
+    folder label (the `<label>~` prefix) or None — it never affects routing and
+    is exposed only for logging/reporting."""
     chat_id:  str
     topic_id: int | None = None
+    name:     str | None = None
 
 
 def parse_route(name: str) -> Route | None:
@@ -94,5 +119,7 @@ def parse_route(name: str) -> Route | None:
     if chat.isdigit():
         chat = f"-{chat}"
     topic = m.group("topic")
+    label = m.group("name")
     return Route(chat_id=chat,
-                 topic_id=int(topic) if topic is not None else None)
+                 topic_id=int(topic) if topic is not None else None,
+                 name=label or None)

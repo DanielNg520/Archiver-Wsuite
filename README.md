@@ -194,9 +194,11 @@ C:\Users\danie\.archive\
     x\ tiktok\ instagram\ …   platform download folders (per-user subfolders)
     <platform>\.deleted\      quarantined banned users (moved, not deleted —
                               restored by `banned unban`; scanners skip dot-dirs)
-    <chat_id>\                orphaned route folders (loose files → a chat) —
-                              live under ROUTES_DIR once the two-root split is
-                              applied; here while ROUTES_DIR is unset
+    [<label>~]<chat_id>[.t<topic>]\   orphaned route folders (loose files → a
+                              chat); optional `<label>~` prefix is cosmetic
+                              (stripped before routing), optional `.t<topic>`
+                              targets a forum topic. Live under ROUTES_DIR once
+                              the two-root split is applied; here while unset
     .records\                 recorder output
 ```
 

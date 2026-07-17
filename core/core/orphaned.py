@@ -182,8 +182,8 @@ def ingest_chat_id_dirs(
                 log.warning(
                     "orphaned: top-level dir %r is neither a known platform nor "
                     "a valid chat_id — skipping (rename it to the destination "
-                    "chat_id, optionally with a `.t<topic_id>` suffix, to route "
-                    "it)", name,
+                    "chat_id, optionally with a `<label>~` prefix and/or a "
+                    "`.t<topic_id>` suffix, to route it)", name,
                 )
                 reports.append(OrphanedReport(chat_id=name, skipped_dir=True))
             continue

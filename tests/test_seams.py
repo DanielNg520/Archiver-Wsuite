@@ -2477,6 +2477,36 @@ def test_orphaned_no_trace_and_pseudo_platform_seam(tmp: Path) -> None:
     db.close()
 
 
+def test_labeled_route_folder_seam(tmp: Path) -> None:
+    section("Seam 31b: `<label>~<chat_id>` folder routes on the BARE chat_id")
+    from core import ItemStore, ingest_chat_id_dirs, parse_route
+
+    # The label is cosmetic: it is stripped by parse_route and must NEVER reach
+    # items.chat_id, so the dispatcher keeps routing on the canonical bare id.
+    r = parse_route("family-chat~-1001234567890.t42")
+    ok(r is not None and r.chat_id == "-1001234567890"
+       and r.topic_id == 42 and r.name == "family-chat",
+       "parse_route splits label off, keeps chat_id/topic canonical")
+    ok(parse_route("1009999~-100999") is not None
+       and parse_route("a~b~-100").chat_id == "-100"
+       and parse_route("a~b~-100").name == "a~b",
+       "split is on the LAST `~`; a label may itself contain `~`")
+    ok(parse_route("library") is None and parse_route("foo~bar") is None,
+       "a non-route (no valid chat_id after the last `~`) still matches nothing")
+
+    out = tmp / "out"
+    _write_media(out / "family-chat~-100999" / "a.mp4", b"LABELED-ROUTE-BYTES")
+    db = ItemStore.open(str(tmp / "lbl.db"))
+    reports = ingest_chat_id_dirs(db, out, known_platforms=["x"])
+    ok(any(rep.chat_id == "-100999" for rep in reports),
+       "labeled folder is ingested as a route (reported on the bare chat_id)")
+    row = db.conn.execute(
+        "SELECT chat_id FROM items WHERE source='orphaned'").fetchone()
+    ok(row is not None and row["chat_id"] == "-100999",
+       "the stored items.chat_id is bare canonical — label never leaks in")
+    db.close()
+
+
 def test_live_recording_protection_seam(tmp: Path) -> None:
     section("Seam 32: sweepers skip the user a live recorder is recording")
     from recorder.lock import TikTokLock
@@ -2580,6 +2610,7 @@ def main() -> int:
         test_noname_folder_seam(tmp / "s29")
         test_orphaned_mixed_album_seam(tmp / "s30")
         test_orphaned_no_trace_and_pseudo_platform_seam(tmp / "s31")
+        test_labeled_route_folder_seam(tmp / "s31b")
         _reset_config()
         test_burner_account_seam()
 
