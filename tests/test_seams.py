@@ -2467,6 +2467,29 @@ def test_orphaned_no_trace_and_pseudo_platform_seam(tmp: Path) -> None:
     ok(row["c"] == 2 and row["a"] == 2 and row["nc"] == 2,
        "pseudo-platform rows: source='archiver', chat_id NULL (env-routed)")
 
+    # ── RESERVED folders are NEVER pseudo-ingested ────────────────────────────
+    # Regression guard (2026-07-18): the `unsorted/` drop folder is owned by the
+    # sort sweep, and a built-in platform folder whose download is disabled this
+    # run still belongs to its extractor — neither must fall into the pseudo
+    # branch and upload raw as `@<name> · <name>`. Both are absent from
+    # known_platforms here, so only the reserved_names guard keeps them out.
+    _write_media(out / "unsorted" / "alice_1780000000_1.mp4", b"LOOSE")
+    _write_media(out / "tiktok" / "loose.mp4", b"DISABLED-BUILTIN")
+    seen2: list[str] = []
+    reports2 = ingest_chat_id_dirs(
+        db, out, known_platforms=["x", "instagram"],   # tiktok "disabled"
+        reserved_names={"x", "tiktok", "instagram"},
+        pseudo_ingest=lambda name, sd: (
+            seen2.append(name), reconcile_pseudo_platform(name, sd, db))[-1])
+    ok("unsorted" not in seen2,
+       "the unsorted/ drop folder is NOT pseudo-ingested (owned by sort sweep)")
+    ok("tiktok" not in seen2,
+       "a disabled built-in platform folder is NOT pseudo-ingested")
+    ok(db.conn.execute(
+        "SELECT COUNT(*) c FROM items WHERE platform IN ('unsorted','tiktok')"
+    ).fetchone()["c"] == 0,
+       "no rows created for reserved folders (no @unsorted·unsorted uploads)")
+
     # Re-introduction dedup KEPT: a re-added already-sent copy is NOT re-uploaded.
     while (it := db.claim_next()) is not None:
         db.mark_sent(it.id)

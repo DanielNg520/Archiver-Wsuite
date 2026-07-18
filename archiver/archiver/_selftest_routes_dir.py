@@ -38,13 +38,17 @@ def main() -> int:
     (routes / "-1001234567890").mkdir(parents=True)
     (routes / "-1001234567890" / "drop.mp4").write_bytes(b"x" * 256)
 
+    # Import FIRST: archiver.config runs load_dotenv() at import time, which
+    # injects the real machine .env (which now sets ROUTES_DIR) into os.environ.
+    # If we popped ROUTES_DIR before this import, the import would silently put
+    # it back and defeat the isolation — so import, THEN scrub the env.
+    from archiver.config import Config          # noqa: E402 (env scrub below)
+
     # Config resolution happens against env — point the suite config at a temp
     # toml so nothing in the real install is read or written.
     os.environ["ARCHIVER_SUITE_CONFIG"] = str(tmp / "config.toml")
     os.environ["OUTPUT_DIR"] = str(out)
     os.environ.pop("ROUTES_DIR", None)
-
-    from archiver.config import Config          # noqa: E402 (env first)
 
     # ── unset ⇒ routes_dir == output_dir (legacy single-tree layout) ────────
     cfg = Config.load(load_platform_configs=False, require_platforms=False)

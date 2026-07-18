@@ -37,7 +37,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from . import media_prep, stability
 from .dedup import MEDIA_EXTENSIONS
@@ -45,6 +45,7 @@ from .deletion import DeletionGuard
 from .files import cleanup_sidecars, ORPHANED_SOURCE_NAME
 from .ingest import register_file, IngestOutcome
 from .routing import parse_route
+from .sorter import DEFAULT_UNSORTED_DIRNAME
 from .grouping import split_group_key
 from .store import ItemStore
 
@@ -130,6 +131,7 @@ def ingest_chat_id_dirs(
     output_dir:      str | Path,
     *,
     known_platforms: list[str] | set[str],
+    reserved_names:  "Iterable[str] | None" = None,
     priority:        int = CHAT_ID_PRIORITY,
     guard:           DeletionGuard | None = None,
     pseudo_ingest:   "Callable[[str, Path], None] | None" = None,
@@ -138,6 +140,7 @@ def ingest_chat_id_dirs(
     Returns one report per top-level folder considered.
 
     A top-level folder is classified by NAME:
+      - a RESERVED name   → skipped entirely (see `reserved_names`);
       - a known platform  → skipped here (the archiver's reconcile pass owns it,
         it is a DOWNLOAD platform);
       - a valid chat_id   → a pure drop-zone, ingested here (leave-no-trace);
@@ -145,6 +148,14 @@ def ingest_chat_id_dirs(
         real identity + global dedup + persistent rows). Ingested via the
         injected `pseudo_ingest(name, dir)` when supplied; without an injector
         (e.g. a bare unit test) it is skipped with a warning, as before.
+
+    `reserved_names` are folders that must NEVER become a pseudo-platform even
+    though they're absent from `known_platforms`: the `unsorted/` drop folder
+    (owned by the sort sweep) and any built-in download platform whose config is
+    disabled THIS run (its folder still belongs to that extractor, not a foreign
+    upload-only pile). Always includes the `unsorted` dirname; the archiver adds
+    its built-in platform names. Without this guard those folders would fall into
+    the pseudo branch below and upload raw as `@<name> · <name>`.
 
     `guard` (optional) gates deletion of an original that media_prep replaced
     with a converted/split copy: a safebraked scope keeps its original.
@@ -156,6 +167,9 @@ def ingest_chat_id_dirs(
         return reports
 
     known = {p.lower() for p in known_platforms}
+    reserved = {DEFAULT_UNSORTED_DIRNAME.lower()}
+    if reserved_names:
+        reserved |= {n.lower() for n in reserved_names}
     for entry in sorted(base.iterdir()):
         try:
             if not entry.is_dir():
@@ -169,6 +183,13 @@ def ingest_chat_id_dirs(
             continue
         if name.lower() in known:
             continue   # a platform dir — the archiver's reconcile pass owns it
+        if name.lower() in reserved:
+            # A reserved folder (the `unsorted/` sort-sweep drop zone, or a
+            # built-in download platform that's disabled this run). Absent from
+            # `known` but must NOT become a pseudo-platform — otherwise it would
+            # upload raw as `@<name> · <name>` instead of being sorted / owned by
+            # its extractor. See reserved_names in the docstring.
+            continue
         route = parse_route(name)
         if route is None:
             # Not a chat_id and not a download platform → a pseudo-platform

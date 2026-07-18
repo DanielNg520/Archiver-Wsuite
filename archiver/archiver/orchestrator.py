@@ -426,6 +426,10 @@ class Archiver:
             self.db, self.config.routes_dir,   # chat_id folders may live on
                                                # a different volume (ROUTES_DIR)
             known_platforms=known_platform_names,
+            # Built-in platform folders stay reserved even when that platform is
+            # disabled this run, so a disabled-platform folder is never adopted
+            # as a pseudo-platform (mirrors _local_platform_names' guard).
+            reserved_names=_RESERVED_OUTPUT_DIR_NAMES,
             guard=self.deletion_guard,
             pseudo_ingest=_pseudo,
         )
