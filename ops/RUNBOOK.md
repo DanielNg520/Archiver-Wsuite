@@ -310,11 +310,23 @@ ops load
 *Status (2026-07-17): `ROUTES_DIR=D:\routes` is set; the physical folder move is
 being done manually (D: was full at attempt time).*
 
+**Disk gauge follows the split.** `ops health` / `ops watch` derive each root's
+volume from item `file_path`s (no worker config read), keyed on `chat_id`:
+route-folder items (non-null `chat_id`) sample `ROUTES_DIR`, everything else
+samples `OUTPUT_DIR`. When the two roots sit on the **same** physical volume —
+single-tree layout, or a split whose folders haven't been physically moved yet —
+the panel shows a single `archive volume` gauge. Once the route folders actually
+live on a separate volume it splits into two gauges, `media · OUTPUT_DIR` and
+`routes · ROUTES_DIR`, so a tight `D:` is visible independently of `C:`.
+
 ---
 
 ## Disk filling up
 
-`ops health` shows the free-space figure. If it's getting tight:
+`ops health` shows the free-space figure — one `archive volume` gauge, or a
+`media · OUTPUT_DIR` + `routes · ROUTES_DIR` pair once the two-root split lands
+on separate volumes (see "Two-root split" above). Check whichever gauge is
+tight. If it's getting tight:
 
 - Confirm `delete_after_upload` is ON for users you don't want to keep locally
   (`archiver policy` / dispatcher delete policy).

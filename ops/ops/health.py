@@ -426,10 +426,18 @@ def queue_health() -> dict | None:
 
 
 @_memo(min_ttl=60.0)
-def archive_volume_path() -> str | None:
+def archive_volume_path(kind: str = "any") -> str | None:
     """A path ON the archive volume, so disk-free is measured where the files
     actually live (often an external drive) instead of on /. Derived from the
     file_path of recent items — ops deliberately reads no worker config.
+
+    `kind` selects which storage root to sample, mirroring the two-root split
+    (OUTPUT_DIR vs ROUTES_DIR):
+      • "output"  — platform/library media (no chat_id → lives under OUTPUT_DIR)
+      • "routes"  — chat_id route-folder items (→ live under ROUTES_DIR)
+      • "any"     — the newest item of either class (legacy single-tree probe)
+    In a single-tree layout (ROUTES_DIR unset ⇒ = OUTPUT_DIR) both kinds resolve
+    to the same volume; callers dedupe with _same_volume.
 
     Walk back through recent rows rather than trusting the single newest one:
     recordings stage under records/<user>/ and that dir is cleaned up after
@@ -438,9 +446,13 @@ def archive_volume_path() -> str | None:
     conn = _connect_ro(SUITE_DB)
     if conn is None:
         return None
+    where = {
+        "output": "WHERE chat_id IS NULL",
+        "routes": "WHERE chat_id IS NOT NULL",
+    }.get(kind, "")
     try:
         for row in conn.execute(
-            "SELECT file_path FROM items ORDER BY id DESC LIMIT 50"
+            f"SELECT file_path FROM items {where} ORDER BY id DESC LIMIT 50"
         ):
             if not row["file_path"]:
                 continue
@@ -452,6 +464,18 @@ def archive_volume_path() -> str | None:
         return None
     finally:
         conn.close()
+
+
+def _same_volume(a: str | None, b: str | None) -> bool:
+    """True iff paths `a` and `b` sit on the same physical volume. Uses st_dev
+    (drive/mount identity) so a two-root split that hasn't been physically moved
+    yet — both roots still on C: — correctly collapses to one disk gauge."""
+    if not a or not b:
+        return False
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return a == b
 
 
 def archiver_loop_phase() -> dict | None:
@@ -896,13 +920,25 @@ def render(anim: "int | None" = None) -> str:
             out.append(f" {srail} " + _row("warnings",
                 _c("▲ ", _AMBER) + _c("  ·  ".join(warn), _AMBER)))
 
-    vol = archive_volume_path()
-    disk = _disk_fields(vol) if vol else _disk_fields()
-    if disk is not None:
-        free_lbl, used = disk
-        where = "archive volume" if vol else "root volume"
-        out.append(f" {srail} " + _row("disk",
-            _bar(used, _BAR_W, _gauge_color(used))
-            + _c(f" {free_lbl}", _WHITE) + _c(f"  ·  {where}", _DIM)))
+    # Two-root split: sample the media root (OUTPUT_DIR) and the route-folder
+    # root (ROUTES_DIR) separately. When they share a volume — single-tree
+    # layout, or a split not yet physically moved — collapse to one gauge.
+    out_vol = archive_volume_path("output")
+    routes_vol = archive_volume_path("routes")
+    if not out_vol and not routes_vol:
+        rows = [(None, "root volume")]
+    elif _same_volume(out_vol, routes_vol) or not (out_vol and routes_vol):
+        # One volume: either the roots coincide, or only one class has files.
+        rows = [(out_vol or routes_vol, "archive volume")]
+    else:
+        rows = [(out_vol, "media · OUTPUT_DIR"),
+                (routes_vol, "routes · ROUTES_DIR")]
+    for vol, where in rows:
+        disk = _disk_fields(vol) if vol else _disk_fields()
+        if disk is not None:
+            free_lbl, used = disk
+            out.append(f" {srail} " + _row("disk",
+                _bar(used, _BAR_W, _gauge_color(used))
+                + _c(f" {free_lbl}", _WHITE) + _c(f"  ·  {where}", _DIM)))
 
     return "\n".join(out)
