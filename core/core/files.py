@@ -24,7 +24,21 @@ log = logging.getLogger(__name__)
 # future caller share them so "what counts as a photo" can't drift.
 
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
+
+# Video containers Telegram plays INLINE inside a media group.
+INLINE_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
+
+# Full-quality / legacy containers Telegram will NOT play inline. They are
+# still valid videos this suite manages (a scanner must not skip them), but
+# they ship as DOWNLOADABLE documents — beside an inline preview when one
+# exists (.mkv), or on their own. .wmv/.ogm/.avi/.flv/.mpg/… were previously
+# unlisted, so every scanner silently ignored them; now they are ingested.
+DOCUMENT_VIDEO_EXTS = {
+    ".mkv", ".wmv", ".ogm", ".ogv", ".avi", ".flv", ".mpg", ".mpeg",
+    ".m4v", ".ts", ".mts", ".m2ts", ".3gp", ".vob",
+}
+
+VIDEO_EXTS = INLINE_VIDEO_EXTS | DOCUMENT_VIDEO_EXTS
 
 # THE definition of "a media file this suite manages". Every scanner —
 # archiver reconcile, recorder startup sweep, orphaned ingest, dedup, sorter —
@@ -33,13 +47,6 @@ VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 MEDIA_EXTENSIONS = PHOTO_EXTS | VIDEO_EXTS | {".gif"}
 
 ALBUM_MAX = 10  # Telegram's hard limit on items per album
-
-# Video containers Telegram plays INLINE inside a media group. .mkv is a member
-# of VIDEO_EXTS (a valid video the archiver/recorder stream), but for chat_id
-# folders it is deliberately kept as a full-quality DOWNLOADABLE document beside
-# its .mp4 preview — so it is excluded here and classed 'document' by
-# orphaned_kind. Photos + these video exts are what can share one inline group.
-INLINE_VIDEO_EXTS = VIDEO_EXTS - {".mkv"}
 
 # THE definition of the orphaned (chat_id-folder) source tag. It lives here —
 # the low-level leaf — because album_bucket below needs it and core.orphaned
@@ -93,6 +100,38 @@ def album_bucket(source: str, file_path: str) -> str:
     if source == ORPHANED_SOURCE_NAME:
         return orphaned_kind(file_path)
     return media_bucket(file_path)
+
+
+# Folders whose name starts with this marker are user-curated category buckets
+# (hashtag roots). They are KEPT even when empty — files are routed INTO them,
+# so an empty one is a waiting bucket, not an incidental leftover.
+KEEP_EMPTY_DIR_PREFIX = "#"
+
+
+def prune_empty_dirs(root: str | Path) -> int:
+    """Delete every empty directory under ``root`` (not ``root`` itself),
+    EXCEPT folders whose name starts with '#' (hashtag category buckets, kept
+    even when empty). Deepest-first so a parent emptied only by removing its
+    now-empty children is caught in the same pass. Best-effort: a dir that is
+    non-empty (or vanishes/locks mid-pass) is silently left. Returns the count
+    removed.
+
+    THE one definition of the empty-folder auto-cleaner — the recorder startup
+    sweep and the archiver's periodic ingest sweep both call it, so the two
+    can't drift on which folders they spare.
+    """
+    root = Path(root)
+    removed = 0
+    for d in sorted((p for p in root.rglob("*") if p.is_dir()),
+                    key=lambda p: len(p.parts), reverse=True):
+        if d.name.startswith(KEEP_EMPTY_DIR_PREFIX):
+            continue
+        try:
+            d.rmdir()  # raises OSError if not empty — exactly what we want
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def cleanup_sidecars(file_path: str) -> None:

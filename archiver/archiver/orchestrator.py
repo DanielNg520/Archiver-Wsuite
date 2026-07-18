@@ -43,7 +43,8 @@ from .reconcile import (
 
 from core import (
     ItemStore, DeletePolicy, DedupPolicy, DownloadPolicy, DeletionGuard,
-    dedup_user, cleanup_sidecars, parse_route, recover_oversize_failed,
+    dedup_user, cleanup_sidecars, parse_route, prune_empty_dirs,
+    recover_oversize_failed,
     validate_overrides as _validate_policies,
 )
 
@@ -285,6 +286,18 @@ class Archiver:
                              "row(s)", n)
             except Exception:                    # pragma: no cover — defensive
                 log.exception("ingest-sweep: oversize recovery pass failed")
+
+            # Auto-cleaner: drop folders left empty by upload-and-delete over
+            # the interval since the last sweep, so the tree doesn't slowly
+            # fill with stranded empties between recorder restarts. '#'-prefixed
+            # hashtag buckets are spared even when empty (core.prune_empty_dirs).
+            try:
+                n = await asyncio.to_thread(
+                    prune_empty_dirs, self.config.output_dir)
+                if n:
+                    log.info("ingest-sweep: pruned %d empty folder(s)", n)
+            except Exception:                    # pragma: no cover — defensive
+                log.exception("ingest-sweep: empty-folder prune failed")
         return inserted
 
     def _maybe_backfill_hashes(self) -> None:

@@ -98,18 +98,17 @@ def delete_after_split() -> bool:
     return env.opt_bool("ARCHIVER_DELETE_AFTER_SPLIT", True)
 
 
-# Extensions we will rescue by conversion even though they are NOT in the
-# suite's canonical MEDIA_EXTENSIONS (the orphaned ingester is taught to accept
-# these so they can be converted into a streamable .mp4 before enqueue). Kept
-# local to prep — the global media set stays untouched so dedup/reconcile can't
-# drift.
-CONVERTIBLE_VIDEO_EXTS = {
-    ".avi", ".ts", ".mts", ".m2ts", ".wmv", ".flv", ".m4v", ".mpg", ".mpeg",
-    ".3gp", ".ogv", ".vob",
-}
+# These legacy/non-inline containers used to live ONLY here — rescued by
+# conversion in the orphaned path but deliberately absent from the canonical
+# MEDIA_EXTENSIONS, so the general scanners (reconcile/dedup/sorter) skipped
+# them. They are now part of core.files.DOCUMENT_VIDEO_EXTS (hence VIDEO_EXTS),
+# so every scanner ingests them and prep still converts them to a streamable
+# .mp4. Kept as an (empty) alias only so any external caller importing the name
+# doesn't break.
+CONVERTIBLE_VIDEO_EXTS: set[str] = set()
 
-# A file is a prep candidate iff it is video by the canonical set OR one of the
-# extra convertible containers above.
+# A file is a prep candidate iff it is video by the canonical set. Every
+# convertible container is now a member of VIDEO_EXTS.
 PREP_VIDEO_EXTS = VIDEO_EXTS | CONVERTIBLE_VIDEO_EXTS
 
 # Telegram streams a video inline only for these. Everything else is converted.

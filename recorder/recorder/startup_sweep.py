@@ -36,7 +36,7 @@ from pathlib import Path
 
 from core import (
     DeletionGuard, ItemStore, PolicyStore, RecorderDeletePolicy, Status,
-    cleanup_sidecars, register_media,
+    cleanup_sidecars, prune_empty_dirs, register_media,
 )
 from core.ingest import IngestOutcome
 from core.recorder_lock import live_recording_user as _live_recording_user
@@ -281,14 +281,9 @@ def sweep(output_dir: str, db_path: str | None = None,
     finally:
         store.close()
 
-    # 3. prune directories left empty by the deletions above. Deepest first so
-    #    a parent emptied only by removing its now-empty children is also caught.
-    for d in sorted((p for p in root.rglob("*") if p.is_dir()),
-                    key=lambda p: len(p.parts), reverse=True):
-        try:
-            d.rmdir()  # raises OSError if not empty — exactly what we want
-            report.dirs_removed += 1
-        except OSError:
-            pass
+    # 3. prune directories left empty by the deletions above (recordings that
+    #    were sent-and-deleted leave behind empty per-user folders). '#'-prefixed
+    #    hashtag buckets are spared even when empty — see core.prune_empty_dirs.
+    report.dirs_removed += prune_empty_dirs(root)
 
     return report
