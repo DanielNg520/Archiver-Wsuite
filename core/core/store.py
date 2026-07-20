@@ -33,7 +33,8 @@ from typing import Callable, Iterator
 
 from . import schema
 from .models import Item, Status
-from .files import media_bucket, album_bucket, ORPHANED_SOURCE_NAME, ALBUM_MAX
+from .files import (media_bucket, album_bucket, ORPHANED_SOURCE_NAME, ALBUM_MAX,
+                    MAX_ALBUM_BYTES)
 
 log = logging.getLogger(__name__)
 
@@ -513,6 +514,7 @@ class ItemStore:
         self,
         max_items: int = ALBUM_MAX,
         *,
+        max_album_bytes: int = MAX_ALBUM_BYTES,
         min_batch:   "Callable[[sqlite3.Row], int] | None" = None,
         flush_age_s: "Callable[[sqlite3.Row], float | None] | None" = None,
     ) -> list[Item]:
@@ -577,7 +579,8 @@ class ItemStore:
                     ).fetchone()
                     if anchor is None:
                         return []
-                    chosen = self._gather_group(cur, anchor, GROUP_DISC, max_items)
+                    chosen, _ = self._gather_group(cur, anchor, GROUP_DISC,
+                                                   max_items, max_album_bytes)
                 else:
                     pending = cur.execute(
                         f"""SELECT id, platform, username, source, file_path,
@@ -593,7 +596,8 @@ class ItemStore:
                              ) ORDER BY {_CLUSTER_ORDER}"""
                     ).fetchall()
                     chosen = self._select_eligible_group(
-                        cur, pending, GROUP_DISC, max_items, min_batch, flush_age_s,
+                        cur, pending, GROUP_DISC, max_items, max_album_bytes,
+                        min_batch, flush_age_s,
                     )
                     if not chosen:
                         return []
@@ -618,19 +622,33 @@ class ItemStore:
         raise ClaimContentionError(_CLAIM_RETRIES)
 
     def _gather_group(self, cur, anchor, group_disc_sql: str,
-                      max_items: int) -> list:
-        """The anchor's album: all same-bucket pending rows sharing its
-        (platform, username, source, group_disc, chat_id, topic_id), capped at
-        max_items. A 'single'-bucket anchor yields just itself (gifs/other never
-        album). chat_id/topic_id are in the key so an album is homogeneous in
-        DESTINATION — never two chats, never two forum topics.
+                      max_items: int,
+                      max_album_bytes: int = MAX_ALBUM_BYTES) -> "tuple[list, bool]":
+        """The anchor's album, and whether it was TRUNCATED (more same-bucket
+        rows existed than were taken). All same-bucket pending rows sharing the
+        anchor's (platform, username, source, group_disc, chat_id, topic_id),
+        capped at max_items AND at max_album_bytes of total payload. A 'single'-
+        bucket anchor yields just itself (gifs/other never album). chat_id/topic_id
+        are in the key so an album is homogeneous in DESTINATION — never two chats,
+        never two forum topics.
 
         BUCKET is source-aware (album_bucket): chat_id folders (orphaned) group
         by 'media' (mixed photo+video) vs 'document' (.mkv/.gif grouped with each
-        other); every other producer keeps the photo/video/single split."""
+        other); every other producer keeps the photo/video/single split.
+
+        BYTE CAP: rows accumulate until adding the next would exceed
+        max_album_bytes; the anchor is always included (a lone item larger than
+        the cap ships by itself). A legacy NULL/0 recorded size counts as 0 (the
+        row batches as before) — every active producer now stamps a real size, so
+        the cap keeps an atomic album small enough to actually finish and one huge
+        multi-GB album can't wedge the queue head on every mid-send interruption.
+
+        `truncated` lets the min-batch gate treat a cap-limited group as a
+        COMPLETE unit: an archiver video album that can't reach min_batch without
+        breaching the byte cap must flush now, not wait out its 7-day age-flush."""
         bucket = album_bucket(anchor["source"], anchor["file_path"])
         if bucket == "single":
-            return [anchor]
+            return [anchor], False
         candidates = cur.execute(
             f"""SELECT * FROM items
                  WHERE status='pending'
@@ -641,17 +659,26 @@ class ItemStore:
             (anchor["platform"], anchor["username"], anchor["source"],
              anchor["group_disc"], anchor["chat_disc"], anchor["topic_disc"]),
         ).fetchall()
-        chosen = []
-        for row in candidates:
-            if album_bucket(row["source"], row["file_path"]) == bucket:
-                chosen.append(row)
-            if len(chosen) >= max_items:
+        same_bucket = [r for r in candidates
+                       if album_bucket(r["source"], r["file_path"]) == bucket]
+        chosen: list = []
+        total = 0
+        truncated = False
+        for row in same_bucket:
+            size = row["file_size_bytes"] or 0     # legacy NULL/0 → uncounted
+            if chosen and total + size > max_album_bytes:
+                truncated = True             # cap reached with more still waiting
                 break
-        return chosen
+            chosen.append(row)
+            total += size
+            if len(chosen) >= max_items:
+                truncated = len(same_bucket) > len(chosen)
+                break
+        return chosen, truncated
 
     def _select_eligible_group(
         self, cur, pending, group_disc_sql: str, max_items: int,
-        min_batch, flush_age_s,
+        max_album_bytes: int, min_batch, flush_age_s,
     ) -> list:
         """Scan pending rows (already in cluster send order) and return the
         first group that clears the min-batch gate; [] if none is ready yet.
@@ -679,9 +706,13 @@ class ItemStore:
                 continue                 # media of this subfolder must go first
             if bucket == "single":
                 return [anchor]          # singles bypass the gate
-            group = self._gather_group(cur, anchor, group_disc_sql, max_items)
+            group, truncated = self._gather_group(
+                cur, anchor, group_disc_sql, max_items, max_album_bytes)
             required = min_batch(anchor) if min_batch is not None else 1
-            if len(group) >= required:
+            # A byte-capped (truncated) group is a complete unit — flush now,
+            # never hold it behind the min-batch gate: it can't grow without
+            # breaching the cap, so waiting only stalls it to the age-flush.
+            if len(group) >= required or truncated:
                 return group
             age_limit = flush_age_s(anchor) if flush_age_s is not None else None
             if age_limit and age_limit > 0:

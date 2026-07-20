@@ -442,28 +442,61 @@ def archive_volume_path(kind: str = "any") -> str | None:
     Walk back through recent rows rather than trusting the single newest one:
     recordings stage under records/<user>/ and that dir is cleaned up after
     the converted upload, so the newest row often points at a vanished path.
-    Skip those and land on the first parent that still exists."""
+    Skip those and land on the first parent that still exists.
+
+    Rows can legitimately be ABSENT for a whole kind: chat_id (route) rows are
+    ship-and-delete (core.ItemStore.delete), so a drained routes queue leaves
+    ZERO sampleable rows and the two-root gauge would silently collapse to one.
+    Fall back to the root path named in the suite .env (sibling of the DB) —
+    still no worker *package* imported, just the same on-disk artifact the
+    workers read their config from."""
     conn = _connect_ro(SUITE_DB)
-    if conn is None:
-        return None
-    where = {
-        "output": "WHERE chat_id IS NULL",
-        "routes": "WHERE chat_id IS NOT NULL",
-    }.get(kind, "")
+    if conn is not None:
+        where = {
+            "output": "WHERE chat_id IS NULL",
+            "routes": "WHERE chat_id IS NOT NULL",
+        }.get(kind, "")
+        try:
+            for row in conn.execute(
+                f"SELECT file_path FROM items {where} ORDER BY id DESC LIMIT 50"
+            ):
+                if not row["file_path"]:
+                    continue
+                parent = Path(row["file_path"]).parent
+                if parent.exists():
+                    return str(parent)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return _env_root(kind)
+
+
+def _env_root(kind: str) -> str | None:
+    """The storage root the suite .env declares for `kind`, if it exists on
+    disk. `routes` falls back to OUTPUT_DIR when ROUTES_DIR is unset (the
+    single-tree layout, where they coincide — callers' _same_volume dedupe
+    then collapses the pair to one gauge, as before)."""
+    env_file = Path(SUITE_DB).parent / ".env"
     try:
-        for row in conn.execute(
-            f"SELECT file_path FROM items {where} ORDER BY id DESC LIMIT 50"
-        ):
-            if not row["file_path"]:
-                continue
-            parent = Path(row["file_path"]).parent
-            if parent.exists():
-                return str(parent)
+        text = env_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return None
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
+    vals: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        vals[k.strip()] = v.strip().strip('"').strip("'")
+    keys = {"output": ["OUTPUT_DIR"],
+            "routes": ["ROUTES_DIR", "OUTPUT_DIR"],
+            "any":    ["OUTPUT_DIR"]}.get(kind, ["OUTPUT_DIR"])
+    for key in keys:
+        p = vals.get(key)
+        if p and Path(p).exists():
+            return p
+    return None
 
 
 def _same_volume(a: str | None, b: str | None) -> bool:

@@ -19,6 +19,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from core import PolicyStore, default_db_path, Sanitizer, ReloadingSanitizer
+from core import MAX_ALBUM_BYTES
 from core import env
 from core.platform import paths as _osp
 from core.routing import parse_route
@@ -224,6 +225,11 @@ class DispatcherConfig:
     # converter's fallback tier is unchanged. Disable with FAST_ALBUM=0 to pin
     # the native serial path.
     fast_album: bool = True
+    # Max total bytes in ONE album (claim_batch byte cap). A big album is a
+    # single all-or-nothing send; keeping it small enough to finish stops one
+    # multi-GB album from wedging the queue head on every mid-send interruption
+    # (see core.files.MAX_ALBUM_BYTES). Tune via MAX_ALBUM_BYTES in .env.
+    max_album_bytes: int = MAX_ALBUM_BYTES
 
     @classmethod
     def load(cls, *, require_telegram: bool = True) -> "DispatcherConfig":
@@ -257,6 +263,8 @@ class DispatcherConfig:
             stall_min_rate_kib_s  = env.opt_float("STALL_MIN_RATE_KIB_S", 64.0, min_value=1.0),
             upload_connections    = env.opt_int("UPLOAD_CONNECTIONS", 8, min_value=1),
             fast_album            = env.opt_bool("FAST_ALBUM", True),
+            max_album_bytes       = env.opt_int("MAX_ALBUM_BYTES", MAX_ALBUM_BYTES,
+                                                min_value=1),
         )
 
     def config_toml_path(self) -> Path:

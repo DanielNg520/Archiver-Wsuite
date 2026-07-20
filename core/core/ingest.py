@@ -146,7 +146,15 @@ def register_file(
     #    explicit producer identifier wins; date/title still resolve normally.
     ident = identity.resolve(path)
 
-    # 5. insert — writing the row IS the enqueue.
+    # 5. insert — writing the row IS the enqueue. Stamp file_size_bytes (free
+    #    here — the file is already on disk and hashed) so the row carries a real
+    #    size: the dispatcher's per-album byte cap (claim_batch) needs it, and a
+    #    NULL size there forces the item to ship as a single. Best-effort — a
+    #    vanished file just leaves it NULL, exactly as before.
+    try:
+        size_bytes: int | None = path.stat().st_size
+    except OSError:
+        size_bytes = None
     inserted = store.add_item(
         source          = source,
         platform        = platform,
@@ -161,6 +169,7 @@ def register_file(
         chat_id         = chat_id,
         group_key       = group_key,
         topic_id        = topic_id,
+        file_size_bytes = size_bytes,
     )
     if not inserted:
         # Lost a race on UNIQUE(platform, identifier) — another row claimed

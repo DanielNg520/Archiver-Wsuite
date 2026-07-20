@@ -44,6 +44,7 @@ from .reconcile import (
 from core import (
     ItemStore, DeletePolicy, DedupPolicy, DownloadPolicy, DeletionGuard,
     dedup_user, cleanup_sidecars, parse_route, prune_empty_dirs,
+    prune_route_dirs,
     recover_oversize_failed,
     validate_overrides as _validate_policies,
 )
@@ -294,6 +295,14 @@ class Archiver:
             try:
                 n = await asyncio.to_thread(
                     prune_empty_dirs, self.config.output_dir)
+                # Two-root split: route folders under a separate ROUTES_DIR are
+                # outside the output_dir walk above. Prune INSIDE each route
+                # folder only — an empty `<label>~<chat_id>` folder is a waiting
+                # drop-bucket, kept (core.prune_route_dirs). Single-tree layout
+                # (routes_dir == output_dir) is already fully covered above.
+                if self.config.routes_dir != self.config.output_dir:
+                    n += await asyncio.to_thread(
+                        prune_route_dirs, self.config.routes_dir)
                 if n:
                     log.info("ingest-sweep: pruned %d empty folder(s)", n)
             except Exception:                    # pragma: no cover — defensive

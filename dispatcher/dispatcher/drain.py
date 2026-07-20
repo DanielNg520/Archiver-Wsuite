@@ -400,6 +400,7 @@ async def drain_forever(
 
         try:
             batch = store.claim_batch(
+                max_album_bytes=config.max_album_bytes,
                 min_batch=_min_batch, flush_age_s=_flush_age_s)
         except ClaimContentionError as exc:
             log.warning("drain: %s — backing off", exc)

@@ -56,6 +56,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -249,6 +250,12 @@ class TelethonSendStrategy(SendStrategy):
         self._progress = progress
         self._sanitizer = sanitizer or Sanitizer([])
         self._client: TelegramClient | None = None
+        # Monotonic timestamp of the last upload-progress tick, bumped by every
+        # _progress_cb callback. The stall watchdog (_send_with_retries) trips on
+        # NO progress for _stall_base_timeout_s, so a wedged connection is caught
+        # in minutes regardless of payload size — a big album no longer hides a
+        # dead upload behind a payload-scaled total deadline (10 GB → ~42 h).
+        self._last_progress_ts = 0.0
 
     @property
     def _sender(self) -> TelegramClient:
@@ -269,22 +276,71 @@ class TelethonSendStrategy(SendStrategy):
     def _progress_cb(self, file_path: str, *,
                      batch_pos: int | None = None,
                      batch_total: int | None = None):
-        """Heartbeat callback for one file upload, or None when reporting is
-        off (tests, fakes). Telethon accepts progress_callback=None."""
-        if self._progress is None:
-            return None
-        return self._progress.callback(
-            file_path, batch_pos=batch_pos, batch_total=batch_total)
+        """Progress callback for one file upload. Every tick bumps
+        _last_progress_ts (feeding the no-progress stall watchdog) and then, when
+        a heartbeat reporter is attached, forwards to it. Always returns a
+        callable — the watchdog needs the ticks even when reporting is off."""
+        inner = (self._progress.callback(
+                     file_path, batch_pos=batch_pos, batch_total=batch_total)
+                 if self._progress is not None else None)
+
+        def _cb(current: int, total: int):
+            self._last_progress_ts = time.monotonic()
+            if inner is not None:
+                inner(current, total)
+
+        return _cb
 
     def _progress_done(self) -> None:
         if self._progress is not None:
             self._progress.clear()
 
     def _stall_timeout(self, payload_bytes: int) -> float:
-        """Per-attempt deadline: fixed grace + worst-tolerated transfer time.
-        FloodWait sleeps happen OUTSIDE the attempt, so they never eat into it."""
+        """Absolute per-attempt ceiling (backstop): fixed grace + worst-tolerated
+        transfer time. The PRIMARY watchdog is now no-progress (see
+        _run_with_stall_watchdog); this only bounds a pathological case where
+        progress keeps ticking but the send never completes. FloodWait sleeps
+        happen OUTSIDE the attempt, so they never eat into it."""
         transfer_s = payload_bytes / (self._stall_min_rate_kib_s * 1024.0)
         return self._stall_base_timeout_s + transfer_s
+
+    async def _run_with_stall_watchdog(self, send_fn, payload_bytes: int) -> None:
+        """Run send_fn under a NO-PROGRESS watchdog. Raises asyncio.TimeoutError
+        if no upload-progress tick arrives for _stall_base_timeout_s (the wedged-
+        connection case — caught in minutes no matter how big the payload), or if
+        the absolute payload-scaled ceiling is blown (progress ticks forever but
+        the send never finishes). On either trip the in-flight send task is
+        cancelled before we return, so a reconnect can't race a live upload.
+
+        Why not asyncio.wait_for on the whole send: its deadline has to be sized
+        to the FULL transfer, which for a multi-GB album is tens of hours — so a
+        dead connection hides behind it (the 40 h "ETA" that looked like a hang).
+        Progress ticks are the real liveness signal; absence of them is the stall."""
+        grace = self._stall_base_timeout_s
+        ceiling = self._stall_timeout(payload_bytes)
+        start = time.monotonic()
+        self._last_progress_ts = start
+        task = asyncio.ensure_future(send_fn())
+        try:
+            while True:
+                if task.done():
+                    task.result()          # re-raise send_fn's own exception, if any
+                    return
+                now = time.monotonic()
+                if now - self._last_progress_ts >= grace or now - start >= ceiling:
+                    raise asyncio.TimeoutError(
+                        f"no upload progress for {now - self._last_progress_ts:.0f}s")
+                # Wake exactly when the idle grace (or the absolute ceiling) would
+                # next expire assuming no further ticks; a tick that lands meanwhile
+                # just pushes _last_progress_ts out, and the next slice recomputes.
+                idle_left = grace - (now - self._last_progress_ts)
+                total_left = ceiling - (now - start)
+                await asyncio.wait(
+                    {task}, timeout=max(0.02, min(idle_left, total_left)))
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     @staticmethod
     def _payload_bytes(file_paths: list[str]) -> int:
@@ -1092,15 +1148,16 @@ class TelethonSendStrategy(SendStrategy):
         single and album is that call, so the retry/flood logic lives here
         once rather than being duplicated (and able to drift).
 
-        Every attempt runs under the stall watchdog (see module docstring):
-        a deadline sized to payload_bytes converts a silent network freeze
-        into a countable, retryable failure instead of an eternal await."""
-        timeout_s = self._stall_timeout(payload_bytes)
+        Every attempt runs under the NO-PROGRESS stall watchdog
+        (_run_with_stall_watchdog): a silent network freeze is caught within
+        _stall_base_timeout_s of the last progress tick — in minutes, not the
+        payload-scaled total (which is tens of hours for a multi-GB album, long
+        enough to look like an eternal hang)."""
         attempts = 0
         last_error: str | None = None
         while attempts < self._max_retries:
             try:
-                await asyncio.wait_for(send_fn(), timeout=timeout_s)
+                await self._run_with_stall_watchdog(send_fn, payload_bytes)
                 return SendResult(ok=True)
 
             except (UnauthorizedError, AuthKeyError) as e:
@@ -1184,18 +1241,18 @@ class TelethonSendStrategy(SendStrategy):
 
             except (TimeoutError, asyncio.TimeoutError):
                 # Stall watchdog fired: no exception from the socket, just no
-                # progress within the deadline. Must precede the OSError arm —
-                # builtin TimeoutError IS an OSError subclass. The connection
-                # is presumed wedged; recycle it before the next attempt.
+                # upload progress for _stall_base_timeout_s. Must precede the
+                # OSError arm — builtin TimeoutError IS an OSError subclass. The
+                # connection is presumed wedged; recycle it before the next try.
                 attempts += 1
                 last_error = (
-                    f"stalled: send incomplete after {timeout_s:.0f}s "
-                    f"({payload_bytes} bytes)"
+                    f"stalled: no upload progress for "
+                    f"{self._stall_base_timeout_s:.0f}s ({payload_bytes} bytes)"
                 )
                 log.warning(
-                    "telethon: stall attempt %d/%d (%s): no completion in "
+                    "telethon: stall attempt %d/%d (%s): no progress for "
                     "%.0fs — reconnecting",
-                    attempts, self._max_retries, what, timeout_s,
+                    attempts, self._max_retries, what, self._stall_base_timeout_s,
                 )
                 await self._force_reconnect()
                 continue

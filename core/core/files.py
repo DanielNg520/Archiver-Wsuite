@@ -48,6 +48,29 @@ MEDIA_EXTENSIONS = PHOTO_EXTS | VIDEO_EXTS | {".gif"}
 
 ALBUM_MAX = 10  # Telegram's hard limit on items per album
 
+# Total-bytes cap on ONE album (claim_batch/_gather_group). An album is a single
+# all-or-nothing atomic send: a huge one (e.g. 10 large videos ≈ 10 GB) takes so
+# long that any mid-send interruption — a stall-watchdog reset, a worker restart,
+# Modern-Standby suspend — aborts the WHOLE batch, which then re-claims and re-
+# uploads from scratch, wedging the queue head forever. Capping the album keeps
+# each atomic unit small enough to actually complete: rows accumulate until the
+# next would breach the cap, then the album flushes and the rest form the next
+# one. The anchor is always included, so a lone item bigger than the cap still
+# ships (alone). Relies on file_size_bytes being populated — every active
+# producer (archiver reconcile, recorder sweep, orphaned ingest) now stamps it;
+# a legacy NULL/0 counts as 0 (batches as before, uncapped).
+#
+# 4 GiB = the MAX safe value for this box (measured 2026-07-18). Safety rule: an
+# album must upload in ONE run before the next restart can catch it (a restart —
+# ops reload, reboot, update — is routine, and an interrupted album re-uploads
+# from scratch). Peak sustained throughput here is ~3.5 MB/s (~12.6 GB/h), and
+# the tightest observed restart gap is ~19 min → ~4 GB fits one window. It also
+# equals Telegram Premium's 4 GB per-file ceiling ("an album ≤ one max file's
+# worth"). Higher (8–12 GiB) re-risks never finishing when restarts cluster —
+# that was the original 10 GB poison. Override per-box via MAX_ALBUM_BYTES in the
+# dispatcher .env (lower it on a slower/metered uplink).
+MAX_ALBUM_BYTES = 4 * 1024 * 1024 * 1024
+
 # THE definition of the orphaned (chat_id-folder) source tag. It lives here —
 # the low-level leaf — because album_bucket below needs it and core.orphaned
 # imports core.store which imports THIS module (importing back would be
@@ -131,6 +154,30 @@ def prune_empty_dirs(root: str | Path) -> int:
             removed += 1
         except OSError:
             pass
+    return removed
+
+
+def prune_route_dirs(routes_dir: str | Path) -> int:
+    """prune_empty_dirs for a ROUTES_DIR tree: prune INSIDE each top-level
+    route folder but never the route folder itself — an empty `<label>~<chat_id>`
+    folder is a waiting drop-bucket (files are routed INTO it), the same
+    rationale as the '#' hashtag buckets above. Returns the count removed.
+
+    Only needed once the two-root split moves route folders OUT of OUTPUT_DIR:
+    prune_empty_dirs(output_dir) no longer reaches them, and pointing it at
+    ROUTES_DIR directly would delete the empty buckets. Dotfolders are skipped
+    (never a route destination)."""
+    root = Path(routes_dir)
+    if not root.exists():
+        return 0
+    removed = 0
+    for child in sorted(root.iterdir()):
+        try:
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+        except OSError:
+            continue
+        removed += prune_empty_dirs(child)
     return removed
 
 

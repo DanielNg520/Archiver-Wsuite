@@ -20,7 +20,8 @@ from .policies import (
     BatchPolicy, AutoIngestPolicy, DownloadPolicy, ProtectionPolicy,
     SortPolicy, FailedRetryPolicy, validate_overrides,
 )
-from .files import cleanup_sidecars, orphaned_kind, album_bucket, prune_empty_dirs
+from .files import (cleanup_sidecars, orphaned_kind, album_bucket,
+                    prune_empty_dirs, prune_route_dirs, MAX_ALBUM_BYTES)
 from .deletion import DeletionGuard
 from .dedup import dedup_user, DedupReport, DupGroup
 from .ingest import (
@@ -53,7 +54,7 @@ __all__ = [
     "BooleanPolicy", "BatchPolicy", "AutoIngestPolicy", "DownloadPolicy",
     "ProtectionPolicy", "SortPolicy", "FailedRetryPolicy",
     "validate_overrides", "cleanup_sidecars", "orphaned_kind", "album_bucket",
-    "prune_empty_dirs",
+    "prune_empty_dirs", "prune_route_dirs", "MAX_ALBUM_BYTES",
     "DeletionGuard",
     "dedup_user", "DedupReport", "DupGroup",
     "register_file", "register_media", "recover_oversize_failed",

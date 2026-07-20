@@ -299,6 +299,68 @@ def test_album_batching_seam(tmp: Path) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Seam 3b — claim_batch per-album BYTE cap (oversize album can't wedge the queue)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_album_byte_cap_seam(tmp: Path) -> None:
+    section("Seam 3b: claim_batch caps an album at max_album_bytes")
+
+    db = _fresh_db()
+    try:
+        # 5 sized videos in one group; cap=2000, each 800B → 2 fit per album
+        # (800+800=1600 ok, +800=2400 > 2000). file_size_bytes drives the cap;
+        # the on-disk file is tiny (claim reads the column, not the disk).
+        for i in range(5):
+            f = _write_media(tmp / "o" / "sub" / f"v{i}.mp4", b"V")
+            db.add_item(source="orphaned", platform="orphaned", username="orphaned",
+                        identifier=f"v{i}", file_path=str(f), priority=10,
+                        chat_id="-100999", group_key="-100999/sub",
+                        file_size_bytes=800)
+
+        b1 = db.claim_batch(max_album_bytes=2000)
+        ok(len(b1) == 2, f"first album byte-capped to 2 items (got {len(b1)})")
+        b2 = db.claim_batch(max_album_bytes=2000)
+        ok(len(b2) == 2, "second album also 2 items")
+        b3 = db.claim_batch(max_album_bytes=2000)
+        ok(len(b3) == 1, "trailing item ships alone")
+        for it in (*b1, *b2, *b3):
+            db.mark_sent(it.id)
+
+        # A lone item bigger than the whole cap still ships (anchor always in).
+        big = _write_media(tmp / "o" / "big" / "huge.mp4", b"H")
+        db.add_item(source="orphaned", platform="orphaned", username="orphaned",
+                    identifier="huge", file_path=str(big), priority=10,
+                    chat_id="-100999", group_key="-100999/big",
+                    file_size_bytes=9999)
+        solo = db.claim_batch(max_album_bytes=2000)
+        ok(len(solo) == 1 and solo[0].identifier == "huge",
+           "an item larger than the cap ships by itself (never dropped)")
+        db.mark_sent(solo[0].id)
+
+        # Legacy NULL sizes count as 0 → still album (uncapped), as before.
+        for i in range(3):
+            f = _write_media(tmp / "o" / "leg" / f"n{i}.jpg", f"N{i}".encode())
+            db.add_item(source="orphaned", platform="orphaned", username="orphaned",
+                        identifier=f"n{i}", file_path=str(f), priority=10,
+                        chat_id="-100999", group_key="-100999/leg")
+        nul = db.claim_batch(max_album_bytes=2000)
+        ok(len(nul) == 3, "NULL-size rows count as 0 → album unchanged (no regression)")
+
+        # A truncated group flushes despite a high min-batch gate (no 7-day stall).
+        for i in range(4):
+            f = _write_media(tmp / "a" / "u" / f"c{i}.mp4", b"C")
+            db.add_item(source="archiver", platform="x", username="u",
+                        identifier=f"c{i}", file_path=str(f), priority=10,
+                        caption="vidgrp", file_size_bytes=1500)
+        capped = db.claim_batch(max_album_bytes=2000,
+                                min_batch=lambda a: 10, flush_age_s=lambda a: None)
+        ok(0 < len(capped) < 10,
+           "byte-capped group flushes now, not held behind min_batch=10")
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Seam 4 — core.ingest content_hash → dispatcher global-dedup guarantee
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1317,6 +1379,36 @@ def test_send_stall_watchdog_seam() -> None:
     result = asyncio.run(
         strategy._send_with_retries(_flaky, what="stub", payload_bytes=0))
     ok(result.ok, "one stalled attempt then success → SendResult.ok")
+
+    # THE FIX: a huge payload must NOT hide a hang behind a payload-scaled total
+    # deadline (10 GB → ~42 h). With NO progress ticks, the no-progress watchdog
+    # trips at ~grace regardless of payload size.
+    import time as _t
+    async def _hang_big():
+        await asyncio.sleep(60)
+    t0 = _t.monotonic()
+    result = asyncio.run(strategy._send_with_retries(
+        _hang_big, what="big", payload_bytes=10 * 1024**3))   # ceiling ≈ 22 h
+    elapsed = _t.monotonic() - t0
+    ok(not result.ok and "stalled" in (result.error or ""),
+       "huge-payload hang still fails via no-progress (not hidden by the ceiling)")
+    ok(elapsed < 5.0,
+       f"caught in ~grace, not the payload-scaled ceiling ({elapsed:.2f}s < 5s)")
+
+    # NO false stall: steady progress ticks keep a long-but-live upload alive
+    # even though it runs longer than the grace window.
+    live = {"n": 0}
+    async def _live():
+        live["n"] += 1
+        for _ in range(6):
+            await asyncio.sleep(0.03)
+            strategy._last_progress_ts = _t.monotonic()   # simulate a progress tick
+    # payload sized so the absolute ceiling (~10s) isn't the binding limit —
+    # only the no-progress grace is, which the ticks keep resetting.
+    result = asyncio.run(strategy._send_with_retries(
+        _live, what="live", payload_bytes=128 * 1024 * 10))
+    ok(result.ok and live["n"] == 1,
+       "steady progress ticks prevent a false stall (runs > grace, still ok)")
 
     # A NETWORK error must trigger an explicit reconnect. Telethon's own
     # auto_reconnect is OFF (it raced our _force_reconnect → 'NoneType'.connect
@@ -2599,6 +2691,7 @@ def main() -> int:
         test_local_platform_discovery_seam(tmp / "s13")
         test_dispatcher_instance_lock_seam(tmp / "s14")
         test_album_batching_seam(tmp / "s3")
+        test_album_byte_cap_seam(tmp / "s3b")
         test_content_hash_dedup_seam(tmp / "s4")
         test_min_batch_gate_seam(tmp / "s5")
         # fresh config per config-touching test so rosters don't bleed across
