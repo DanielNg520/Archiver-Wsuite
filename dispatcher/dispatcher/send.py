@@ -775,7 +775,8 @@ class TelethonSendStrategy(SendStrategy):
         #  NATIVE — Telethon's list send: one upload at a time, geometry derived
         #  by Telethon (needs hachoir, a hard dep; without it albums render as
         #  1x1 images). The fallback when the fast path's Telethon internals are
-        #  absent, or when FAST_ALBUM=0 pins it.
+        #  absent, when FAST_ALBUM=0 pins it, or when the fast path's group
+        #  call is rejected (see FAST→NATIVE FALLBACK below).
         #
         # An earlier note here claimed the fast path was "REJECTED by Telegram
         # (MediaEmptyError) — materialized or not". That bisection missed the
@@ -785,10 +786,45 @@ class TelethonSendStrategy(SendStrategy):
         # cleanly (verified live). Either path leaves the converter alone:
         # a per-item Telegram rejection surfaces as media_empty and the drain's
         # recover_media_empty re-sends that item with the streamable net ON.
+        #
+        # FAST→NATIVE FALLBACK. Even with the correct extraction, the fast
+        # path's group call (SendMultiMedia over materialized documents) is
+        # intermittently rejected with MediaInvalid — observed on >half of
+        # platform video albums, while the per-item fallback then delivered
+        # every single item (so the media itself is fine; the failure is in
+        # the grouping of the materialized references). Before letting the
+        # drain degroup the album into singles, retry ONCE via the native
+        # list send — the path that demonstrably groups these same files.
+        # A rejection from the native retry (or any non-media error from the
+        # fast path) propagates unchanged, so the drain's per-item recovery
+        # ladder and every other failure mode are untouched.
         if self._fast_album and fast_upload._internals_present(self._sender):
-            return await self._send_video_album_fast(
+            result = await self._send_video_album_fast(
                 peer, file_paths, captions, topic_id=topic_id)
+            if not result.media_empty:
+                return result
+            log.warning(
+                "fast album rejected (album[%d] %s…) — retrying as native "
+                "list send before degrouping", len(file_paths),
+                Path(file_paths[0]).name,
+            )
+            return await self._send_video_album_native(
+                peer, file_paths, captions, topic_id=topic_id)
+        return await self._send_video_album_native(
+            peer, file_paths, captions, topic_id=topic_id)
 
+    async def _send_video_album_native(
+        self,
+        peer: Any,
+        file_paths: list[str],
+        captions: list[str | None],
+        *,
+        topic_id: int | None = None,
+    ) -> SendResult:
+        """Telethon's native list send: one serial upload per item, geometry
+        derived by Telethon (hachoir). Used when FAST_ALBUM=0 pins it, when the
+        fast path's Telethon internals are absent, and as the one-shot retry
+        after the fast path's group call is rejected (see send_album)."""
         async def _do():
             await self._sender.send_file(
                 peer, file_paths, caption=captions, supports_streaming=True,
@@ -854,7 +890,15 @@ class TelethonSendStrategy(SendStrategy):
             except Exception:
                 return (text or ""), None
 
+        # Passive evidence for WHY the group call intermittently rejects: if
+        # stale materialized references are the cause, rejected albums should
+        # skew toward long first-upload → SendMultiMedia gaps. Reset per
+        # attempt (a retry re-uploads from scratch, fresh references).
+        timing = {"first_upload": None, "group_call": None}
+
         async def _do():
+            timing["first_upload"] = time.monotonic()
+            timing["group_call"] = None
             media = []
             for i, fp in enumerate(file_paths):
                 uploaded = await self._upload_document(
@@ -878,16 +922,25 @@ class TelethonSendStrategy(SendStrategy):
                     media=input_media, message=msg, entities=entities,
                     random_id=helpers.generate_random_long()))
 
+            timing["group_call"] = time.monotonic()
             await client(functions.messages.SendMultiMediaRequest(
                 peer, multi_media=media,
                 reply_to=(tg_types.InputReplyToMessage(topic_id)
                           if topic_id is not None else None)))
 
         try:
-            return await self._send_with_retries(
+            result = await self._send_with_retries(
                 _do, what=f"album[{n}] {Path(file_paths[0]).name}… (fast)",
                 payload_bytes=self._payload_bytes(file_paths),
             )
+            if result.media_empty and timing["first_upload"] is not None:
+                gap = ((timing["group_call"] or time.monotonic())
+                       - timing["first_upload"])
+                log.warning(
+                    "fast album rejected: %.1fs from first upload to group "
+                    "call (%d items) — reference-staleness evidence", gap, n,
+                )
+            return result
         finally:
             self._progress_done()
 

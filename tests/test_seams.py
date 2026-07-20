@@ -2675,6 +2675,107 @@ def test_live_recording_protection_seam(tmp: Path) -> None:
         db.close()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Seam 33 — fast video album → native list-send fallback. The fast path's group
+# call (SendMultiMedia over materialized documents) is intermittently rejected
+# with MediaInvalid even when every item is individually fine (observed live:
+# >half of platform video albums, with the per-item fallback then delivering
+# 10/10). send_album must retry the SAME batch once via the native list send —
+# which demonstrably groups these files — before surfacing media_empty and
+# letting the drain degroup the album into singles. Every other outcome of the
+# fast path (success, flood-wait, real errors) must pass through untouched.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_fast_album_native_fallback_seam() -> None:
+    section("Seam 33: fast album rejection → ONE native retry before degrouping")
+    from dispatcher import send as send_mod
+    from dispatcher.send import SendResult, TelethonSendStrategy
+
+    def _strategy(fast_album: bool = True) -> TelethonSendStrategy:
+        s = TelethonSendStrategy(
+            api_id=0, api_hash="", phone="", session_name="stub",
+            fast_album=fast_album)
+        s._client = object()   # bypass __aenter__: no network in tests
+        return s
+
+    def _wire(s, fast_results):
+        """Stub both album paths; record the dispatch order + arguments."""
+        calls: list = []
+        async def fake_fast(peer, fps, caps, *, topic_id=None):
+            calls.append(("fast", list(fps), list(caps), topic_id))
+            return fast_results.pop(0)
+        async def fake_native(peer, fps, caps, *, topic_id=None):
+            calls.append(("native", list(fps), list(caps), topic_id))
+            return SendResult(ok=True)
+        s._send_video_album_fast = fake_fast
+        s._send_video_album_native = fake_native
+        return calls
+
+    files = ["a.mp4", "b.mp4", "c.mp4"]
+    orig_present = send_mod.fast_upload._internals_present
+    send_mod.fast_upload._internals_present = lambda c: True
+    try:
+        # 1. fast succeeds → native never runs (happy path unchanged).
+        s = _strategy()
+        calls = _wire(s, [SendResult(ok=True)])
+        r = asyncio.run(s.send_album(peer="p", file_paths=files, caption="cap"))
+        ok(r.ok and [c[0] for c in calls] == ["fast"],
+           "fast success → delivered, no native retry")
+
+        # 2. fast group-rejected → ONE native retry of the SAME batch wins.
+        s = _strategy()
+        calls = _wire(s, [SendResult(ok=False, error="MediaInvalidError",
+                                     media_empty=True)])
+        r = asyncio.run(s.send_album(
+            peer="p", file_paths=files, caption="cap", topic_id=7))
+        ok(r.ok and [c[0] for c in calls] == ["fast", "native"],
+           "fast media-rejection → exactly one native retry, album delivered")
+        ok(calls[1][1] == files and calls[1][3] == 7,
+           "native retry carries the SAME files and topic_id")
+        ok(calls[1][2] == ["cap", None, None],
+           "native retry keeps A1 caption semantics (caption on first item only)")
+
+        # 3. native also rejects → media_empty surfaces so the drain's
+        #    per-item recover_media_empty ladder runs exactly as before.
+        s = _strategy()
+        calls = _wire(s, [SendResult(ok=False, media_empty=True)])
+        async def native_reject(peer, fps, caps, *, topic_id=None):
+            calls.append(("native", list(fps), list(caps), topic_id))
+            return SendResult(ok=False, error="MediaInvalidError",
+                              media_empty=True)
+        s._send_video_album_native = native_reject
+        r = asyncio.run(s.send_album(peer="p", file_paths=files, caption=None))
+        ok(not r.ok and r.media_empty
+           and [c[0] for c in calls] == ["fast", "native"],
+           "double rejection surfaces media_empty → drain degroups as before")
+
+        # 4. a NON-media fast failure (flood-wait, stall, network) passes
+        #    through untouched — the native retry is for group rejection only.
+        s = _strategy()
+        calls = _wire(s, [SendResult(ok=False, flood_wait_s=30)])
+        r = asyncio.run(s.send_album(peer="p", file_paths=files, caption=None))
+        ok(not r.ok and r.flood_wait_s == 30
+           and [c[0] for c in calls] == ["fast"],
+           "non-media failure (flood-wait) propagates with NO native retry")
+
+        # 5. FAST_ALBUM=0 pins the native path; the fast path never runs.
+        s = _strategy(fast_album=False)
+        calls = _wire(s, [])
+        r = asyncio.run(s.send_album(peer="p", file_paths=files, caption="cap"))
+        ok(r.ok and [c[0] for c in calls] == ["native"],
+           "FAST_ALBUM=0 → native directly, fast path never invoked")
+
+        # 6. internals absent → native directly (structural fallback intact).
+        send_mod.fast_upload._internals_present = lambda c: False
+        s = _strategy()
+        calls = _wire(s, [])
+        r = asyncio.run(s.send_album(peer="p", file_paths=files, caption="cap"))
+        ok(r.ok and [c[0] for c in calls] == ["native"],
+           "missing Telethon internals → native directly (unchanged)")
+    finally:
+        send_mod.fast_upload._internals_present = orig_present
+
+
 def main() -> int:
     print("cross-worker seam integration tests")
     # Each test gets an isolated temp config.toml so the real user config is
@@ -2727,6 +2828,7 @@ def main() -> int:
         test_orphaned_mixed_album_seam(tmp / "s30")
         test_orphaned_no_trace_and_pseudo_platform_seam(tmp / "s31")
         test_labeled_route_folder_seam(tmp / "s31b")
+        test_fast_album_native_fallback_seam()
         _reset_config()
         test_burner_account_seam()
 
