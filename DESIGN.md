@@ -43,7 +43,7 @@ other. ops imports no *worker* (core is fine). Installs are pipx venvs with an
 | **`ffprobe.py`** | shared ffprobe: subprocess+json+timeout | `probe_json` |
 | **`ffmpeg.py`** | shared ffmpeg runner (bool, never raises) | `run_ffmpeg` |
 | **`heartbeat.py`** | cross-proc status files: atomic write + liveness/staleness read + **`pid_alive`** (the one liveness primitive) | `write_atomic`, `read_live`, `clear`, `pid_alive` |
-| **`paths.py`** | single source for cross-proc artifact paths | `tiktok_lock`, `dispatcher_progress`, `archiver_loop`, `recorder_pid`, `locks_dir` |
+| **`paths.py`** | single source for cross-proc artifact paths | `tiktok_lock`, `dispatcher_progress`, `archiver_loop`, `recorder_pid`, `locks_dir`, `dispatcher_stop_flag` |
 | **`env.py`** | env parsing; req=fail-loud, opt*=warn+default (self-healing tunables) | `req`, `opt`, `opt_int/float/bool`, `MissingEnvVar` |
 | `instance_lock.py` | generic singleton flock; `_already_running_error` hook | `InstanceLock`, `InstanceAlreadyRunning` |
 | `deletion.py` | safebrake guard on every delete path | `DeletionGuard` |
@@ -60,14 +60,14 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 
 | module | purpose |
 |---|---|
-| `orchestrator.py` | Template Method cycle: circuit→health→recover→per-user{reconcile→download→checkpoint}; post-run reconcile-all + orphaned-ingest + auto-sort + backfill. Checkpoint = `date_floor=MAX(upload_date WHERE sent)` |
-| `platforms.py` | Strategy `Platform` (X/IG gallery-dl, TikTok yt-dlp); `LocalPlatform` = folder, no download. new-download = before/after dir diff |
+| `orchestrator.py` | Template Method cycle: circuit→health→recover→per-user{reconcile→download→checkpoint}; post-run reconcile-all + orphaned-ingest + auto-sort + backfill. Checkpoint = `date_floor=MAX(upload_date WHERE sent)`. **Fetching platforms run CONCURRENTLY** (`_run_platforms` gathers `_run_one_platform`, each on its OWN `ItemStore` connection; cap `ARCHIVER_MAX_CONCURRENT_PLATFORMS`, `1`=sequential). `run_stories()` = IG stories-only fast lane (own cadence, no checkpoint advance) |
+| `platforms.py` | Strategy `Platform` (X/IG gallery-dl, TikTok yt-dlp); `LocalPlatform` = folder, no download. new-download = before/after dir diff. Per-platform `Pacing` (IG/TikTok own sleep-request/sleep-429/retries/user-gap, decoupled from global `SLEEP_*`); `browser` fingerprint matches cookie origin. **`_GDL_LOCK`** serializes the process-global `gallery_dl.config` critical section across concurrent in-process gallery-dl jobs (X + IG + IG-stories), held per-user → one request stream per account. IG `download`(posts/reels, date-min) vs `download_stories`(stories, no date-min) |
 | `reconcile.py` | walk disk→register stable files via `register_file`→seed extractor archives |
 | `cookies.py` | Firefox cookies.sqlite→Netscape txt (copy-first); cookie-refresh self-heal |
 | `lock_reader.py` | read tiktok soft-lock; **liveness-gated** (self-heals stale lock) |
 | `loop_state.py` | loop phase heartbeat (via core.heartbeat + core.paths) |
 | `config.py` | env (core.env) + config.toml |
-| CLI: `start/run/loop`, `ingest`, `sort`, `backfill`, `bootstrap`, `reset{failed,uploads,user,all}`, `local`, `cookies`, `config`, auto-{ingest,sort,retry}, `download`, `banned` |
+| CLI: `start/run/loop`, `stories`, `ingest`, `sort`, `backfill`, `bootstrap`, `reset{failed,uploads,user,all}`, `local`, `cookies`, `config`, auto-{ingest,sort,retry}, `download`, `banned` |
 
 ## recorder/recorder/
 
@@ -88,7 +88,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 
 | module | purpose |
 |---|---|
-| `drain.py` | `drain_forever`: serial claim→send→mark; circuit breaker (`_CIRCUIT_TRIP_AT=8`/60s); `run_housekeeping` (failed-missing GC→prune→**transient auto-recover** (`reset_failed_transient`, default on)→opt-in blanket `auto_retry_failed`→stuck watchdog, every 15min); missing-file+dedup pre-filter; `recover_media_empty` (atomic-album per-item fallback) |
+| `drain.py` | `drain_forever`: serial claim→send→mark; circuit breaker (`_CIRCUIT_TRIP_AT=8`/60s); `run_housekeeping` (failed-missing GC→prune→**transient auto-recover** (`reset_failed_transient`, default on)→opt-in blanket `auto_retry_failed`→stuck watchdog, every 15min); missing-file+dedup pre-filter; `recover_media_empty` (atomic-album per-item fallback); **cooperative `stop_flag_path`** (`core.paths.dispatcher_stop_flag`) checked between batches → clean exit for `ops update` |
 | `send.py` | `TelethonSendStrategy`: FloodWait+backoff+stall-watchdog+reconnect; video/photo/doc paths; **proactive photo compat** (single+album); **fail-fast `SessionUnauthorized`** (startup `is_user_authorized`, mid-send `UnauthorizedError`/`AuthKeyError`). Single video sends attach explicit ffprobe attrs; native video **albums** rely on Telethon's own per-item geometry → **`hachoir` is a hard dep** (without it album videos ship as 1×1 images; `cli._assert_video_metadata_backend` fails fast). Chat_id-folder albums: MIXED photo+video in one group (`_send_mixed_album`, photo preflight kept) and grouped `.mkv`/`.gif` originals as a **document album** (`send_album(as_documents=True)` → `force_document`), shipped after the subfolder's media. **Optional burner**: `_client_for(peer)` picks primary vs burner per destination (`_sender`/`_active_client`; serial drain ⇒ single field safe); burner built lazily, unauthorized→log+primary fallback; `None` burner short-circuits to primary (inert). **Oversize guard**: `_upload_document` preflights `st_size > media_prep.max_upload_bytes()` (`OversizeFileError`, no bytes uploaded) and `FilePartsInvalidError`/`OversizeFileError` bail first-hit → quarantine (permanent; fix = upstream split) |
 | `fast_upload.py` | FastTelethon parallel multi-conn upload (home DC, shared auth key); always falls back to serial |
 | `tg_router.py` | (platform,user)→`Destination(chat_id,topic_id)` env chain; row chat_id overrides; `peer_chat_id` = inverse of `_resolve_peer` (match a peer against the burner chat set) | 
@@ -101,9 +101,9 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | CLI: `start`, `status`, `stats`, `check-routes`, `banned-words`, `queue{list,retry,cancel}`, `config`, `burner{login,chats,status}` |
 
 ## ops/ops/
-`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `cli.py` (`install/uninstall/health/watch/load/unload/restart/logrotate`). Service seam is `core.platform.service` (Task Scheduler on Windows, launchd on macOS); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env → `~\.archive\.config` (self-contained, when its `archiver-suite` dir exists) → legacy `%APPDATA%` (Windows) / `~/.config` (POSIX); migrated by `tools/migrate_config_to_archive.py`.
+`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` runs `python -m pipx` install×3 + `inject media-archiver --force --editable core` — **archiver app is `media-archiver`**, inject needs `--force`; imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (Task Scheduler on Windows, launchd on macOS); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env → `~\.archive\.config` (self-contained, when its `archiver-suite` dir exists) → legacy `%APPDATA%` (Windows) / `~/.config` (POSIX); migrated by `tools/migrate_config_to_archive.py`.
 
-## Seams (cross-process contracts; tests/test_seams.py, 210 checks, 30 seams)
+## Seams (cross-process contracts; tests/test_seams.py, 271 checks, 35 seams)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
 2. **TikTok soft-lock** — recorder writes `paths.tiktok_lock()`; archiver/ops read **liveness-gated** (stale = self-heal). recorder owns write/remove.
 3. **content_hash** — all producers via `register_file` → global dedup.
@@ -152,12 +152,15 @@ $PY = "$env:USERPROFILE\pipx\venvs\dispatcher\Scripts\python.exe"  # only venv w
 # seam suite + any selftest:
 & $PY tests\test_seams.py
 & $PY core\core\_selftest_media_prep.py   # etc.
-# logrotate selftest is module-mode:
-$env:PYTHONPATH = "ops"; & $PY -m ops._selftest_logrotate
+# ops selftests are module-mode:
+$env:PYTHONPATH = "ops;core"; & $PY -m ops._selftest_logrotate
+& $PY -m ops._selftest_update
 ```
-Full battery = 13 files: core{_selftest,_fixes,_media_prep,_safebrake,_termui},
-dispatcher/_fast_upload, recorder{_capture,_reconnect,_ui,_watch,platforms/_tiktok_browser},
-ops/_logrotate(-m), tests/test_seams.
+Full battery: core{_account_gone,_drain_eta,_fixes,_manual_delete,_media_prep,
+_quarantine,_register_media,_safebrake,_termui}, archiver{_ban_quarantine,_routes_dir},
+dispatcher{_client_for,_config,_fast_upload,_keepalive},
+recorder{_ban_escalation,_capture,_reconnect,_skip_safetynet,_ui,_watch,platforms/_tiktok_browser},
+ops/{_logrotate,_update}(-m), tests/test_seams. (24 selftests + seam suite.)
 
 ## Gotchas
 - **Editable installs import the working tree** → a worker restart loads whatever
@@ -168,3 +171,13 @@ ops/_logrotate(-m), tests/test_seams.
 - `recorder_pid` default only; a custom STATE_DIR makes ops blind to the pid.
 - `hachoir` must be in the **dispatcher** venv (declared dep). If album videos
   arrive as 1×1 images, that's the first thing to check.
+- **Platform concurrency is in-process, on purpose.** Separate OS processes per
+  platform were rejected: the shared single-owner housekeeping (ingest/dedup/
+  prune/backfill/deletions) would have to be de-duplicated across processes,
+  multiplying the concurrent-writer surface behind past `suite.db` corruption.
+  In-process `gather` + per-platform connection gets ~90% of the benefit safely.
+  Any two in-process gallery-dl jobs MUST serialize on `platforms._GDL_LOCK`
+  (global `gallery_dl.config`); add a new gallery-dl platform → it uses that lock.
+- **Telegram stays single-sender.** The dispatcher is the sole sender by design;
+  multiple concurrent sessions on one account is a flood-wait/ban risk on
+  Telegram's side. Scale by *account* via the burner seam, never by process.

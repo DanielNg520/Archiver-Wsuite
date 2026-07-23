@@ -140,7 +140,12 @@ def orphaned_caption(batch: list[Item]) -> str:
         if noname:
             return label
         if parent.startswith("#"):
-            return f"{parent} {stems[0]}"
+            # A single loose file keeps the compact `#tag name` form; a
+            # name-similarity cluster under the tag lists the tag as a header
+            # then every file's stem (all names stay visible in the one caption).
+            if len(stems) == 1:
+                return f"{parent} {stems[0]}"
+            return "\n".join([parent] + stems)
         return "\n".join(stems)
     # Space-join the subpath components so a leading `#tag` folder renders as a
     # real (clickable) Telegram hashtag: `#Asian/Eli Shaw` → `#Asian Eli Shaw`.

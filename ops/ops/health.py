@@ -267,21 +267,43 @@ def upload_progress_fields() -> dict | None:
         return None
     sent, total = p["sent"], p["total"]
     frac = (sent / total) if total else 0.0
-    bits = [f"{_human_bytes(sent)}/{_human_bytes(total)}"]
+    # unit='files' → Telethon's native-album callback counts completed files,
+    # not bytes; render '3/9 files' (+ file-paced ETA) instead of '3B/9B'.
+    files = p.get("unit") == "files"
     elapsed = p.get("updated_at", 0) - p.get("started_at", 0)
-    if elapsed >= 1.0 and sent > 0:
-        rate = sent / elapsed
-        bits.append(f"{_human_bytes(rate)}/s")
-        if rate > 0 and total >= sent:
-            eta = int((total - sent) / rate)
-            bits.append(f"ETA {eta // 60}m{eta % 60:02d}s" if eta >= 60
-                        else f"ETA {eta}s")
-    batch = ""
-    if p.get("batch_total") and p["batch_total"] > 1:
-        batch = (f" [file {p['batch_pos']}/{p['batch_total']}]"
-                 if p.get("batch_pos") else f" [album of {p['batch_total']}]")
-    return {"name": Path(p["file"]).name + batch,
+    if files:
+        bits = []
+        if elapsed >= 1.0 and sent > 0 and total > sent:
+            rate = sent / elapsed  # files/s
+            if rate > 0:
+                eta = int((total - sent) / rate)
+                bits.append(f"ETA {eta // 60}m{eta % 60:02d}s" if eta >= 60
+                            else f"ETA {eta}s")
+    else:
+        bits = [f"{_human_bytes(sent)}/{_human_bytes(total)}"]
+        if elapsed >= 1.0 and sent > 0:
+            rate = sent / elapsed
+            bits.append(f"{_human_bytes(rate)}/s")
+            if rate > 0 and total >= sent:
+                eta = int((total - sent) / rate)
+                bits.append(f"ETA {eta // 60}m{eta % 60:02d}s" if eta >= 60
+                            else f"ETA {eta}s")
+    return {"name": Path(p["file"]).name + _batch_tag(p),
             "frac": frac, "detail": " · ".join(bits)}
+
+
+def _batch_tag(p: dict) -> str:
+    """Album context tag. unit='files' counts COMPLETED files, so the in-flight
+    item is sent+1 → '[file 4/9]' rather than a positionless '[album of 9]'."""
+    total = p.get("batch_total")
+    if not total or total <= 1:
+        return ""
+    if p.get("unit") == "files":
+        pos = min(p["sent"] + 1, total) if p.get("sent", 0) < total else total
+        return f" [file {pos}/{total}]"
+    if p.get("batch_pos"):
+        return f" [file {p['batch_pos']}/{total}]"
+    return f" [album of {total}]"
 
 
 def _human_bytes(n: int) -> str:

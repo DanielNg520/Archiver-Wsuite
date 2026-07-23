@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import abc
 import logging
+import random
 import sqlite3
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -42,6 +44,19 @@ if TYPE_CHECKING:
     from core import ItemStore
 
 log = logging.getLogger(__name__)
+
+# gallery_dl.config is PROCESS-GLOBAL state (config.clear/set mutate one shared
+# dict) and every extractor caches it at init. With platforms running
+# concurrently (orchestrator fans them out), two in-process gallery-dl jobs — X
+# and Instagram, or the IG heavy pass and the IG stories fast lane — would stomp
+# each other's config. This lock serializes the config-set + job.run() critical
+# section across ALL in-process gallery-dl jobs. It is held per-USER only, so it
+# is released during the long inter-user sleeps: a fast platform (X) still
+# interleaves during Instagram's multi-minute gaps. As a bonus it guarantees a
+# single request stream per account at a time — itself a good anti-ban property.
+# (TikTok's yt-dlp path uses no global config, and its photo pass is a
+# subprocess, so neither is affected by this lock.)
+_GDL_LOCK = threading.Lock()
 
 from core.files import MEDIA_EXTENSIONS  # one definition, shared suite-wide
 # Gone-account signals live in core so the archiver extractors and the recorder
@@ -136,6 +151,14 @@ class Platform(abc.ABC):
         p = Path(self.config.output_dir) / self.name / username
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def inter_user_delay(self) -> float:
+        """Seconds to pause BEFORE fetching the next user in a run. The base
+        keeps the historical flat `SLEEP_MAX * 2` (X relies on this). Platforms
+        with their own Pacing block (IG, TikTok) override it with a randomized
+        gap so a multi-account cycle doesn't advance on a fixed metronome —
+        even spacing is itself a bot tell."""
+        return self.config.sleep_max * 2
 
     @property
     @abc.abstractmethod
@@ -408,14 +431,8 @@ class XPlatform(Platform):
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
 
-        gallery_dl.config.clear()
-        for key, value in extractor_cfg.items():
-            gallery_dl.config.set(("extractor", "twitter"), key, value)
-
-        detector   = _ExtractorErrorDetector(
+        detector = _ExtractorErrorDetector(
             auth_signals=("AuthRequired", "AuthenticationError", "401", "403"))
-        gdl_logger = logging.getLogger("gallery_dl")
-        gdl_logger.addHandler(detector)
 
         def _run(url: str) -> None:
             try:
@@ -434,19 +451,28 @@ class XPlatform(Platform):
                     detector.note(str(e))
                 log.error("  gallery-dl error for %s: %s", url, e)
 
-        try:
-            # Pass 1: the media timeline (original-tweet media only).
-            log.info("  gallery-dl → @%s (media)", username)
-            _run(f"https://x.com/{username}/media")
+        # Serialize the global gallery_dl.config critical section (see _GDL_LOCK).
+        # Both X passes run under one lock hold; released before the next user.
+        with _GDL_LOCK:
+            gallery_dl.config.clear()
+            for key, value in extractor_cfg.items():
+                gallery_dl.config.set(("extractor", "twitter"), key, value)
 
-            # Pass 2: supplemental with-replies timeline to capture media the
-            # user posted in reply tweets. Text-only replies yield no files;
-            # the shared archive dedups anything already fetched in pass 1.
-            gallery_dl.config.set(("extractor", "twitter"), "replies", True)
-            log.info("  gallery-dl → @%s (replies)", username)
-            _run(f"https://x.com/{username}/with_replies")
-        finally:
-            gdl_logger.removeHandler(detector)
+            gdl_logger = logging.getLogger("gallery_dl")
+            gdl_logger.addHandler(detector)
+            try:
+                # Pass 1: the media timeline (original-tweet media only).
+                log.info("  gallery-dl → @%s (media)", username)
+                _run(f"https://x.com/{username}/media")
+
+                # Pass 2: supplemental with-replies timeline to capture media the
+                # user posted in reply tweets. Text-only replies yield no files;
+                # the shared archive dedups anything already fetched in pass 1.
+                gallery_dl.config.set(("extractor", "twitter"), "replies", True)
+                log.info("  gallery-dl → @%s (replies)", username)
+                _run(f"https://x.com/{username}/with_replies")
+            finally:
+                gdl_logger.removeHandler(detector)
 
         # Auth failure takes precedence: it's recoverable, so never retire an
         # account when the real problem is our own expired cookies.
@@ -488,6 +514,10 @@ class TikTokPlatform(Platform):
     @property
     def users(self) -> tuple[str, ...]:
         return self.tt_cfg.users
+
+    def inter_user_delay(self) -> float:
+        p = self.tt_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
 
     def health_check(self) -> HealthStatus:
         return _cookies_file_health(self.tt_cfg.cookies_file, self.AUTH_COOKIES)
@@ -594,6 +624,8 @@ class TikTokPlatform(Platform):
                         username: str) -> dict:
         from yt_dlp.networking.impersonate import ImpersonateTarget
 
+        pace = self.tt_cfg.pacing
+
         TIKTOK_FORMAT = (
             "bestvideo[format_id!*=download_addr][ext=mp4]+bestaudio[ext=m4a]"
             "/bestvideo[format_id!*=download_addr]+bestaudio"
@@ -616,15 +648,21 @@ class TikTokPlatform(Platform):
             "ignore_no_formats_error": True,
             # Tell yt-dlp about its archive — same one we seed during reconcile.
             "download_archive":    str(self.archive_path(username)),
-            "sleep_interval":              self.config.sleep_min,
-            "max_sleep_interval":          self.config.sleep_max,
-            "sleep_interval_requests":     self.config.sleep_min,
+            # Pace from TikTok's OWN Pacing block, decoupled from the global
+            # SLEEP_* (which only X still uses). yt-dlp has no sleep-429 knob, so
+            # the request gap + a capped exponential back-off (base sleep_max, up
+            # to sleep_429) stand in for it, and extractor_retries bounds how
+            # many times the profile walk itself re-attempts before giving up.
+            "sleep_interval":              pace.sleep_min,
+            "max_sleep_interval":          pace.sleep_max,
+            "sleep_interval_requests":     pace.sleep_request_min,
             "concurrent_fragment_downloads": 1,
-            "retries":             5,
-            "fragment_retries":    5,
+            "retries":             pace.retries,
+            "fragment_retries":    pace.retries,
+            "extractor_retries":   pace.retries,
             "retry_sleep_functions": {
-                "http":     lambda n: 2 ** n,
-                "fragment": lambda n: 2 ** n,
+                "http":     lambda n: min(pace.sleep_max * (2 ** n), pace.sleep_429),
+                "fragment": lambda n: min(pace.sleep_max * (2 ** n), pace.sleep_429),
             },
             "quiet":         True,
             "no_warnings":   False,
@@ -656,6 +694,7 @@ class TikTokPlatform(Platform):
         # substitute a junk cover image for a skipped video — the video file is
         # simply not written. Photo posts (jpg/png/webp/heic) pass untouched, so
         # yt-dlp owns videos and gallery-dl owns photos, with no overlap.
+        pace = self.tt_cfg.pacing
         skip = ",".join(repr(e) for e in self._GDL_SKIP_EXTS)
         cmd = [
             # Invoke gallery-dl via OUR OWN interpreter, never the bare
@@ -675,8 +714,14 @@ class TikTokPlatform(Platform):
             # v1 oversight fix: photo carousels now have their OWN archive,
             # preventing re-fetches even when files exist on disk.
             "--download-archive", str(self._photo_archive_path(username)),
-            "--sleep",         str(int(self.config.sleep_min)),
-            "--sleep-request", str(int(self.config.sleep_max)),
+            # Pace + 429 back-off from TikTok's own Pacing block (matches the
+            # yt-dlp video pass above; --sleep-429 is gallery-dl's rate-limit
+            # wait, the one knob yt-dlp lacks).
+            "--sleep",         str(pace.sleep_min),
+            "--sleep-request", str(pace.sleep_request_min),
+            "-o", f"extractor.tiktok.sleep-429={pace.sleep_429}",
+            # Align the photo pass's fingerprint to the cookie origin (Firefox).
+            "-o", f"extractor.tiktok.browser={self.tt_cfg.browser}",
             f"https://www.tiktok.com/@{username}",
         ]
         try:
@@ -791,29 +836,62 @@ class InstagramPlatform(Platform):
     def seed_archive(self, username: str, entries: Iterable[str]) -> int:
         return _seed_gallery_dl_sqlite(self.archive_path(username), entries)
 
+    def inter_user_delay(self) -> float:
+        p = self.ig_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
+
+    def stories_inter_user_delay(self) -> float:
+        """Shorter between-user gap for the stories fast lane — a story sweep
+        touches many friends and must finish well inside the 24h window, so it
+        uses its own (tighter) gap while KEEPING the cautious per-request pacing."""
+        return random.uniform(self.ig_cfg.stories_user_gap_min,
+                              self.ig_cfg.stories_user_gap_max)
+
     def download(self, username: str, db: "ItemStore") -> int:
+        """Heavy pass: the configured posts/reels include, incremental via
+        date-min. Time-insensitive, so it runs at the slow IG pacing."""
+        date_min_ts = _compute_date_min(db, self.name, username, slack_days=1)
+        if date_min_ts:
+            log.info("  Incremental: date-min=%s", _ts_to_date_str(date_min_ts))
+        else:
+            log.info("  First run: fetching all %s for @%s",
+                     self.ig_cfg.include, username)
+        return self._download_impl(username, db, include=self.ig_cfg.include,
+                                   date_min_ts=date_min_ts, label="posts/reels")
+
+    def download_stories(self, username: str, db: "ItemStore") -> int:
+        """Fast lane: stories only, NO date-min (stories are all <24h; the
+        extractor archive dedups within their life). Deliberately does not
+        advance the posts/reels incremental checkpoints — the orchestrator's
+        stories pass skips those — so the two lanes never interfere."""
+        log.info("  stories → @%s", username)
+        return self._download_impl(username, db, include="stories",
+                                   date_min_ts=None, label="stories")
+
+    def _download_impl(self, username: str, db: "ItemStore", *,
+                       include: str, date_min_ts: int | None,
+                       label: str) -> int:
         import gallery_dl.config
         import gallery_dl.job
         import gallery_dl.exception
 
         user_dir = self.download_root(username)
         before   = _snapshot_media_files(user_dir)
-
-        date_min_ts = _compute_date_min(db, self.name, username, slack_days=1)
-        if date_min_ts:
-            log.info("  Incremental: date-min=%s",
-                     _ts_to_date_str(date_min_ts))
-        else:
-            log.info("  First run: fetching all %s for @%s",
-                     self.ig_cfg.include, username)
+        pace     = self.ig_cfg.pacing
 
         # Per-subcategory filename — `{post_shortcode}_{num}` keeps carousel
-        # images uniquely named AND parseable by identity.resolve.
-        ig_filename = "{date:%Y%m%d}_{post_shortcode}_{num}.{extension}"
+        # images uniquely named AND parseable by identity.resolve. `media_id`
+        # is a fallback for any item lacking a shortcode (some story media).
+        ig_filename = "{date:%Y%m%d}_{post_shortcode|media_id}_{num}.{extension}"
 
         extractor_cfg: dict = {
             "cookies":        self.ig_cfg.cookies_file,
-            "include":        self.ig_cfg.include,
+            # Present as the browser that minted the session cookie (Firefox by
+            # default): sets a matching User-Agent AND TLS cipher order, so the
+            # replayed sessionid doesn't read as a script driving a stolen
+            # session — the primary bot signal after request rate.
+            "browser":        self.ig_cfg.browser,
+            "include":        include,
             "videos":         True,
             "previews":       False,
             "filename":       ig_filename,
@@ -821,45 +899,55 @@ class InstagramPlatform(Platform):
             "base-directory": self.config.output_dir,
             "archive":        str(self.archive_path(username)),
             "mtime":          False,
-            # IG bans aggressively — bias to higher pacing than X/TikTok.
-            "sleep":         self.config.sleep_max,
-            "sleep-request": [self.config.sleep_min, self.config.sleep_max],
-            "retries":       6,
+            # IG bans aggressively — pace it from its OWN Pacing block (see
+            # config._IG_PACING_DEFAULTS), decoupled from the global SLEEP_*.
+            #   sleep-request : random gap between API calls (the key knob)
+            #   sleep         : extra jittered gap before each file download
+            #   sleep-429     : hard back-off when IG returns HTTP 429. Without
+            #                   this, `retries` would hammer straight into the
+            #                   rate-limit wall — the fast path to a disable.
+            #   retries       : kept low ON PURPOSE; sleep-429 does the waiting.
+            "sleep-request": [pace.sleep_request_min, pace.sleep_request_max],
+            "sleep":         [pace.sleep_min, pace.sleep_max],
+            "sleep-429":     pace.sleep_429,
+            "retries":       pace.retries,
         }
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
 
-        gallery_dl.config.clear()
-        for key, value in extractor_cfg.items():
-            gallery_dl.config.set(("extractor", "instagram"), key, value)
-
-        detector   = _ExtractorErrorDetector(auth_signals=(
+        detector = _ExtractorErrorDetector(auth_signals=(
             "AuthRequired", "AuthenticationError",
             "login_required", "challenge_required",
             "checkpoint_required",
             "401", "403",
         ))
-        gdl_logger = logging.getLogger("gallery_dl")
-        gdl_logger.addHandler(detector)
-
         url = f"https://www.instagram.com/{username}/"
-        log.info("  gallery-dl → @%s", username)
+        log.info("  gallery-dl → @%s [%s]", username, label)
 
-        try:
-            job = gallery_dl.job.DownloadJob(url)
-            job.run()
-        except gallery_dl.exception.AuthenticationError as e:
-            detector.auth_failed = True
-            log.error("  gallery-dl auth error: %s", e)
-        except Exception as e:
-            if type(e).__name__ == "NotFoundError":
-                detector.account_gone = True
-                detector.gone_reason = str(e).strip()[:200] or "profile not found"
-            else:
-                detector.note(str(e))
-            log.error("  gallery-dl error for @%s: %s", username, e)
-        finally:
-            gdl_logger.removeHandler(detector)
+        # Serialize the global-config critical section (see _GDL_LOCK). Held for
+        # this one user's job only; released before the caller's inter-user gap.
+        with _GDL_LOCK:
+            gallery_dl.config.clear()
+            for key, value in extractor_cfg.items():
+                gallery_dl.config.set(("extractor", "instagram"), key, value)
+
+            gdl_logger = logging.getLogger("gallery_dl")
+            gdl_logger.addHandler(detector)
+            try:
+                job = gallery_dl.job.DownloadJob(url)
+                job.run()
+            except gallery_dl.exception.AuthenticationError as e:
+                detector.auth_failed = True
+                log.error("  gallery-dl auth error: %s", e)
+            except Exception as e:
+                if type(e).__name__ == "NotFoundError":
+                    detector.account_gone = True
+                    detector.gone_reason = str(e).strip()[:200] or "profile not found"
+                else:
+                    detector.note(str(e))
+                log.error("  gallery-dl error for @%s: %s", username, e)
+            finally:
+                gdl_logger.removeHandler(detector)
 
         # Auth/challenge is recoverable → never retire on it.
         if detector.auth_failed:

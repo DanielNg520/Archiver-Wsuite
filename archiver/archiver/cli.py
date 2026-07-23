@@ -111,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
                             "posts are skipped (no re-download/re-send). "
                             "Requires --user or --platform.")
 
+    s_stories = sub.add_parser(
+        "stories",
+        help="One Instagram stories-only pass (the fast lane, run manually). "
+             "Stories expire in 24h, so they get their own tight cadence in "
+             "`loop`; this runs a single pass now.")
+    s_stories.add_argument("--user", metavar="USERNAME",
+                           help="Limit to one Instagram username (no @)")
+
     # ── queue (shared noun, identical across all three binaries) ───
     core_cli.add_queue_parser(sub)
 
@@ -823,6 +831,26 @@ def cmd_run(args, config: Config, db: ItemStore, *, phase_cb=None,
     # "banned" is a handled terminal outcome, not a failure — a retired account
     # shouldn't count against a loop's consecutive-failure budget.
     return 0 if all(r.get("status") in ("ok", "banned") for r in results.values()) else 1
+
+
+def cmd_stories(args, config: Config, db: ItemStore, *, phase_cb=None) -> int:
+    """One Instagram stories-only fast-lane pass (see Archiver.run_stories)."""
+    user_filter = args.user.lstrip("@") if getattr(args, "user", None) else None
+    ig = config.instagram
+    if not ig:
+        log.error("Instagram is not configured/enabled — nothing to do.")
+        return 0
+    if ig.stories_interval <= 0:
+        log.warning("Stories fast lane is OFF (INSTAGRAM_STORIES_INTERVAL=0). "
+                    "Running a one-off pass anyway.")
+    arch = Archiver(config, db)
+    results = asyncio.run(arch.run_stories(user_filter=user_filter,
+                                           on_user=phase_cb))
+    n_ok = sum(1 for r in results.values() if r.get("status") == "ok")
+    dl   = sum(r.get("downloaded", 0) for r in results.values())
+    log.info("stories pass: %d user(s) ok, %d new file(s)", n_ok, dl)
+    return 0 if all(r.get("status") in ("ok", "gone", "skipped")
+                    for r in results.values()) else 1
 
 
 def cmd_bootstrap(args, config: Config, db: ItemStore) -> int:
@@ -1914,6 +1942,63 @@ def cmd_loop(args, config: Config, db: ItemStore) -> int:
     else:
         loop_logger.info("ingest-sweeper disabled (--ingest-interval 0) — "
                          "drop folders ingested only at each cycle's reconcile")
+
+    # ── Background Instagram stories fast lane ───────────────────────────────
+    # Stories vanish in 24h, so the slow heavy crawl could let them expire
+    # before it reaches a given friend. This daemon thread runs a stories-only
+    # pass every INSTAGRAM_STORIES_INTERVAL seconds on its OWN db connection,
+    # decoupled from the heavy cycle. platforms._GDL_LOCK still serializes it
+    # against the heavy IG pass, so the account never sees two concurrent
+    # request streams. IG-only; absent when Instagram isn't configured.
+    stories_stop = threading.Event()
+    stories_thread = None
+    _ig_cfg = config.instagram
+    stories_interval = _ig_cfg.stories_interval if _ig_cfg else 0.0
+    if _ig_cfg and stories_interval and stories_interval > 0:
+        stories_interval = max(300.0, stories_interval)   # floor 5 min
+
+        def _stories_sweeper():
+            try:
+                st_db = ItemStore.open(config.db_path)
+            except Exception as e:
+                loop_logger.error("stories-sweeper: cannot open DB (%s) — "
+                                  "disabled; stories fall back to the heavy "
+                                  "pass if 'stories' is in INSTAGRAM_INCLUDE", e)
+                return
+            st_arch = Archiver(config, st_db)
+            loop_logger.info("stories-sweeper started — every %.0fs "
+                             "(Instagram stories only)", stories_interval)
+            first = True
+            try:
+                while not stories_stop.is_set():
+                    # Longer first delay so the stories pass doesn't collide with
+                    # run #1 acquiring the gallery-dl lock at startup.
+                    if stories_stop.wait(30.0 if first else stories_interval):
+                        break
+                    first = False
+                    try:
+                        res = asyncio.run(st_arch.run_stories())
+                        dl = sum(r.get("downloaded", 0) for r in res.values())
+                        if dl:
+                            loop_logger.info(
+                                "stories-sweeper: %d new story file(s)", dl)
+                    except Exception as e:
+                        loop_logger.warning(
+                            "stories-sweeper: pass failed (%s) — continuing",
+                            e, exc_info=True)
+            finally:
+                try:
+                    st_db.close()
+                except Exception:
+                    pass
+                loop_logger.info("stories-sweeper stopped")
+
+        stories_thread = threading.Thread(
+            target=_stories_sweeper, name="stories-sweeper", daemon=True)
+        stories_thread.start()
+    elif _ig_cfg:
+        loop_logger.info("stories-sweeper disabled "
+                         "(INSTAGRAM_STORIES_INTERVAL=0)")
     loop_logger.info("════════════════════════════════════════════════════════════")
 
     exit_code = 0
@@ -1978,9 +2063,12 @@ def cmd_loop(args, config: Config, db: ItemStore) -> int:
 
     finally:
         signal.signal(signal.SIGINT, prev_handler)
-        sweeper_stop.set()                    # tell the sweeper to exit
+        sweeper_stop.set()                    # tell the ingest sweeper to exit
+        stories_stop.set()                    # tell the stories sweeper to exit
         if sweeper_thread is not None:
             sweeper_thread.join(timeout=15)   # let an in-flight sweep finish
+        if stories_thread is not None:
+            stories_thread.join(timeout=15)   # let an in-flight story pass finish
         loop_state.clear()   # a stopped loop must not read back as 'sleeping'
         ended_at = datetime.now(timezone.utc)
         uptime = ended_at - started_at
@@ -2065,6 +2153,7 @@ def main() -> int:
         dispatch = {
             "start":        cmd_start,
             "run":          cmd_run,
+            "stories":      cmd_stories,
             "queue":        cmd_queue,
             "ingest":       cmd_ingest,
             "auto-ingest":  cmd_auto_ingest,
@@ -2100,7 +2189,7 @@ def main() -> int:
         # All share the "archiver" lock so `loop`, `run`, `start`, `bootstrap`
         # are mutually exclusive (the loop runs `run` IN-PROCESS, so no
         # self-deadlock). Quick admin/read commands are never gated.
-        if args.cmd in {"loop", "run", "start", "bootstrap"}:
+        if args.cmd in {"loop", "run", "start", "bootstrap", "stories"}:
             from core import InstanceLock, InstanceAlreadyRunning
             try:
                 with InstanceLock("archiver"):

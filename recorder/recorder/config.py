@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -47,6 +47,15 @@ class RecorderConfig:
     lock_path:           str
     tiktok_users:        tuple[str, ...]
     tiktok_cookies_file: str | None
+    # ── Aliases + the manual (on-demand) roster ───────────────────────────────
+    # `tiktok_aliases` maps a real username → a friendly display name; it covers
+    # BOTH rosters (the actively-listened `tiktok_users` and the manual list).
+    # The alias is stamped into the upload caption and accepted anywhere a
+    # `--user` value is on the recorder CLI. `tiktok_manual_users` is a second
+    # roster that is NEVER polled — it exists so an alias-bearing account can be
+    # grabbed on demand with `recorder record --user <alias>`.
+    tiktok_aliases:      dict[str, str] = field(default_factory=dict)
+    tiktok_manual_users: tuple[str, ...] = ()
     # ── Reconnect-on-premature-exit (see state._wait_for_recording_done) ──
     # yt-dlp can exit while the broadcast is still live (rotated m3u8 URL,
     # expired token, transient ffmpeg input error). Rather than finalize a
@@ -87,6 +96,13 @@ class RecorderConfig:
         rec = toml_data.get("recorder", {})
         tt  = rec.get("tiktok", {})
         users = tuple(tt.get("users", []))
+        manual = tuple(tt.get("manual", []))
+
+        # username → display alias, covering both rosters. Skip blank aliases so
+        # a stray empty string never renders as "@user ()" in a caption.
+        raw_aliases = tt.get("aliases", {})
+        aliases = ({str(k): str(v) for k, v in raw_aliases.items() if str(v).strip()}
+                   if isinstance(raw_aliases, dict) else {})
 
         # Banned roster: auto-detected gone accounts land under
         # [platform.tiktok.banned] in this same config.toml (layout owned by
@@ -114,6 +130,8 @@ class RecorderConfig:
                                        str(_osp.locks_dir() / "tiktok.lock")),
             tiktok_users        = users,
             tiktok_cookies_file = cookies,
+            tiktok_aliases      = aliases,
+            tiktok_manual_users = manual,
             reconnect_enabled        = bool(rec.get("reconnect_enabled", True)),
             live_confirm_samples     = int(rec.get("live_confirm_samples", 3)),
             live_confirm_interval_s  = float(rec.get("live_confirm_interval_s", 2.0)),

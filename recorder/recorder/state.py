@@ -46,6 +46,7 @@ from core import split_group_key
 from . import ui
 from .capture import StreamCapture
 from .config import RecorderConfig
+from .enqueue import recorder_caption
 from .lock import TikTokLock
 from .platforms.base import LivePlatform
 from .unstartable import UnstartableTracker
@@ -186,8 +187,8 @@ class _Job:
     group_key: str | None = None
 
 
-# enqueue_fn signature: (platform, username, file_path, caption, group_key) -> None
-EnqueueFn = Callable[[str, str, str, str, str | None], None]
+# enqueue_fn signature: (platform, username, file_path, caption, group_key, alias)
+EnqueueFn = Callable[[str, str, str, str, str | None, str | None], None]
 
 
 class StateMachine:
@@ -672,10 +673,10 @@ class StateMachine:
             return False
         try:
             upload_path = _remux_for_telegram(job.file_path)
-            caption = (f"@{job.username} · tiktok · live · "
-                       f"{upload_path.stem}")
+            alias = self.config.tiktok_aliases.get(job.username)
+            caption = recorder_caption(job.username, alias, upload_path.stem)
             self.enqueue("tiktok", job.username, str(upload_path), caption,
-                         job.group_key)
+                         job.group_key, alias)
             return True
         except Exception as e:
             # Keep the file on disk; ops can re-enqueue via the dispatcher

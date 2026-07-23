@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
@@ -98,6 +99,123 @@ CHAT_ID_PRIORITY = 6
 # stream dumps) where only the converted .mp4 is worth keeping. The original is
 # converted and then deleted as usual — no document upload.
 KEEP_ORIGINAL_SKIP_EXTS = {".flv"}
+
+# ── Name-similarity batching (loose files that would otherwise send singly) ────
+# Files sitting DIRECTLY in a chat_id root (or a `#hashtag` virtual root) are
+# normally sent one message each. But a small drop of obviously-related media —
+# `sunset_01.jpg`, `sunset_02.jpg`, `sunset_clip.mp4` — reads better as one
+# album. So when a folder holds only a HANDFUL of such loose files and some of
+# them share a run of ≥ NAME_CLUSTER_MIN_RUN consecutive ALPHANUMERIC characters
+# in their names (specials ignored), we album those together instead.
+#
+# Guards, both tunable via env:
+#   - NAME_CLUSTER_MAX_FILES: only folders with FEWER than this many loose media
+#     files are clustered. A big dump (a scrape, a bulk export) keeps the
+#     one-message-per-file behavior rather than collapsing into giant albums.
+#   - NAME_CLUSTER_MIN_RUN: the shared consecutive-alphanumeric run length.
+# Subfolders are untouched — they already album by folder, so their grouping is
+# intentional and must not be re-split by name.
+NAME_CLUSTER_MAX_FILES = int(os.environ.get("NAME_CLUSTER_MAX_FILES", "10"))
+NAME_CLUSTER_MIN_RUN   = int(os.environ.get("NAME_CLUSTER_MIN_RUN", "4"))
+
+# Synthetic group_key prefix for a name-similarity cluster. Deliberately NOT of
+# the form `<chat_id>/<sub>` so subfolder_of() reads no subfolder from it (the
+# album caption then falls back to one-line-per-filename, which is what we want
+# for a set of related loose files), and NOT the `split:` sentinel so it is
+# never mistaken for a split-part album.
+NAME_CLUSTER_PREFIX = "nameclip:"
+
+
+def _alnum_lower(stem: str) -> str:
+    """A filename stem reduced to its lowercase alphanumeric run — every special
+    character (space, _, -, ., etc.) dropped so a shared run is measured on the
+    'real' characters only, per the batching rule."""
+    return "".join(c for c in stem.lower() if c.isalnum())
+
+
+def _shared_run(a: str, b: str, min_run: int) -> bool:
+    """True iff the two already-cleaned strings share ANY common substring of at
+    least `min_run` characters. Cheap for the short strings + tiny folders this
+    runs on: compare every `min_run`-gram of the shorter string against the
+    longer. (A longer shared run always contains a shared `min_run`-gram, so an
+    n-gram hit is exactly 'shares ≥ min_run consecutive chars'.)"""
+    if min_run <= 0 or len(a) < min_run or len(b) < min_run:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    grams = {a[i:i + min_run] for i in range(len(a) - min_run + 1)}
+    return any(g in b for g in grams)
+
+
+def _is_individual(folder: Path, f: Path) -> bool:
+    """Whether `f` would be sent as its OWN message under the current routing —
+    i.e. it sits directly in the chat_id root or directly inside a `#hashtag`
+    virtual root (see _route_for). Only these are candidates for name-clustering;
+    a file in an ordinary subfolder already albums by that folder."""
+    try:
+        parent = f.relative_to(folder).parent
+    except ValueError:
+        return True
+    if parent == Path("."):
+        return True
+    return parent.name.startswith("#")
+
+
+def _name_cluster_keys(folder: Path, chat_id: str) -> dict[str, str]:
+    """Pre-pass: map {str(path) → synthetic album key} for loose files that
+    should batch by name similarity. Only individually-sent files are considered,
+    grouped by their immediate parent directory; a directory is clustered only
+    when it holds FEWER than NAME_CLUSTER_MAX_FILES such files. Within a
+    directory, files are linked when their names share a ≥ NAME_CLUSTER_MIN_RUN
+    alphanumeric run, and each connected group of 2+ files gets one shared key.
+    Singletons are omitted (they keep sending individually)."""
+    if NAME_CLUSTER_MIN_RUN <= 0 or NAME_CLUSTER_MAX_FILES <= 1:
+        return {}
+    # Bucket individually-sent media files by their immediate parent directory.
+    by_dir: dict[Path, list[Path]] = {}
+    for f in folder.rglob("*"):
+        try:
+            if not f.is_file():
+                continue
+        except OSError:
+            continue
+        if f.name.startswith(".") or f.suffix.lower() not in _INGESTABLE_EXTS:
+            continue
+        if not _is_individual(folder, f):
+            continue
+        by_dir.setdefault(f.parent, []).append(f)
+
+    keys: dict[str, str] = {}
+    cluster_seq = 0
+    for parent, files in by_dir.items():
+        if len(files) >= NAME_CLUSTER_MAX_FILES:
+            continue                       # too many loose files → leave singles
+        cleaned = {f: _alnum_lower(f.stem) for f in files}
+        # Union-find over the files: link any pair sharing a long-enough run.
+        parent_of: dict[Path, Path] = {f: f for f in files}
+
+        def _find(x: Path) -> Path:
+            while parent_of[x] != x:
+                parent_of[x] = parent_of[parent_of[x]]
+                x = parent_of[x]
+            return x
+
+        for i in range(len(files)):
+            for j in range(i + 1, len(files)):
+                fi, fj = files[i], files[j]
+                if _shared_run(cleaned[fi], cleaned[fj], NAME_CLUSTER_MIN_RUN):
+                    parent_of[_find(fi)] = _find(fj)
+        groups: dict[Path, list[Path]] = {}
+        for f in files:
+            groups.setdefault(_find(f), []).append(f)
+        for members in groups.values():
+            if len(members) < 2:
+                continue                   # a lone file still sends individually
+            key = f"{NAME_CLUSTER_PREFIX}{chat_id}:{cluster_seq}"
+            cluster_seq += 1
+            for f in members:
+                keys[str(f)] = key
+    return keys
 
 
 @dataclass
@@ -253,6 +371,10 @@ def ingest_folder(
     rep = OrphanedReport(chat_id=chat_id)
     quarantine, q_dirty = _load_quarantine(store), False
     prepped, p_dirty = _load_prepped(store), False
+    # Pre-pass: which loose (individually-sent) files should batch by name
+    # similarity. Keyed by the ORIGINAL source path — the converted/streamable
+    # output inherits its source's cluster below. See _name_cluster_keys.
+    cluster_keys = _name_cluster_keys(folder, chat_id)
     # NOT wrapped in store.batch() — deliberately. register_file's dedup-collapse
     # can delete a file from disk (the "adopt" branch deletes the losing copy)
     # right alongside its relink_file DB write. A filesystem delete is not part
@@ -408,6 +530,15 @@ def ingest_folder(
                 group_key, caption = split_gk, out.name
             else:
                 group_key, caption = _route_for(folder, chat_id, out)
+                # A loose file that _route_for would send alone (group_key=None)
+                # but which the name-similarity pass grouped with siblings: swap
+                # in the shared cluster key so the dispatcher albums them. Keep
+                # the per-file caption (its own name) so every filename shows in
+                # the album header (drain.orphaned_caption lists them).
+                if group_key is None:
+                    ck = cluster_keys.get(str(f))
+                    if ck is not None:
+                        group_key, caption = ck, out.name
             try:
                 res = register_file(
                     store, out,

@@ -2401,6 +2401,73 @@ def test_orphaned_mixed_album_seam(tmp: Path) -> None:
        "(even though the .mkv were enqueued earlier)")
 
 
+def test_name_cluster_batch_seam(tmp: Path) -> None:
+    section("Seam 32: loose files sharing a ≥4-char name run batch into one album")
+    from core import ItemStore, PolicyStore, BatchPolicy
+    from core.orphaned import ingest_chat_id_dirs, NAME_CLUSTER_PREFIX
+
+    # A small chat_id root of LOOSE files (no subfolders). Three share the run
+    # 'sunset'; 'random.jpg' shares nothing → stays an individual send. A photo
+    # and a "video" (.mp4, fake bytes are fine — photos/videos both cluster by
+    # name; no ffmpeg needed since prepare passes tiny non-probed files through
+    # for images and the mp4 here is only asserted at the grouping layer).
+    _write_media(tmp / "-100888" / "sunset_01.jpg", b"S1")
+    _write_media(tmp / "-100888" / "sunset_02.jpg", b"S2")
+    _write_media(tmp / "-100888" / "sunset_03.png", b"S3")
+    _write_media(tmp / "-100888" / "random.jpg", b"RR")
+
+    db_file = str(tmp / "seam32.db")
+    store = ItemStore.open(db_file)
+    ingest_chat_id_dirs(store, tmp, known_platforms=set())
+
+    rows = {n: store.get(store.id_of(str(tmp / "-100888" / n)))
+            for n in ("sunset_01.jpg", "sunset_02.jpg", "sunset_03.png",
+                      "random.jpg")}
+    cluster_keys = {rows[n].group_key for n in
+                    ("sunset_01.jpg", "sunset_02.jpg", "sunset_03.png")}
+    ok(len(cluster_keys) == 1 and next(iter(cluster_keys)) is not None
+       and next(iter(cluster_keys)).startswith(NAME_CLUSTER_PREFIX),
+       "the three 'sunset*' files share ONE synthetic cluster group_key")
+    ok(rows["random.jpg"].group_key is None,
+       "the unrelated 'random.jpg' keeps NO group_key (still an individual send)")
+    store.close()
+
+    ps = PolicyStore()
+    ps.set(BatchPolicy.SIZE_KEY, 1)
+    fake = _FakeSend()
+    _drain_once(db_file, ps, fake, default_chat_id="-100999")
+
+    ok(len(fake.sent_albums) == 1
+       and sorted(Path(p).name for p in fake.sent_albums[0])
+           == ["sunset_01.jpg", "sunset_02.jpg", "sunset_03.png"],
+       "the three 'sunset*' files ship as ONE album")
+    ok(sorted(Path(p).name for p in fake.sent_singles) == ["random.jpg"],
+       "the unrelated file still ships as its own single")
+    ok(any("sunset_01" in c and "sunset_02" in c and "sunset_03" in c
+           for c in fake.album_captions),
+       "the cluster album caption lists every filename (one per line)")
+
+
+def test_name_cluster_threshold_seam(tmp: Path) -> None:
+    section("Seam 33: a folder with >=10 loose files is NOT name-clustered")
+    from core import ItemStore
+    from core.orphaned import ingest_chat_id_dirs
+
+    # 10 files that all share 'shot' — but the folder is at the cap, so the
+    # batching rule stands down and every file sends individually (unchanged).
+    for i in range(10):
+        _write_media(tmp / "-100111" / f"shot_{i:02d}.jpg", f"S{i}".encode())
+
+    db_file = str(tmp / "seam33.db")
+    store = ItemStore.open(db_file)
+    ingest_chat_id_dirs(store, tmp, known_platforms=set())
+    keys = [store.get(store.id_of(str(tmp / "-100111" / f"shot_{i:02d}.jpg")))
+            .group_key for i in range(10)]
+    ok(all(k is None for k in keys),
+       "10 loose files (== cap) → none clustered, all individual sends")
+    store.close()
+
+
 def test_burner_account_seam() -> None:
     section("Seam 29: optional burner account (config → routing → send seam)")
     from dispatcher.config import BurnerCreds, TelegramCreds
@@ -2776,6 +2843,202 @@ def test_fast_album_native_fallback_seam() -> None:
         send_mod.fast_upload._internals_present = orig_present
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Seam 34 — concurrent platform loops each on their OWN db connection.
+# The orchestrator now fans fetching platforms out with asyncio.gather so a slow
+# platform (Instagram's long pacing) doesn't block the others. The contract:
+#   (a) loops actually overlap;  (b) each platform gets a DISTINCT ItemStore
+#   connection (never a shared one — that's a corruption footgun);
+#   (c) one platform crashing in its loop never sinks the others;
+#   (d) ARCHIVER_MAX_CONCURRENT_PLATFORMS=1 restores fully-sequential behavior.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_concurrent_platform_loops_seam() -> None:
+    section("Seam 34: concurrent platform loops (own connection, isolation)")
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from core import ItemStore
+    from archiver.orchestrator import Archiver
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    ItemStore.open(db_path).close()                 # init schema once
+
+    def make_arch(max_conc=0):
+        a = object.__new__(Archiver)
+        a.config = SimpleNamespace(db_path=db_path, max_concurrent_platforms=max_conc)
+        a._tripped = set()
+        a._fetches = lambda p: True
+        a._deleting_users = lambda n: frozenset()
+        async def healthy(p): return True
+        a._ensure_platform_healthy = healthy
+        return a
+
+    def mkplat(name):
+        return SimpleNamespace(name=name, users=("u1", "u2"),
+                               inter_user_delay=lambda: 0.0)
+
+    rt = datetime.now(timezone.utc)
+
+    # (a)+(b): overlap + distinct connections + real writes committed.
+    arch = make_arch()
+    conn_ids, timeline = {}, []
+    async def au(platform, username, run_time, db):
+        conn_ids.setdefault(platform.name, id(db.conn))
+        timeline.append((time.perf_counter(), platform.name, "start"))
+        await asyncio.sleep(0.15)
+        db.add_item(source="archiver", platform=platform.name, username=username,
+                    identifier=f"{platform.name}_{username}",
+                    file_path=f"/x/{platform.name}/{username}",
+                    upload_date="20260101", file_size_bytes=123, title="t",
+                    priority=10)
+        timeline.append((time.perf_counter(), platform.name, "end"))
+        return {"status": "ok"}
+    arch._archive_user = au
+    results = {}
+    t0 = time.perf_counter()
+    asyncio.run(Archiver._run_platforms(
+        arch, [mkplat("instagram"), mkplat("x")], None, rt, results, None))
+    wall = time.perf_counter() - t0
+    ok(len(results) == 4 and all(v["status"] == "ok" for v in results.values()),
+       "all 4 (platform,user) pairs archived ok")
+    ok(wall < 0.45, f"platforms ran concurrently (wall={wall:.2f}s << 0.60s seq)")
+    ok(conn_ids["instagram"] != conn_ids["x"],
+       "each platform used its OWN db connection")
+    first_start = {n: min(t for t, nn, e in timeline if nn == n and e == "start")
+                   for n in ("instagram", "x")}
+    ok(max(first_start.values()) < min(t for t, n, e in timeline if e == "end"),
+       "both loops in flight before either finished — truly overlapped")
+    ok(ItemStore.open(db_path).conn.execute(
+        "SELECT COUNT(*) FROM items").fetchone()[0] == 4,
+       "all 4 rows committed through the separate connections")
+
+    # (c): a platform crashing in its loop must not sink the other.
+    arch2 = make_arch()
+    async def healthy_crash(p):
+        if p.name == "instagram":
+            raise RuntimeError("boom")
+        return True
+    arch2._ensure_platform_healthy = healthy_crash
+    done = []
+    async def au2(platform, username, run_time, db):
+        done.append(platform.name); return {"status": "ok"}
+    arch2._archive_user = au2
+    asyncio.run(Archiver._run_platforms(
+        arch2, [mkplat("instagram"), mkplat("x")], None, rt, {}, None))
+    ok(done == ["x", "x"],
+       "healthy platform finished despite the other crashing (isolation holds)")
+
+    # (d): max_concurrent=1 → strictly sequential (rollback switch).
+    arch3 = make_arch(max_conc=1)
+    inflight = {"n": 0, "peak": 0}
+    async def au3(platform, username, run_time, db):
+        inflight["n"] += 1; inflight["peak"] = max(inflight["peak"], inflight["n"])
+        await asyncio.sleep(0.02); inflight["n"] -= 1; return {"status": "ok"}
+    arch3._archive_user = au3
+    asyncio.run(Archiver._run_platforms(
+        arch3, [mkplat("instagram"), mkplat("x")], None, rt, {}, None))
+    ok(inflight["peak"] == 1,
+       "ARCHIVER_MAX_CONCURRENT_PLATFORMS=1 → never more than one loop in flight")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Seam 35 — Instagram stories fast lane. Stories expire in 24h, so they get a
+# SEPARATE stories-only pass (loop's stories-sweeper) on a tighter cadence than
+# the slow posts/reels crawl. Contract:
+#   (a) config splits 'stories' out of the heavy include when the lane is on;
+#   (b) download_stories fetches include=stories with NO date-min (all <24h);
+#   (c) run_stories is a no-op when the lane is off / IG absent;
+#   (d) run_stories NEVER advances the posts/reels checkpoints (independent lanes).
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_stories_fast_lane_seam() -> None:
+    section("Seam 35: Instagram stories fast lane")
+    from types import SimpleNamespace
+    from archiver.config import (InstagramConfig, _IG_PACING_DEFAULTS,
+                                 _split_stories_from_include)
+    from archiver.platforms import InstagramPlatform
+    from archiver.orchestrator import Archiver
+    import gallery_dl.config, gallery_dl.job
+
+    # (a) include-splitting
+    ok(_split_stories_from_include("posts,reels,stories", 10800) == "posts,reels",
+       "lane ON strips 'stories' from the heavy include")
+    ok(_split_stories_from_include("posts,reels,stories", 0) == "posts,reels,stories",
+       "lane OFF leaves the include untouched (legacy behavior)")
+    ok(_split_stories_from_include("stories", 10800) == "posts,reels",
+       "include='stories' only → heavy falls back to posts,reels")
+
+    def mkcfg(interval=10800.0):
+        return InstagramConfig(
+            users=("friend",), cookies_file="ig.txt", firefox_profile="",
+            cookie_refresh_days=3.0, include="posts,reels",
+            pacing=_IG_PACING_DEFAULTS, browser="firefox",
+            stories_interval=interval, stories_user_gap_min=1.0,
+            stories_user_gap_max=2.0)
+
+    # (b) download_stories → include=stories, NO date-min, in the LIVE gdl config
+    import tempfile as _tf
+    cfg = SimpleNamespace(instagram=mkcfg(), output_dir=_tf.mkdtemp(),
+                          state_dir=_tf.mkdtemp())
+    plat = InstagramPlatform(cfg)
+    captured = {}
+    def fake_run(self):
+        captured["include"] = gallery_dl.config.get(("extractor", "instagram"), "include")
+        captured["date-min"] = gallery_dl.config.get(("extractor", "instagram"), "date-min")
+        captured["browser"] = gallery_dl.config.get(("extractor", "instagram"), "browser")
+    orig_run = gallery_dl.job.DownloadJob.run
+    gallery_dl.job.DownloadJob.run = fake_run
+    try:
+        class _DB:
+            def needs_full_history(self, *a): return True
+            def max_sent_upload_date(self, *a): return None
+            def get_last_run(self, *a): return None
+        plat.download_stories("friend", _DB())
+    finally:
+        gallery_dl.job.DownloadJob.run = orig_run
+    ok(captured["include"] == "stories", "download_stories fetches include=stories")
+    ok(captured["date-min"] is None, "stories pass sets NO date-min (all <24h)")
+    ok(captured["browser"] == "firefox", "stories pass keeps the Firefox fingerprint")
+
+    # (c)+(d) run_stories no-op when off; and never advances checkpoints when on.
+    checkpoint_calls = []
+    class _RecDB:
+        def set_last_run(self, *a): checkpoint_calls.append("last_run")
+        def set_date_floor(self, *a): checkpoint_calls.append("date_floor")
+        def mark_full_history_done(self, *a): checkpoint_calls.append("full_hist")
+    arch = object.__new__(Archiver)
+    arch.config = SimpleNamespace(instagram=mkcfg(interval=0.0))
+    arch.db = _RecDB()
+    from core import DownloadPolicy, PolicyStore
+    arch.download_policy = DownloadPolicy(PolicyStore())
+    res = asyncio.run(Archiver.run_stories(arch))
+    ok(res == {}, "run_stories is a no-op when the lane is off (interval=0)")
+
+    # lane ON: stub health + download_stories, assert iteration + no checkpoints
+    arch.config = SimpleNamespace(instagram=mkcfg(interval=10800.0))
+    async def healthy(p): return True
+    arch._ensure_platform_healthy = healthy
+    arch._deleting_users = lambda n: frozenset()
+    seen = []
+    import archiver.platforms as _plat   # run_stories does `from .platforms
+    orig_igp = _plat.InstagramPlatform   # import InstagramPlatform` at call time
+    class _FakePlat:
+        name = "instagram"
+        def __init__(self, cfg): self.users = ("a", "b")
+        def stories_inter_user_delay(self): return 0.0
+        def download_stories(self, u, db): seen.append(u); return 1
+    _plat.InstagramPlatform = _FakePlat
+    try:
+        res = asyncio.run(Archiver.run_stories(arch))
+    finally:
+        _plat.InstagramPlatform = orig_igp
+    ok(seen == ["a", "b"], "run_stories walks every configured user")
+    ok(all(v["status"] == "ok" for v in res.values()), "each stories user reports ok")
+    ok(checkpoint_calls == [],
+       "run_stories NEVER touches posts/reels checkpoints (lanes independent)")
+
+
 def main() -> int:
     print("cross-worker seam integration tests")
     # Each test gets an isolated temp config.toml so the real user config is
@@ -2828,9 +3091,13 @@ def main() -> int:
         test_orphaned_mixed_album_seam(tmp / "s30")
         test_orphaned_no_trace_and_pseudo_platform_seam(tmp / "s31")
         test_labeled_route_folder_seam(tmp / "s31b")
+        test_name_cluster_batch_seam(tmp / "s32")
+        test_name_cluster_threshold_seam(tmp / "s33")
         test_fast_album_native_fallback_seam()
         _reset_config()
         test_burner_account_seam()
+        test_concurrent_platform_loops_seam()
+        test_stories_fast_lane_seam()
 
     print(f"\nALL PASS ({_checks} checks)")
     return 0

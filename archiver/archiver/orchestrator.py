@@ -309,6 +309,75 @@ class Archiver:
                 log.exception("ingest-sweep: empty-folder prune failed")
         return inserted
 
+    async def run_stories(self, user_filter: str | None = None,
+                          on_user=None) -> dict[str, dict]:
+        """Fast, stories-only Instagram pass. Stories expire in 24h, so they get
+        their OWN tight cadence (the loop's stories-sweeper) instead of riding
+        the slow posts/reels crawl where a many-friend run could let them expire.
+
+        IG-only, and a no-op when Instagram isn't configured, its download is
+        disabled, or the lane is off (INSTAGRAM_STORIES_INTERVAL<=0). Runs on the
+        caller's ItemStore (the sweeper's own connection in the loop). Uses the
+        shorter stories inter-user gap but the SAME cautious per-request pacing,
+        and the gallery-dl lock still serializes it against the heavy IG pass so
+        an account never sees two concurrent request streams. Deliberately does
+        NOT advance the posts/reels checkpoints — the two lanes stay independent."""
+        ig = self.config.instagram
+        if not ig or ig.stories_interval <= 0:
+            return {}
+        if not self.download_policy.enabled_for("instagram"):
+            return {}
+
+        from .platforms import InstagramPlatform
+        platform = InstagramPlatform(self.config)
+        if not await self._ensure_platform_healthy(platform):
+            log.warning("[instagram] stories pass skipped — health check failed")
+            return {"instagram": {"status": "skipped", "reason": "unhealthy"}}
+
+        users = platform.users
+        deleting = self._deleting_users("instagram")
+        if deleting:
+            users = tuple(u for u in users if u not in deleting)
+        if user_filter:
+            users = tuple(u for u in users if u == user_filter)
+
+        results: dict[str, dict] = {}
+        for i, username in enumerate(users):
+            if i > 0:
+                await asyncio.sleep(platform.stories_inter_user_delay())
+            key = f"instagram/{username} (stories)"
+            if on_user is not None:
+                try:
+                    on_user("instagram", username)
+                except Exception:
+                    pass
+            try:
+                n = await asyncio.to_thread(
+                    platform.download_stories, username, self.db)
+                if n:
+                    log.info("@%s stories: %d new [instagram]", username, n,
+                             extra={"ev": "download"})
+                results[key] = {"status": "ok", "downloaded": n}
+            except AuthError as e:
+                # Auth/checkpoint is systemic — the whole session is blocked, so
+                # stop the pass rather than hammer every user. The heavy run owns
+                # circuit-tripping and recovery; the lane just backs off.
+                log.warning("[instagram] stories auth failure (@%s): %s — "
+                            "backing off the lane this pass", username, e)
+                results[key] = {"status": "auth-failed", "reason": str(e)}
+                break
+            except AccountGoneError as e:
+                # Let the heavy run be the single authority that retires an
+                # account (ban roster + quarantine); the lane only skips it.
+                log.info("[instagram] @%s looks gone in the stories pass — the "
+                         "heavy run will retire it", username)
+                results[key] = {"status": "gone", "reason": str(e)}
+            except Exception as e:
+                log.error("[instagram] stories error (@%s): %s", username, e,
+                          exc_info=True)
+                results[key] = {"status": "error", "reason": str(e)}
+        return results
+
     def _maybe_backfill_hashes(self) -> None:
         """Self-healing pass for the dedup guarantee: fill content_hash on any
         row that lacks one (a recorder hash-read failure, or a legacy row), so
@@ -326,11 +395,16 @@ class Archiver:
         if rep.scanned:
             log.info("auto-backfill — %s", rep, extra={"ev": "backfill"})
 
-    def _ban_account(self, platform: str, username: str, reason: str) -> None:
+    def _ban_account(self, platform: str, username: str, reason: str,
+                     db: ItemStore | None = None) -> None:
         """Persist a banned/deleted account: drop it from the active user list
         and record it under config.toml's banned roster, then stage it for the
         end-of-run report. Idempotent — re-detecting an already-banned account
-        just refreshes the report line."""
+        just refreshes the report line.
+
+        `db` is the caller's store (a platform-local connection under concurrent
+        runs); defaults to self.db for the sequential/bootstrap callers."""
+        db = db if db is not None else self.db
         detected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         newly = self.config.policy_store.ban_user(
             platform, username, reason=reason, detected_at=detected_at,
@@ -341,7 +415,7 @@ class Archiver:
         # stands and the folder is swept on a later run's re-detection.
         from core import quarantine_user, LOCKED_SKIPPED
         moved = quarantine_user(self.config.output_dir, platform, username,
-                                db=self.db)
+                                db=db)
         self._banned_this_run.append({
             "platform": platform, "username": username,
             "reason": reason, "newly": newly,
@@ -458,57 +532,108 @@ class Archiver:
         results: dict[str, dict],
         on_user=None,
     ) -> None:
-        """The per-platform / per-user loop."""
-        for platform in platforms:
+        """Fan the fetching platforms out CONCURRENTLY — each on its own DB
+        connection and its own pace — so a slow platform (Instagram's long
+        inter-request sleeps) no longer blocks the others behind it. Non-
+        fetching platforms are skipped here and picked up by run()'s sequential
+        reconcile/upload tail, exactly as before.
+
+        Concurrency is bounded by ARCHIVER_MAX_CONCURRENT_PLATFORMS: 0/unset =
+        all fetching platforms at once; 1 = fully sequential (the pre-concurrency
+        behavior, a one-line rollback switch).
+
+        Shared in-memory state (results / self._tripped / self._banned_this_run)
+        is mutated ONLY on the event-loop thread — between awaits, never inside a
+        to_thread — so it needs no lock. Keep it that way: the heavy DB work is
+        the part that runs off-thread, and it uses each platform's OWN store."""
+        fetching = [p for p in platforms if self._fetches(p)]
+        for p in platforms:
             # Not fetching → skip fetch AND the auth/cookies health-check
-            # entirely. The folder is still reconciled + uploaded (always, in
-            # run() above), just never downloaded — for hand-managed platforms
-            # like a manual Instagram backup or any user-managed local folder.
-            if not self._fetches(platform):
-                log.info("[%s] download disabled — reconcile/upload only",
-                         platform.name)
-                continue
-            if not await self._ensure_platform_healthy(platform):
-                self._tripped.add(platform.name)
-                log.error("Skipping platform %s — health check failed", platform.name)
-                continue
+            # entirely. The folder is still reconciled + uploaded (in run()),
+            # just never downloaded — hand-managed backups / local folders.
+            if p not in fetching:
+                log.info("[%s] download disabled — reconcile/upload only", p.name)
+        if not fetching:
+            return
 
-            users = platform.users
-            deleting = self._deleting_users(platform.name)
-            if deleting:
-                users = tuple(u for u in users if u not in deleting)
-            if user_filter:
-                users = tuple(u for u in users if u == user_filter)
-                if not users:
-                    log.warning("User %s not configured for %s",
-                                user_filter, platform.name)
-                    continue
+        limit = self.config.max_concurrent_platforms or len(fetching)
+        sem = asyncio.Semaphore(max(1, limit))
 
-            for i, username in enumerate(users):
-                if i > 0:
-                    await asyncio.sleep(self.config.sleep_max * 2)
-                if platform.name in self._tripped:
-                    log.warning("[%s/%s] skipped — circuit tripped this run",
-                                platform.name, username)
-                    results[f"{platform.name}/{username}"] = {
-                        "status": "skipped", "reason": "circuit-tripped",
-                    }
-                    continue
+        outcomes = await asyncio.gather(*(
+            self._run_one_platform(p, user_filter, run_time, results, on_user, sem)
+            for p in fetching
+        ), return_exceptions=True)
+        # A platform loop should catch its own errors below; this is the
+        # backstop so one platform's unexpected crash never sinks the others.
+        for p, outcome in zip(fetching, outcomes):
+            if isinstance(outcome, BaseException):
+                log.error("[%s] platform loop crashed: %s", p.name, outcome,
+                          exc_info=outcome)
 
-                key = f"{platform.name}/{username}"
-                if on_user is not None:
+    async def _run_one_platform(
+        self,
+        platform: Platform,
+        user_filter: str | None,
+        run_time: datetime,
+        results: dict[str, dict],
+        on_user,
+        sem: "asyncio.Semaphore",
+    ) -> None:
+        """One platform's health-check + per-user loop, on a PRIVATE DB
+        connection so concurrent platforms never share a sqlite connection.
+        WAL + busy_timeout + the store's BEGIN IMMEDIATE retry make the separate
+        connections safe against each other (same pattern the loop's ingest
+        sweeper already uses). Runs under `sem` to cap concurrency."""
+        async with sem:
+            db = ItemStore.open(self.config.db_path)
+            try:
+                if not await self._ensure_platform_healthy(platform):
+                    self._tripped.add(platform.name)
+                    log.error("Skipping platform %s — health check failed",
+                              platform.name)
+                    return
+
+                users = platform.users
+                deleting = self._deleting_users(platform.name)
+                if deleting:
+                    users = tuple(u for u in users if u not in deleting)
+                if user_filter:
+                    users = tuple(u for u in users if u == user_filter)
+                    if not users:
+                        log.warning("User %s not configured for %s",
+                                    user_filter, platform.name)
+                        return
+
+                for i, username in enumerate(users):
+                    if i > 0:
+                        gap = platform.inter_user_delay()
+                        log.debug("[%s] inter-user pacing: sleeping %.0fs "
+                                  "before @%s", platform.name, gap, username)
+                        await asyncio.sleep(gap)
+                    if platform.name in self._tripped:
+                        log.warning("[%s/%s] skipped — circuit tripped this run",
+                                    platform.name, username)
+                        results[f"{platform.name}/{username}"] = {
+                            "status": "skipped", "reason": "circuit-tripped",
+                        }
+                        continue
+
+                    key = f"{platform.name}/{username}"
+                    if on_user is not None:
+                        try:
+                            on_user(platform.name, username)
+                        except Exception:
+                            pass   # a status hook must never break the run
                     try:
-                        on_user(platform.name, username)
-                    except Exception:
-                        pass   # a status hook must never break the run
-                try:
-                    results[key] = await self._archive_user(
-                        platform, username, run_time,
-                    )
-                except Exception as e:
-                    log.error("[%s] uncaught error: %s",
-                              key, e, exc_info=True)
-                    results[key] = {"status": "error", "reason": str(e)}
+                        results[key] = await self._archive_user(
+                            platform, username, run_time, db,
+                        )
+                    except Exception as e:
+                        log.error("[%s] uncaught error: %s",
+                                  key, e, exc_info=True)
+                        results[key] = {"status": "error", "reason": str(e)}
+            finally:
+                db.close()
 
     def _log_overrides(self, platforms: list[Platform]) -> None:
         """Validate + log delete-policy and dedup-policy at startup."""
@@ -641,34 +766,39 @@ class Archiver:
     # ── Per-user cycle ───────────────────────────────────────────────────────
 
     async def _download_with_recovery(
-        self, platform: Platform, username: str,
+        self, platform: Platform, username: str, db: ItemStore,
     ) -> dict:
         """Run platform.download with the original auth-failure and
         disk-full recovery behavior. Returns {'count': int} on success or
         {'_error': <result dict>} when the caller should early-return.
         Extracted verbatim from the old inline 4b block so the lockfile
-        branch above can bypass it cleanly."""
+        branch above can bypass it cleanly.
+
+        `db` is the caller's store: the shared self.db for a sequential run, or
+        a platform-local connection when platforms run concurrently. Every DB
+        access below goes through it — never self.db — so two platform loops
+        never touch one connection at once."""
         try:
-            count = await asyncio.to_thread(platform.download, username, self.db)
+            count = await asyncio.to_thread(platform.download, username, db)
             return {"count": count}
         except AccountGoneError as e:
             # The account is gone (banned/suspended/deleted) — not our auth.
             # Retire it: move to the banned list, drop from active users, and
             # record it for the end-of-run report. Already-queued rows for this
             # user are untouched; the dispatcher still delivers them.
-            self._ban_account(platform.name, username, str(e))
+            self._ban_account(platform.name, username, str(e), db)
             return {"_error": {"status": "banned", "reason": str(e)}}
         except AuthError as e:
-            handled = await self._handle_auth_failure(platform, str(e))
+            handled = await self._handle_auth_failure(platform, str(e), db)
             if handled:
                 try:
                     count = await asyncio.to_thread(
-                        platform.download, username, self.db,
+                        platform.download, username, db,
                     )
                     return {"count": count}
                 except AuthError as e2:
                     log.error("  Auth still failing after recovery: %s", e2)
-                    await self._handle_auth_failure(platform, str(e2),
+                    await self._handle_auth_failure(platform, str(e2), db,
                                                     attempt_recovery=False)
                     self._tripped.add(platform.name)
                     return {"_error": {"status": "auth-failed", "reason": str(e2)}}
@@ -676,10 +806,10 @@ class Archiver:
         except OSError as e:
             if getattr(e, "errno", None) == 28:  # ENOSPC
                 log.warning("  Disk full — purging already-sent files")
-                self._purge_sent_files(platform.name, username)
+                self._purge_sent_files(platform.name, username, db)
                 try:
                     count = await asyncio.to_thread(
-                        platform.download, username, self.db,
+                        platform.download, username, db,
                     )
                     return {"count": count}
                 except Exception as e2:
@@ -693,12 +823,13 @@ class Archiver:
         platform: Platform,
         username: str,
         run_time: datetime,
+        db: ItemStore,
     ) -> dict:
         log.debug("━━━ [%s] @%s ━━━", platform.name, username)
 
         # 4a. Reconcile disk → DB (Reconcile v2: stability + identity)
         report = await asyncio.to_thread(
-            reconcile_user, platform, username, self.db,
+            reconcile_user, platform, username, db,
             self.config.output_dir, True, self.deletion_guard,
         )
         if report.inserted:
@@ -712,7 +843,7 @@ class Archiver:
                       username)
             new_count = 0
         else:
-            dl = await self._download_with_recovery(platform, username)
+            dl = await self._download_with_recovery(platform, username, db)
             if dl.get("_error"):
                 return dl["_error"]
             new_count = dl["count"]
@@ -730,18 +861,18 @@ class Archiver:
         # table — it only moves past posts the dispatcher has actually
         # confirmed delivered, so a crash or a slow queue never loses
         # ground, even though sending is asynchronous.
-        self.db.set_last_run(platform.name, username, run_time)
-        new_floor = self.db.max_sent_upload_date(platform.name, username)
-        self.db.set_date_floor(platform.name, username, new_floor)
+        db.set_last_run(platform.name, username, run_time)
+        new_floor = db.max_sent_upload_date(platform.name, username)
+        db.set_date_floor(platform.name, username, new_floor)
         # The download above ran without an early-return error, so the full
         # timeline was walked for a new/re-armed user — close the gate so the
         # next run goes back to fast incremental (date-min) fetching.
-        self.db.mark_full_history_done(platform.name, username)
-        self.db.reset_circuit(platform.name)
+        db.mark_full_history_done(platform.name, username)
+        db.reset_circuit(platform.name)
         log.debug("✓ checkpoint → last_run=%s floor=%s",
                   run_time.strftime("%Y-%m-%d %H:%M UTC"), new_floor or "-")
 
-        s = self.db.stats(platform.name, username)
+        s = db.stats(platform.name, username)
         log.debug("stats: total=%d sent=%d pending=%d failed=%d (%.1f MB)",
                   s["total"], s["sent"], s["pending"], s["failed"], s["total_mb"])
 
@@ -752,7 +883,7 @@ class Archiver:
             user_dir = Path(self.config.output_dir) / platform.name / username
             dedup_report = await asyncio.to_thread(
                 dedup_user,
-                platform.name, username, user_dir, self.db,
+                platform.name, username, user_dir, db,
                 dry_run=False,
             )
             if dedup_report.confirmed_groups:
@@ -789,13 +920,15 @@ class Archiver:
         return True
 
     async def _handle_auth_failure(self, platform: Platform, error_msg: str,
+                                   db: ItemStore | None = None,
                                    attempt_recovery: bool = True) -> bool:
-        fails = self.db.bump_circuit_fail(platform.name, error_msg)
+        db = db if db is not None else self.db
+        fails = db.bump_circuit_fail(platform.name, error_msg)
         log.warning("[%s] auth failure #%d", platform.name, fails)
 
         if fails >= self.config.auth_failure_threshold:
             until = datetime.now(timezone.utc) + timedelta(hours=6)
-            self.db.trip_circuit(platform.name, until)
+            db.trip_circuit(platform.name, until)
             self._tripped.add(platform.name)
             log.error(
                 "[%s] CIRCUIT TRIPPED after %d consecutive auth failures. "
@@ -857,13 +990,15 @@ class Archiver:
 
         return True
 
-    def _purge_sent_files(self, platform: str, username: str) -> int:
+    def _purge_sent_files(self, platform: str, username: str,
+                          db: ItemStore | None = None) -> int:
         """Force-delete files with status='sent' (disk-full path).
         Bypasses DeletePolicy intentionally — the rows are already sent — but
         STILL honors the safebrake: a protected scope keeps its files even when
         the disk is full (the guard skips and logs)."""
+        db = db if db is not None else self.db
         freed = 0
-        for fp in self.db.sent_file_paths(platform, username):
+        for fp in db.sent_file_paths(platform, username):
             path = Path(fp)
             try:
                 size = path.stat().st_size if path.exists() else 0

@@ -31,6 +31,16 @@ log = logging.getLogger(__name__)
 RECORDER_PRIORITY = int(os.environ.get("RECORDER_UPLOAD_PRIORITY", "5"))
 
 
+def recorder_caption(username: str, alias: str | None, stem: str) -> str:
+    """The upload caption for a recording. When the user has a configured alias
+    it is stamped in parentheses after the handle so the Telegram message names
+    who it is, e.g. `@user (Alias) · tiktok · live · <stem>`. Shared by the
+    state machine (primary file) and the split-part fallback below so both
+    formats can never drift."""
+    who = f"@{username}" + (f" ({alias})" if alias else "")
+    return f"{who} · tiktok · live · {stem}"
+
+
 def _recorder_identifier(file_path: str) -> str:
     """Synthesize the (platform, identifier) key for a recording.
 
@@ -90,6 +100,7 @@ class EnqueueClient:
         file_path: str,
         caption:   str | None,
         group_key: str | None = None,
+        alias:     str | None = None,
         priority:  int = RECORDER_PRIORITY,
     ) -> bool:
         """Register one finished recording. Returns True if it became newly
@@ -131,7 +142,7 @@ class EnqueueClient:
                 identifier_for = lambda out: _recorder_identifier(str(out)),
                 caption_for    = lambda out: (
                     caption if out == path
-                    else f"@{username} · tiktok · live · {out.stem}"),
+                    else recorder_caption(username, alias, out.stem)),
                 retire_original = _retire_after_split,
             )
         finally:

@@ -39,8 +39,19 @@ class ProgressReporter:
                  batch_pos: int | None = None,
                  batch_total: int | None = None):
         """A Telethon progress_callback(sent, total) for one file upload.
-        batch_pos/batch_total give album context ('file 3/10')."""
+        batch_pos/batch_total give album context ('file 3/10').
+
+        UNIT of (sent, total): single sends and the fast album's per-item
+        uploads report BYTES. But Telethon's NATIVE list send — the album-level
+        callback we attach for photo/mixed/native-video/document albums
+        (batch_pos is None, batch_total > 1) — reports (files_completed,
+        total_files), NOT bytes. Tag the heartbeat so readers render '3/9 files'
+        instead of the byte formatter turning it into a nonsense '3B/9B · 0 B/s'.
+        """
         started_at = time.time()
+        unit = ("files"
+                if batch_pos is None and batch_total and batch_total > 1
+                else "bytes")
 
         def _cb(sent: int, total: int) -> None:
             now = time.time()
@@ -53,6 +64,7 @@ class ProgressReporter:
                 "file":        file_path,
                 "sent":        int(sent),
                 "total":       int(total),
+                "unit":        unit,
                 "batch_pos":   batch_pos,
                 "batch_total": batch_total,
                 "started_at":  started_at,
@@ -97,23 +109,46 @@ def _human_secs(s: float) -> str:
 
 
 def describe(p: dict) -> str:
-    """'name.mp4 [file 3/10]  37% (52.3MB/140.8MB, 890.1KB/s, ETA 1m40s)'"""
+    """'name.mp4 [file 3/10]  37% (52.3MB/140.8MB, 890.1KB/s, ETA 1m40s)'
+
+    A native-album heartbeat (unit='files') counts completed files, not bytes,
+    so it renders '3/9 files' with a file-paced ETA instead of the byte form."""
     name = Path(p["file"]).name
     sent, total = p["sent"], p["total"]
     pct = (100 * sent / total) if total else 0
-    parts = [f"{_human_bytes(sent)}/{_human_bytes(total)}"]
+    files = p.get("unit") == "files"
     # Sub-second elapsed yields absurd rates ("25TB/s") on the first tick;
     # wait a full second of signal before showing rate/ETA.
     elapsed = p.get("updated_at", 0) - p.get("started_at", 0)
-    if elapsed >= 1.0 and sent > 0:
-        rate = sent / elapsed
-        parts.append(f"{_human_bytes(rate)}/s")
-        if rate > 0 and total >= sent:
-            parts.append(f"ETA {_human_secs((total - sent) / rate)}")
-    batch = ""
-    if p.get("batch_total") and p["batch_total"] > 1:
-        # batch_pos=None → album-level callback (photo albums): position
-        # within the album isn't attributable, only its size.
-        batch = (f" [file {p['batch_pos']}/{p['batch_total']}]"
-                 if p.get("batch_pos") else f" [album of {p['batch_total']}]")
-    return f"{name}{batch}  {pct:.0f}% ({', '.join(parts)})"
+    if files:
+        parts = []
+        if elapsed >= 1.0 and sent > 0 and total > sent:
+            rate = sent / elapsed  # files/s
+            if rate > 0:
+                parts.append(f"ETA {_human_secs((total - sent) / rate)}")
+    else:
+        parts = [f"{_human_bytes(sent)}/{_human_bytes(total)}"]
+        if elapsed >= 1.0 and sent > 0:
+            rate = sent / elapsed
+            parts.append(f"{_human_bytes(rate)}/s")
+            if rate > 0 and total >= sent:
+                parts.append(f"ETA {_human_secs((total - sent) / rate)}")
+    batch = _batch_tag(p)
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"{name}{batch}  {pct:.0f}%{detail}"
+
+
+def _batch_tag(p: dict) -> str:
+    """Album context tag. A native-album heartbeat (unit='files') counts
+    COMPLETED files, so the in-flight item is sent+1 — surface it as
+    '[file 4/9]' instead of a positionless '[album of 9]'. The fast album's
+    per-item callback carries an explicit batch_pos; a single send has none."""
+    total = p.get("batch_total")
+    if not total or total <= 1:
+        return ""
+    if p.get("unit") == "files":
+        pos = min(p["sent"] + 1, total) if p.get("sent", 0) < total else total
+        return f" [file {pos}/{total}]"
+    if p.get("batch_pos"):
+        return f" [file {p['batch_pos']}/{total}]"
+    return f" [album of {total}]"

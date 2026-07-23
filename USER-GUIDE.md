@@ -45,6 +45,51 @@ everything — configured users, disk-discovered users, and loose root files —
 and needs no cookies. (Keep `instagram` in `ENABLED_PLATFORMS` with ≥1
 configured user so the platform still exists.)
 
+## Account safety & pacing (Instagram / TikTok)
+
+Instagram flags scraper-like behavior aggressively. Downloads are paced to look
+human, per platform, via `.env` (X keeps the legacy `SLEEP_MIN`/`SLEEP_MAX`;
+Instagram and TikTok have their own knobs, so slowing IG never slows the others).
+Defaults favor **safety over speed** — loosen them only once an account is healthy.
+
+| `.env` key | Default (IG) | What it does |
+|---|---|---|
+| `INSTAGRAM_SLEEP_REQUEST_MIN`/`_MAX` | `30`/`60` | Random seconds between API calls — the key anti-throttle knob |
+| `INSTAGRAM_SLEEP_MIN`/`_MAX` | `8`/`15` | Extra jitter before each file download |
+| `INSTAGRAM_SLEEP_429` | `900` | Hard back-off (s) when Instagram returns HTTP 429. **Never** retries into the wall |
+| `INSTAGRAM_RETRIES` | `3` | Per-request retry ceiling (kept low on purpose; `SLEEP_429` does the waiting) |
+| `INSTAGRAM_USER_GAP_MIN`/`_MAX` | `180`/`420` | Random pause between accounts (3–7 min) so a run reads like a person |
+| `INSTAGRAM_BROWSER` | `firefox` | Fingerprint (User-Agent + TLS ciphers). **Must match the browser your cookies came from** — a mismatch is a primary bot signal |
+
+`TIKTOK_*` mirrors these (lighter defaults). Set `firefox:windows` to also pin the
+OS token. If you switch the cookie source to Chrome, set `*_BROWSER=chrome` in the
+same change.
+
+**Concurrency.** The three platforms download **concurrently**, each at its own
+pace, so slow Instagram no longer blocks X/TikTok. `ARCHIVER_MAX_CONCURRENT_PLATFORMS`
+caps it (`0`/unset = all; `1` = fully sequential, a rollback switch).
+
+### Instagram stories (time-sensitive) — the fast lane
+
+Stories vanish in 24h, so they get a **separate, faster pass** decoupled from the
+slow posts/reels crawl (which would risk letting them expire). Don't put
+`stories` in `INSTAGRAM_INCLUDE` — when the lane is on it's moved out
+automatically and handled here instead.
+
+| `.env` key | Default | What it does |
+|---|---|---|
+| `INSTAGRAM_STORIES_INTERVAL` | `10800` (3h) | Seconds between story sweeps in `archiver start`. `0` disables the lane |
+| `INSTAGRAM_STORIES_USER_GAP_MIN`/`_MAX` | `20`/`60` | Shorter between-user gap for the story sweep (per-request pacing stays cautious) |
+
+```bash
+archiver stories                # run one stories-only pass now
+archiver stories --user someone # just one account
+```
+
+The lane runs automatically inside `archiver start`; the command above is for a
+manual pass. It never touches the posts/reels incremental checkpoints, and the
+same one-request-stream-per-account guard applies.
+
 ## Local platforms (no download, you manage the files)
 
 ```bash
