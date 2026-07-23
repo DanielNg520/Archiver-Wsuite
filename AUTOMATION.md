@@ -241,6 +241,23 @@ changing those.
 
 ---
 
+## Redeploying after a code change
+
+```powershell
+ops update            # from the repo root
+```
+
+One command: fingerprints the source (no-op if unchanged, `--force` to override),
+drains the dispatcher **cleanly** (finishes the in-flight upload via a
+cooperative stop-flag — never chopped), `pipx install --force`s the three worker
+apps, re-injects editable `core` into `media-archiver` (`--force`; the archiver's
+pipx app is `media-archiver`, not `archiver`), reloads every worker, and enters
+`ops watch`. `ops` itself is excluded (it is the running process). Full detail —
+including the one-time bootstrap reinstall of `ops`/`dispatcher` needed to obtain
+the command — is under "Updating the code" in [ops/RUNBOOK.md](ops/RUNBOOK.md).
+
+---
+
 ## Turning it off
 
 ```powershell

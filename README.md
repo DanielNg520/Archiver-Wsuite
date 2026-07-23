@@ -269,7 +269,16 @@ ops install       register the service definitions
 ops load          start + enable all workers
 ops unload        stop all workers
 ops restart <s>   restart one service (dispatcher|recorder|archiver)
+ops update        after a code change: drain the dispatcher cleanly, pipx-
+                  reinstall the four packages, reload every worker, then watch
 ```
+
+`ops update` is the one-command redeploy. It fingerprints the source (a no-op
+when nothing changed since the last update, `--force` to override), sets a
+cooperative stop-flag so the dispatcher finishes its in-flight upload before
+exiting (never chopped mid-album), then reinstalls
+`media-archiver`/`dispatcher`/`recorder` and re-injects editable `core`, reloads,
+and drops into `watch`. Run it from the repo root (or `--repo <path>`).
 
 Also ships [ops/RUNBOOK.md](ops/RUNBOOK.md) (failure recovery).
 

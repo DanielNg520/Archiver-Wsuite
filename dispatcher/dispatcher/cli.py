@@ -40,6 +40,7 @@ from core import (
     parse_route, load_words,
 )
 from core import cli as core_cli
+from core import paths as core_paths
 from core import termui
 
 from .config import (
@@ -132,6 +133,7 @@ async def _run_drain(config: DispatcherConfig) -> None:
                 batch_policy=batch_policy,
                 guard=guard,
                 stop_event=stop_event,
+                stop_flag_path=core_paths.dispatcher_stop_flag(),
             )
         except SessionUnauthorized:
             # Session died mid-run. The drain is serial, so the only rows in

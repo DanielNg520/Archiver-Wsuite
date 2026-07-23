@@ -334,6 +334,7 @@ async def drain_forever(
     guard:         DeletionGuard,
     *,
     stop_event:    asyncio.Event | None = None,
+    stop_flag_path: Path | None = None,
 ) -> None:
     log.info("draining the upload queue (poll %.0fs)", config.poll_interval_s,
              extra={"ev": "start"})
@@ -370,6 +371,16 @@ async def drain_forever(
     while True:
         if stop_event is not None and stop_event.is_set():
             log.info("drain: stop requested, exiting cleanly")
+            return
+
+        # Cooperative update stop: `ops update` drops this flag when it wants the
+        # drain to quiesce for a reinstall. Checked at the TOP of the loop, so we
+        # only ever exit BETWEEN batches — the file/album currently uploading
+        # always finishes first. `ops update` removes the flag before reloading,
+        # so a fresh dispatcher never trips on a stale one.
+        if stop_flag_path is not None and stop_flag_path.exists():
+            log.info("drain: update stop-flag present — exiting cleanly after "
+                     "the current batch", extra={"ev": "stop"})
             return
 
         if consecutive_fails >= _CIRCUIT_TRIP_AT:

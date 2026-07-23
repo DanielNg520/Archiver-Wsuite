@@ -23,6 +23,7 @@ ops watch                  # same, auto-refreshing
 ops load                   # start + enable all workers (all, or `ops load <name>`)
 ops unload                 # stop + disable all (kills orphaned trees too)
 ops restart dispatcher     # restart one (dispatcher|recorder|archiver)
+ops update                 # redeploy on a code change (see "Updating the code")
 ```
 
 Log locations (all under `C:\Users\danie\.archive\.config\archiver-suite\logs\`):
@@ -31,6 +32,58 @@ Log locations (all under `C:\Users\danie\.archive\.config\archiver-suite\logs\`)
 
 When something's wrong, read the `.err` log first for crashes that happened
 before app logging started.
+
+---
+
+## Updating the code (redeploy after an edit)
+
+From the repo root, one command does the whole safe-redeploy dance:
+
+```powershell
+ops update
+```
+
+What it does, in order:
+1. **Change detection.** Fingerprints (content hash) every `.py`/`.toml` under
+   `core/ archiver/ recorder/ dispatcher/`, skipping `build/`, `dist/`,
+   `__pycache__`. If nothing changed since the last successful `ops update` it
+   is a no-op — pass `--force` to reinstall anyway.
+2. **Clean dispatcher drain.** Writes a cooperative stop-flag
+   (`…\locks\dispatcher.stop`); the drain loop checks it *between* batches and
+   exits only after the file/album currently uploading finishes — never chopped
+   mid-send. `ops update` waits up to `--stop-timeout` seconds (default 300),
+   then falls back to a hard stop via the unload below.
+3. **Unload all**, so no venv files are locked during reinstall.
+4. **Reinstall** the four pipx packages:
+   `pipx install --force ./archiver` (the app is **`media-archiver`**),
+   `./dispatcher`, `./recorder`, then
+   `pipx inject media-archiver --force --editable ./core`. `ops` itself is
+   NOT reinstalled — it is the running process. (See the naming traps below.)
+5. On success it records the new fingerprint, **reloads all**, and enters
+   `ops watch`. On a reinstall failure it clears the flag, reloads with the
+   *previously* installed code, leaves the fingerprint unchanged (so the next
+   run retries), and exits non-zero.
+
+**Two naming traps** (why the hand-typed inject fails):
+- The archiver's pipx app/venv is `media-archiver` (its `pyproject` name), not
+  `archiver` — `pipx inject archiver …` errors "nonexistent Virtual
+  Environment". Target `media-archiver`.
+- `pipx inject` without `--force` is a **no-op** when `core` is already injected
+  ("already seems to be injected"). `ops update` always passes `--force`.
+
+**Bootstrap.** `ops update` lives in the `ops` package, so to get the command
+itself the first time (and after any edit to `ops`/`dispatcher` sources — `core`
+edits are editable and live on restart), reinstall those by hand once:
+
+```powershell
+python -m pipx install --force .\ops
+python -m pipx inject ops --force --editable .\core
+python -m pipx install --force .\dispatcher
+python -m pipx inject media-archiver --force --editable .\core
+```
+
+> If a package's absolute path changed, also run `ops uninstall && ops install`
+> to regenerate the Task Scheduler definitions (they embed absolute paths).
 
 ---
 

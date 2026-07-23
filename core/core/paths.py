@@ -50,6 +50,15 @@ def archiver_loop() -> Path:
     return _osp.config_dir(_osp.ARCHIVER) / "loop.json"
 
 
+def dispatcher_stop_flag() -> Path:
+    """Cooperative 'finish the current batch, then exit cleanly' flag.
+    Written by `ops update` before it reinstalls the packages; read by the
+    dispatcher drain loop, which returns cleanly BETWEEN batches when it appears
+    (never mid-upload). `ops update` removes it again before reloading the
+    workers, so a freshly started dispatcher never sees a stale flag."""
+    return locks_dir() / "dispatcher.stop"
+
+
 def recorder_pid() -> Path:
     """Default recorder pid file. The recorder writes it under its configured
     state dir (default ~/.recorder); ops reads this default location."""

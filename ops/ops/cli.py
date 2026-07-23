@@ -10,6 +10,8 @@ ops.cli
                        stop a single worker while you edit its config,
                        then `ops load <name>` to bring it back)
   ops restart <name>   restart one service (dispatcher|recorder|archiver)
+  ops update           on a codebase change: drain the dispatcher cleanly,
+                       pipx-reinstall the four packages, reload + watch
   ops logrotate        copytruncate-rotate oversized worker logs (gzip history)
 
 install/load/unload/restart are thin wrappers over the OS service manager
@@ -32,6 +34,7 @@ from core.platform import service as _service
 from core.platform.service import JobSpec
 
 from . import health as _health
+from . import update as _update
 from .health import LABELS, render
 from .logrotate import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_logs
 
@@ -231,6 +234,75 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Detect a codebase change, drain the dispatcher CLEANLY (finish the
+    in-flight upload — never chop it), reinstall the four pipx packages, reload
+    every worker, then drop into `watch`.
+
+    Run it from the repo root (or pass --repo): the reinstall resolves each
+    package dir against that root. A no-op when nothing changed since the last
+    successful update, unless --force."""
+    repo = Path(args.repo).resolve() if args.repo else Path.cwd().resolve()
+    if not _update.looks_like_repo_root(repo):
+        print(f"update: {repo} is not the suite repo root (need core/ archiver/ "
+              f"recorder/ dispatcher/, each with a pyproject.toml). "
+              f"cd there or pass --repo.", file=sys.stderr)
+        return 2
+
+    current = _update.source_fingerprint(repo)
+    stored = _update.read_stored_fingerprint()
+    if current == stored and not args.force:
+        _termui.field("update", "no codebase changes since the last update — "
+                      "nothing to do (use --force to reinstall anyway)",
+                      accent="green")
+        return 0
+    _termui.field("update", "forced reinstall" if current == stored
+                  else "codebase changed — updating", accent="cyan")
+
+    # 1. Drain the dispatcher cleanly. Find its pid FIRST so we can wait for the
+    #    exact process to exit; then the cooperative flag lets it finish the
+    #    file/album it is mid-upload before returning.
+    pid, _owner = _health.worker_pid("dispatcher")
+    if pid is not None:
+        _termui.field("dispatcher", f"draining current batch then stopping "
+                      f"(pid {pid}, up to {args.stop_timeout:.0f}s)…",
+                      accent="yellow")
+    stopped = _update.graceful_stop_dispatcher(pid, args.stop_timeout)
+    if pid is not None:
+        _termui.field("dispatcher", "stopped cleanly" if stopped
+                      else "still busy after timeout — will hard-stop with the "
+                           "unload", accent="green" if stopped else "yellow")
+
+    try:
+        # 2. Unload every worker so no venv files are locked during reinstall
+        #    (and hard-stop the dispatcher if it didn't drain in time).
+        cmd_unload(argparse.Namespace(service=None))
+
+        # 3. Reinstall the pipx packages.
+        rc = _update.run_reinstall(repo)
+    finally:
+        # Whatever happens, never leave the stop-flag behind for the reload.
+        _update.clear_stop_flag()
+
+    if rc != 0:
+        print("update: reinstall failed — reloading workers with the "
+              "PREVIOUSLY installed code and leaving the fingerprint unchanged "
+              "so the next `ops update` retries.", file=sys.stderr)
+        cmd_load(argparse.Namespace(service=None))
+        return 1
+
+    # 4. Success: remember what we installed so the next run can no-op, then
+    #    bring the workers back up.
+    _update.write_fingerprint(current)
+    cmd_load(argparse.Namespace(service=None))
+
+    # 5. Hand off to watch.
+    _termui.field("update", "done — entering watch (Ctrl-C to exit)",
+                  accent="green")
+    time.sleep(1.0)
+    return cmd_watch(argparse.Namespace(interval=args.interval))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ops",
                                 description="Ops tooling for the archiver/recorder/dispatcher system.")
@@ -253,6 +325,20 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="unload only this job (default: all)")
     r = sub.add_parser("restart", help="restart one service")
     r.add_argument("service", choices=list(LABELS))
+    up = sub.add_parser(
+        "update",
+        help="on a codebase change: drain the dispatcher cleanly, pipx-reinstall "
+             "the packages, reload + watch")
+    up.add_argument("--repo", default=None,
+                    help="suite repo root (default: current directory)")
+    up.add_argument("--force", action="store_true",
+                    help="reinstall even if no source change is detected")
+    up.add_argument("--stop-timeout", dest="stop_timeout", type=float,
+                    default=300.0,
+                    help="seconds to let the dispatcher finish its in-flight "
+                         "batch before hard-stopping it (default 300)")
+    up.add_argument("--interval", type=float, default=3.0,
+                    help="watch data-refresh seconds after the update completes")
     lr = sub.add_parser(
         "logrotate",
         help="copytruncate-rotate oversized ~/.local/log/*.log (gzip history)")
@@ -272,6 +358,7 @@ _DISPATCH = {
     "load":      cmd_load,
     "unload":    cmd_unload,
     "restart":   cmd_restart,
+    "update":    cmd_update,
     "logrotate": cmd_logrotate,
 }
 
