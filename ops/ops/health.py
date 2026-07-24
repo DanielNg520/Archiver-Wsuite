@@ -62,6 +62,11 @@ PROGRESS_STALE_S = 30.0
 # (a rest phase legitimately lasts hours); the writer-pid liveness check is what
 # guards against a stale file.
 ARCHIVER_LOOP_FILE = _paths.archiver_loop()
+# Stories fast-lane heartbeat written by the loop's stories-sweeper
+# (archiver/loop_state.py). Its OWN file so a stories pass and a heavy scan can
+# both be 'running' at once. Same read-the-artifact pattern: ops imports no
+# worker package, just the shared path + heartbeat reader from core.
+ARCHIVER_STORIES_FILE = _paths.archiver_stories()
 
 LABELS = {
     "dispatcher": "com.duy.dispatcher",
@@ -546,6 +551,17 @@ def archiver_loop_phase() -> dict | None:
     )
 
 
+def archiver_stories_phase() -> dict | None:
+    """The stories fast-lane's current phase ('running' a pass / 'sleeping'
+    until its next tick), or None when the lane is off, its file is absent, or
+    the writer pid is gone. Same artifact-only read as archiver_loop_phase —
+    ops imports nothing from the archiver."""
+    return _heartbeat.read_live(
+        ARCHIVER_STORIES_FILE,
+        validate=lambda d: d.get("phase") in ("running", "sleeping"),
+    )
+
+
 @_memo(min_ttl=5.0)
 def archiver_last_run() -> str | None:
     conn = _connect_ro(SUITE_DB)
@@ -922,20 +938,41 @@ def render(anim: "int | None" = None) -> str:
             # "working" at a glance, stillness would say "wedged".
             sc = _spin(anim)
             mark = (_c(sc + " ", _CYAN) if sc else _c("◉ ", _GREEN))
-            plat, usr = phase.get("platform"), phase.get("user")
-            if plat and usr:
-                head = mark + _c(f"scanning {plat}/@{usr}", _GREEN)
-                extra = tag
-            elif plat:
-                head = mark + _c(f"scanning {plat}", _GREEN)
-                extra = tag
+            # A run scans several platforms at once — the heartbeat carries a
+            # `scans` list. >1 → a header line + one bullet per concurrent scan
+            # (so the display can't flip between platforms and hide the
+            # concurrency); ==1 or a legacy single-field heartbeat → the old
+            # one-line form.
+            scans = phase.get("scans") or []
+            if len(scans) > 1:
+                rows.append(_row("phase",
+                    mark + _c(f"scanning {len(scans)} platforms", _GREEN)
+                    + _c(tag, _DIM)))
+                for s in scans:
+                    p, u = s.get("platform"), s.get("user")
+                    label = f"{p}/@{u}" if p and u else (p or "…")
+                    since = s.get("since")
+                    age = f"  ·  {_humanize_age_epoch(since)}" if since else ""
+                    rows.append(_cont(_c(f"• {label}", _TEXT) + _c(age, _DIM)))
             else:
-                # No target yet — between users, or the pre/post-scan phases
-                # (reconcile / ingest / backfill). Show how long we've been here.
-                since = phase.get("since")
-                head = mark + _c("scanning", _GREEN)
-                extra = tag + (f"  ·  {_humanize_age_epoch(since)}" if since else "")
-            rows.append(_row("phase", head + _c(extra, _DIM)))
+                if scans:
+                    plat, usr = scans[0].get("platform"), scans[0].get("user")
+                else:   # legacy single-field heartbeat (older archiver)
+                    plat, usr = phase.get("platform"), phase.get("user")
+                if plat and usr:
+                    head = mark + _c(f"scanning {plat}/@{usr}", _GREEN)
+                    extra = tag
+                elif plat:
+                    head = mark + _c(f"scanning {plat}", _GREEN)
+                    extra = tag
+                else:
+                    # No target yet — between users, or the pre/post-scan phases
+                    # (reconcile / ingest / backfill). Show how long we've waited.
+                    since = phase.get("since")
+                    head = mark + _c("scanning", _GREEN)
+                    extra = tag + (f"  ·  {_humanize_age_epoch(since)}"
+                                   if since else "")
+                rows.append(_row("phase", head + _c(extra, _DIM)))
         else:
             wake = phase.get("wake_at")
             nxt = f"  ·  next run {_humanize_until(wake)}" if wake else ""
@@ -952,6 +989,23 @@ def render(anim: "int | None" = None) -> str:
                 _c(f"{p} ", _TEXT) + _c(f"{n:,}", _BLUE)
                 for p, n in ad["top_pending"])
             rows.append(_row("backlog", tp))
+    # Instagram stories fast-lane: its own daemon on a tight cadence, so it has
+    # its own heartbeat. Silent when the lane is off (file absent).
+    sp = archiver_stories_phase() if pid else None
+    if sp:
+        if sp["phase"] == "running":
+            sc = _spin(anim)
+            mark = (_c(sc + " ", _CYAN) if sc else _c("◉ ", _GREEN))
+            u = sp.get("user")
+            who = _c(f" @{u}", _WHITE) if u else ""
+            rows.append(_row("stories", mark + _c("IG stories pass", _GREEN) + who))
+        else:
+            wake = sp.get("wake_at")
+            nxt = f"  ·  next {_humanize_until(wake)}" if wake else ""
+            ln = sp.get("last_new")
+            last = f"  ·  {ln:,} new last pass" if ln else ""
+            rows.append(_row("stories",
+                _c("○ IG stories lane idle", _TEXT) + _c(nxt + last, _DIM)))
     svc = _service_row("archiver", pid, owner)
     if svc:
         rows.append(svc)

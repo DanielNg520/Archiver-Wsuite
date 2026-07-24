@@ -234,14 +234,51 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_update(args: argparse.Namespace) -> int:
-    """Detect a codebase change, drain the dispatcher CLEANLY (finish the
-    in-flight upload — never chop it), reinstall the four pipx packages, reload
-    every worker, then drop into `watch`.
+def _drain_worker(name: str, args: argparse.Namespace) -> int | None:
+    """Bring ONE worker to a graceful stop point before it is unloaded, and
+    return its pid (so the caller can confirm the process is gone before the
+    reinstall). Each worker drains on its own clock — the dispatcher finishes
+    its current batch, the recorder its current capture — so they need not be
+    idle at the same instant. The archiver has no in-flight artifact worth
+    protecting, so it just reports its pid."""
+    pid, _owner = _health.worker_pid(name)
+    if name == "dispatcher":
+        if pid is not None:
+            _termui.field("dispatcher", f"draining current batch then stopping "
+                          f"(pid {pid}, up to {args.stop_timeout:.0f}s)…",
+                          accent="yellow")
+        stopped = _update.graceful_stop_dispatcher(pid, args.stop_timeout)
+        if pid is not None:
+            _termui.field("dispatcher", "stopped cleanly" if stopped
+                          else "still busy after timeout — will hard-stop with "
+                               "the unload", accent="green" if stopped else "yellow")
+    elif name == "recorder":
+        if pid is not None and _update.recording_in_flight():
+            _termui.field("recorder", f"recording in progress — waiting for it to "
+                          f"finish (pid {pid}, up to {args.recording_timeout:.0f}s)…",
+                          accent="yellow")
+            done = _update.graceful_stop_recorder(pid, args.recording_timeout)
+            _termui.field("recorder", "capture finished — safe to unload" if done
+                          else "still recording after timeout — will hard-stop "
+                               "with the unload", accent="green" if done else "yellow")
+    return pid
 
-    Run it from the repo root (or pass --repo): the reinstall resolves each
-    package dir against that root. A no-op when nothing changed since the last
-    successful update, unless --force."""
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Detect a codebase change and deploy it with the MINIMUM disruption: only
+    the workers actually affected are restarted, and each is brought to a
+    graceful stop first (dispatcher finishes its batch, recorder its capture).
+    An unaffected worker — e.g. a recorder mid-capture during an archiver-only
+    update — is never touched. Then drop into `watch`.
+
+    Package logic (see update.update_plan):
+      • only `ops` changed  → editable, already live: nothing to restart.
+      • only `core` changed  → restart all workers (no reinstall — editable core).
+      • a worker changed     → reinstall + restart just that worker.
+      • `--force`            → reinstall + restart everything.
+
+    Run it from the repo root (or pass --repo). A no-op when nothing changed
+    since the last successful update, unless --force."""
     repo = Path(args.repo).resolve() if args.repo else Path.cwd().resolve()
     if not _update.looks_like_repo_root(repo):
         print(f"update: {repo} is not the suite repo root (need core/ archiver/ "
@@ -249,37 +286,60 @@ def cmd_update(args: argparse.Namespace) -> int:
               f"cd there or pass --repo.", file=sys.stderr)
         return 2
 
-    current = _update.source_fingerprint(repo)
-    stored = _update.read_stored_fingerprint()
-    if current == stored and not args.force:
+    current = _update.package_fingerprints(repo)
+    stored = _update.read_stored_fingerprints()
+    changed = _update.changed_packages(current, stored)
+    if not changed and not args.force:
         _termui.field("update", "no codebase changes since the last update — "
                       "nothing to do (use --force to reinstall anyway)",
                       accent="green")
         return 0
-    _termui.field("update", "forced reinstall" if current == stored
-                  else "codebase changed — updating", accent="cyan")
 
-    # 1. Drain the dispatcher cleanly. Find its pid FIRST so we can wait for the
-    #    exact process to exit; then the cooperative flag lets it finish the
-    #    file/album it is mid-upload before returning.
-    pid, _owner = _health.worker_pid("dispatcher")
-    if pid is not None:
-        _termui.field("dispatcher", f"draining current batch then stopping "
-                      f"(pid {pid}, up to {args.stop_timeout:.0f}s)…",
-                      accent="yellow")
-    stopped = _update.graceful_stop_dispatcher(pid, args.stop_timeout)
-    if pid is not None:
-        _termui.field("dispatcher", "stopped cleanly" if stopped
-                      else "still busy after timeout — will hard-stop with the "
-                           "unload", accent="green" if stopped else "yellow")
+    restart, reinstall = _update.update_plan(changed, force=args.force)
 
+    if not restart and not reinstall:
+        # The universal-but-trivial case: only `ops` (editable, imported by no
+        # service) changed — the new code is live the instant it was saved.
+        _termui.field("update", "only ops changed — editable, already live; "
+                      "no reinstall or worker restart needed", accent="green")
+        _update.write_fingerprints(current)
+        _termui.field("update", "done — entering watch (Ctrl-C to exit)",
+                      accent="green")
+        time.sleep(1.0)
+        return cmd_watch(argparse.Namespace(interval=args.interval))
+
+    what = ("forced reinstall" if args.force else "codebase changed")
+    detail = f"changed: {', '.join(sorted(changed))}  ·  restarting: " \
+             f"{', '.join(sorted(restart))}" \
+             + (f"  ·  reinstalling: {', '.join(sorted(reinstall))}"
+                if reinstall else "  ·  no reinstall (editable)")
+    _termui.field("update", f"{what}  ·  {detail}", accent="cyan")
+
+    # Restart in a deterministic order so a dependent worker isn't left running
+    # against a half-updated peer. Drain each worker to its own graceful stop
+    # point first, remembering the pids so we can confirm they're gone before
+    # the reinstall (avoids the Windows exe-lock on the pipx overwrite).
+    order = [n for n in ("dispatcher", "recorder", "archiver") if n in restart]
+    pids: list[int] = []
+
+    rc = 0
     try:
-        # 2. Unload every worker so no venv files are locked during reinstall
-        #    (and hard-stop the dispatcher if it didn't drain in time).
-        cmd_unload(argparse.Namespace(service=None))
+        for name in order:
+            pid = _drain_worker(name, args)
+            if pid is not None:
+                pids.append(pid)
 
-        # 3. Reinstall the pipx packages.
-        rc = _update.run_reinstall(repo)
+        # Unload ONLY the affected workers (an unaffected recorder keeps
+        # recording), then wait for their processes to actually exit + a settle
+        # so the venv/exe locks are released before the reinstall overwrites them.
+        for name in order:
+            cmd_unload(argparse.Namespace(service=name))
+        _update.wait_processes_down(pids)
+
+        # Reinstall only the changed worker packages (a core-only change ships
+        # via the editable inject on restart alone — reinstall set is empty).
+        if reinstall:
+            rc = _update.run_reinstall(repo, reinstall)
     finally:
         # Whatever happens, never leave the stop-flag behind for the reload.
         _update.clear_stop_flag()
@@ -288,15 +348,17 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("update: reinstall failed — reloading workers with the "
               "PREVIOUSLY installed code and leaving the fingerprint unchanged "
               "so the next `ops update` retries.", file=sys.stderr)
-        cmd_load(argparse.Namespace(service=None))
+        for name in order:
+            cmd_load(argparse.Namespace(service=name))
         return 1
 
-    # 4. Success: remember what we installed so the next run can no-op, then
-    #    bring the workers back up.
-    _update.write_fingerprint(current)
-    cmd_load(argparse.Namespace(service=None))
+    # Success: remember what we installed so the next run can no-op, then bring
+    # the restarted workers back up.
+    _update.write_fingerprints(current)
+    for name in order:
+        cmd_load(argparse.Namespace(service=name))
 
-    # 5. Hand off to watch.
+    # Hand off to watch.
     _termui.field("update", "done — entering watch (Ctrl-C to exit)",
                   accent="green")
     time.sleep(1.0)
@@ -337,6 +399,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     default=300.0,
                     help="seconds to let the dispatcher finish its in-flight "
                          "batch before hard-stopping it (default 300)")
+    up.add_argument("--recording-timeout", dest="recording_timeout", type=float,
+                    default=1800.0,
+                    help="seconds to wait for the recorder's in-flight capture "
+                         "to finish before hard-stopping it (default 1800; only "
+                         "waited when the recorder is being restarted AND a "
+                         "recording is actually in flight)")
     up.add_argument("--interval", type=float, default=3.0,
                     help="watch data-refresh seconds after the update completes")
     lr = sub.add_parser(

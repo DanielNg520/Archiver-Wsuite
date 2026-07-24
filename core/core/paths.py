@@ -50,6 +50,15 @@ def archiver_loop() -> Path:
     return _osp.config_dir(_osp.ARCHIVER) / "loop.json"
 
 
+def archiver_stories() -> Path:
+    """Archiver stories-lane heartbeat. The Instagram stories fast-lane runs as
+    its own daemon on a tight cadence, independent of the heavy loop, so it gets
+    its OWN heartbeat file (written by archiver.loop_state; read by ops.health).
+    Separate from loop.json so a stories pass and a heavy scan can both be
+    'running' at once without clobbering each other's status."""
+    return _osp.config_dir(_osp.ARCHIVER) / "stories.json"
+
+
 def dispatcher_stop_flag() -> Path:
     """Cooperative 'finish the current batch, then exit cleanly' flag.
     Written by `ops update` before it reinstalls the packages; read by the

@@ -775,7 +775,7 @@ def cmd_backfill(args, config: Config, db: ItemStore) -> int:
 
 
 def cmd_run(args, config: Config, db: ItemStore, *, phase_cb=None,
-            ingest_lock=None) -> int:
+            done_cb=None, ingest_lock=None) -> int:
     user_filter = args.user.lstrip("@") if args.user else None
 
     if getattr(args, "full_history", False):
@@ -805,6 +805,7 @@ def cmd_run(args, config: Config, db: ItemStore, *, phase_cb=None,
         platform_filter = args.platform,
         user_filter     = user_filter,
         on_user         = phase_cb,
+        on_platform_done = done_cb,
     ))
 
     log.info("")
@@ -1969,19 +1970,28 @@ def cmd_loop(args, config: Config, db: ItemStore) -> int:
             loop_logger.info("stories-sweeper started — every %.0fs "
                              "(Instagram stories only)", stories_interval)
             first = True
+            st_run = 0
+            last_dl = None
             try:
                 while not stories_stop.is_set():
                     # Longer first delay so the stories pass doesn't collide with
                     # run #1 acquiring the gallery-dl lock at startup.
-                    if stories_stop.wait(30.0 if first else stories_interval):
+                    delay = 30.0 if first else stories_interval
+                    loop_state.stories_idle(st_run, time.time() + delay,
+                                            last_new=last_dl)
+                    if stories_stop.wait(delay):
                         break
                     first = False
+                    st_run += 1
                     try:
-                        res = asyncio.run(st_arch.run_stories())
-                        dl = sum(r.get("downloaded", 0) for r in res.values())
-                        if dl:
+                        loop_state.write_stories(st_run)
+                        res = asyncio.run(st_arch.run_stories(on_user=(
+                            lambda _p, u, _n=st_run:
+                                loop_state.write_stories(_n, user=u))))
+                        last_dl = sum(r.get("downloaded", 0) for r in res.values())
+                        if last_dl:
                             loop_logger.info(
-                                "stories-sweeper: %d new story file(s)", dl)
+                                "stories-sweeper: %d new story file(s)", last_dl)
                     except Exception as e:
                         loop_logger.warning(
                             "stories-sweeper: pass failed (%s) — continuing",
@@ -1991,6 +2001,7 @@ def cmd_loop(args, config: Config, db: ItemStore) -> int:
                     st_db.close()
                 except Exception:
                     pass
+                loop_state.clear_stories()
                 loop_logger.info("stories-sweeper stopped")
 
         stories_thread = threading.Thread(
@@ -2013,7 +2024,9 @@ def cmd_loop(args, config: Config, db: ItemStore) -> int:
             try:
                 rc = cmd_run(args, config, db, ingest_lock=ingest_lock, phase_cb=(
                     lambda p, u, _n=run_n:
-                        loop_state.write_running(_n, platform=p, user=u)))
+                        loop_state.write_running(_n, platform=p, user=u)),
+                    done_cb=(lambda p, _n=run_n:
+                             loop_state.scan_done(_n, p)))
             except KeyboardInterrupt:
                 stop_requested[0] = True
                 loop_logger.warning("run #%d interrupted by user", run_n)

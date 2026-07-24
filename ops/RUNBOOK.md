@@ -43,26 +43,59 @@ From the repo root, one command does the whole safe-redeploy dance:
 ops update
 ```
 
-What it does, in order:
-1. **Change detection.** Fingerprints (content hash) every `.py`/`.toml` under
-   `core/ archiver/ recorder/ dispatcher/`, skipping `build/`, `dist/`,
-   `__pycache__`. If nothing changed since the last successful `ops update` it
-   is a no-op — pass `--force` to reinstall anyway.
-2. **Clean dispatcher drain.** Writes a cooperative stop-flag
-   (`…\locks\dispatcher.stop`); the drain loop checks it *between* batches and
-   exits only after the file/album currently uploading finishes — never chopped
-   mid-send. `ops update` waits up to `--stop-timeout` seconds (default 300),
-   then falls back to a hard stop via the unload below.
-3. **Unload all**, so no venv files are locked during reinstall.
-4. **Reinstall** the four pipx packages:
-   `pipx install --force ./archiver` (the app is **`media-archiver`**),
-   `./dispatcher`, `./recorder`, then
-   `pipx inject media-archiver --force --editable ./core`. `ops` itself is
-   NOT reinstalled — it is the running process. (See the naming traps below.)
-5. On success it records the new fingerprint, **reloads all**, and enters
-   `ops watch`. On a reinstall failure it clears the flag, reloads with the
-   *previously* installed code, leaves the fingerprint unchanged (so the next
-   run retries), and exits non-zero.
+What it does, in order (package-aware — every case does the **minimum**):
+1. **Change detection, per package.** Content-hashes every `.py`/`.toml` under
+   `core/ ops/ archiver/ recorder/ dispatcher/` (skipping `build/`, `dist/`,
+   `__pycache__`) into a per-package fingerprint map. It then reacts to exactly
+   what changed:
+   - **only `ops`** → editable and imported by no service, so the new code is
+     already live. No drain, no reinstall, no restart — it just records the new
+     fingerprint and enters `ops watch`. (This is how a dashboard/health change
+     like the concurrent-scan + stories rows deploys.)
+   - **only `core`** → editable-injected, loaded on restart. No reinstall, but
+     **every** worker is restarted (drain → unload → reload) so they pick it up.
+   - **a worker package** (`archiver`/`recorder`/`dispatcher`) → reinstall +
+     restart **just that worker**. The others keep running untouched — an
+     archiver-only update never disturbs a recorder mid-capture or a dispatcher
+     mid-upload.
+   - nothing changed → no-op. `--force` reinstalls + restarts all workers.
+2. **Per-worker graceful drain** — only for the workers being restarted, each
+   reaching its own stop point on its own clock (they need not be idle at the
+   same instant):
+   - **dispatcher** → writes a cooperative stop-flag (`…\locks\dispatcher.stop`);
+     the drain loop checks it *between* batches and exits only after the
+     file/album currently uploading finishes — never chopped mid-send. Waits up
+     to `--stop-timeout` seconds (default 300).
+   - **recorder** → if a capture is in flight (TikTok lock held), waits for it
+     to **finish naturally** before unloading — a live stream is never chopped.
+     Waits up to `--recording-timeout` seconds (default 1800). (Only waited when
+     the recorder is actually being restarted *and* recording.)
+   - either falls back to a hard stop via the unload if its budget elapses.
+3. **Unload only the affected workers**, then **wait for their processes to
+   exit** + a short settle so the venv/exe locks are released before the
+   reinstall overwrites them (guards the Windows `WinError 32` shim lock).
+4. **Reinstall** only the changed worker packages (each pipx step retried a few
+   times to ride out a transient exe lock): `pipx install --force ./archiver`
+   (the app is **`media-archiver`**) / `./dispatcher` / `./recorder`, then
+   `pipx inject media-archiver --force --editable ./core` **iff** the archiver
+   was reinstalled. `ops` and `core` are **never** force-reinstalled here — both
+   are editable (see below), so they ride along live. (See the naming traps.)
+5. On success it records the new per-package fingerprint, **reloads the
+   restarted workers**, and enters `ops watch`. On a reinstall failure it clears
+   the flag, reloads with the *previously* installed code, leaves the
+   fingerprint unchanged (so the next run retries), and exits non-zero.
+
+**Editable `ops` (required for `ops update` to cover ops-side changes).** A
+running process can't force-reinstall its own locked venv, so `ops` — like
+`core` — is installed **editable**; its `.py` edits are then live the instant
+they're saved, and `ops update` needs only to record them. Do this once (and
+after any `ops` **dependency or console-script** change, the lone case editable
+can't pick up):
+
+```powershell
+python -m pipx install --force --editable .\ops
+python -m pipx inject ops --force --editable .\core
+```
 
 **Two naming traps** (why the hand-typed inject fails):
 - The archiver's pipx app/venv is `media-archiver` (its `pyproject` name), not

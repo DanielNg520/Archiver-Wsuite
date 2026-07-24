@@ -166,12 +166,17 @@ class Archiver:
     async def run(self,
                   platform_filter: str | None = None,
                   user_filter:     str | None = None,
-                  on_user=None) -> dict[str, dict]:
+                  on_user=None,
+                  on_platform_done=None) -> dict[str, dict]:
         """Run a full cycle. Returns per-(platform, user) results.
 
         on_user(platform_name, username) — optional progress hook called as each
         user's archive begins, so a supervisor (the loop's phase heartbeat) can
-        report exactly which platform/user is being scanned right now."""
+        report exactly which platform/user is being scanned right now.
+        on_platform_done(platform_name) — optional hook called once a platform
+        finishes ALL its users, so the supervisor can drop it from the set of
+        concurrently-scanning platforms (a finished platform must stop reading
+        as 'still scanning' while slower ones in the same run keep going)."""
         if not self._verify_output_dir():
             return {
                 "preflight": {
@@ -207,7 +212,7 @@ class Archiver:
         # table; the dispatcher drains them asynchronously. There is no
         # enqueue handoff and no reconcile bridge — one table, one truth.
         await self._run_platforms(platforms, user_filter, run_time, results,
-                                  on_user)
+                                  on_user, on_platform_done)
         # Drop-folder ingestion runs under ingest_lock so a concurrent fast
         # sweeper (loop) can't prep the same file at the same time. Downloads
         # above are already done, so holding it here blocks nothing but a
@@ -531,6 +536,7 @@ class Archiver:
         run_time: datetime,
         results: dict[str, dict],
         on_user=None,
+        on_platform_done=None,
     ) -> None:
         """Fan the fetching platforms out CONCURRENTLY — each on its own DB
         connection and its own pace — so a slow platform (Instagram's long
@@ -560,7 +566,8 @@ class Archiver:
         sem = asyncio.Semaphore(max(1, limit))
 
         outcomes = await asyncio.gather(*(
-            self._run_one_platform(p, user_filter, run_time, results, on_user, sem)
+            self._run_one_platform(p, user_filter, run_time, results, on_user,
+                                   sem, on_platform_done)
             for p in fetching
         ), return_exceptions=True)
         # A platform loop should catch its own errors below; this is the
@@ -578,6 +585,7 @@ class Archiver:
         results: dict[str, dict],
         on_user,
         sem: "asyncio.Semaphore",
+        on_platform_done=None,
     ) -> None:
         """One platform's health-check + per-user loop, on a PRIVATE DB
         connection so concurrent platforms never share a sqlite connection.
@@ -634,6 +642,14 @@ class Archiver:
                         results[key] = {"status": "error", "reason": str(e)}
             finally:
                 db.close()
+                # This platform is done (all users, or an early health-check
+                # bailout) — tell the supervisor to drop it from the live
+                # concurrent-scan set. A status hook must never break the run.
+                if on_platform_done is not None:
+                    try:
+                        on_platform_done(platform.name)
+                    except Exception:
+                        pass
 
     def _log_overrides(self, platforms: list[Platform]) -> None:
         """Validate + log delete-policy and dedup-policy at startup."""
