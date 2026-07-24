@@ -4,6 +4,7 @@ recorder.cli
   recorder start                         foreground (watch the priority list)
   recorder start --daemon                deprecated no-op (use `ops install`)
   recorder record --user <u|alias>       ONE-SHOT: if the user is live, record
+                                         (auto `ops load recorder` on exit; --no-reload to skip)
                                          it once and exit (no listening loop)
   recorder stop                          terminate via pid file
   recorder status                        state + queue depth + lock
@@ -29,6 +30,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 import tomllib
@@ -65,6 +68,41 @@ def _setup_logging(verbose: bool) -> None:
 
 def _pid_path(config: RecorderConfig) -> Path:
     return Path(config.state_dir).expanduser() / "pid"
+
+
+def _resolve_ops_bin() -> str | None:
+    """Absolute path to the `ops` CLI. Prefer PATH (pipx puts it there), fall
+    back to ~/.local/bin/ops. Mirrors ops.cli._resolve_bin so a manual record
+    can hand the recorder service back to the OS service manager on exit."""
+    found = shutil.which("ops")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "ops"
+    return str(fallback) if fallback.exists() else None
+
+
+def _reload_recorder_service() -> None:
+    """After a one-shot manual record ends, bring the automated recorder back
+    up via `ops load recorder`. Manual mode only runs when the service is NOT
+    running (cmd_record bails otherwise), so on exit the listening recorder is
+    down until someone reloads it — this closes that gap automatically.
+
+    Best-effort: a missing `ops`, or a machine where the tasks were never
+    installed, must never turn a good recording into a failure. We only log."""
+    ops_bin = _resolve_ops_bin()
+    if ops_bin is None:
+        log.warning("manual record done, but 'ops' not found on PATH — "
+                    "run `ops load recorder` yourself to resume the service")
+        return
+    log.info("manual record done — reloading the recorder service "
+             "(`ops load recorder`)", extra={"ev": "reload"})
+    try:
+        rc = subprocess.run([ops_bin, "load", "recorder"]).returncode
+        if rc != 0:
+            log.warning("`ops load recorder` exited %d — resume the service "
+                        "manually if it did not come back up", rc)
+    except OSError as e:
+        log.warning("could not reload recorder service: %s", e)
 
 
 def _recorder_running(pid_path: Path) -> bool:
@@ -223,6 +261,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         recorded = machine.record_once(username)
     finally:
         pid_path.unlink(missing_ok=True)
+        if not args.no_reload:
+            _reload_recorder_service()
     if recorded:
         return 0
     print(f"@{username} is not live — nothing recorded")
@@ -617,6 +657,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="one-shot: record a single user's live now, then exit (no loop)")
     p_record.add_argument("--user", required=True,
                           help="username or alias to check and record once")
+    p_record.add_argument("--no-reload", action="store_true",
+                          help="don't auto-run `ops load recorder` on exit")
     sub.add_parser("stop", help="stop a running recorder via pid file")
     sub.add_parser("status", help="show state + lock + user list")
     p_watch = sub.add_parser("watch", help="live auto-refreshing dashboard")
