@@ -189,25 +189,34 @@ def _probe(path: Path) -> _Probe | None:
     file isn't a readable video (ffprobe missing/failed, or no video stream)."""
     data = ffprobe.probe_json(
         path,
-        show_entries="format=format_name,duration,size:stream=codec_type,codec_name",
+        show_entries=("format=format_name,duration,size:"
+                      "stream=codec_type,codec_name:stream_disposition=attached_pic"),
         timeout=_PROBE_TIMEOUT_S,
     )
     if data is None:
         return None
 
     fmt = data.get("format") or {}
-    vcodec = acodec = None
-    has_video = False
+    acodec = None
+    # Collect every video stream as (is_attached_pic, codec). A cover-art
+    # thumbnail (ASF/.wmv, some .mp4/.mkv) is itself a video stream, so the naive
+    # "first video stream" both MISREADS the file's real codec and — via the
+    # matching -map 0:V:0 in the convert step — would encode the thumbnail
+    # instead of the content. Prefer a real (non-attached-pic) stream; fall back
+    # to the first video only if every video stream is an attached picture.
+    video_codecs: list[tuple[bool, str | None]] = []
     for s in data.get("streams") or []:
         kind = s.get("codec_type")
         if kind == "video":
-            has_video = True
-            if vcodec is None:
-                vcodec = (s.get("codec_name") or "").lower() or None
+            attached = bool((s.get("disposition") or {}).get("attached_pic"))
+            video_codecs.append(
+                (attached, (s.get("codec_name") or "").lower() or None))
         elif kind == "audio" and acodec is None:
             acodec = (s.get("codec_name") or "").lower() or None
-    if not has_video:
+    if not video_codecs:
         return None  # audio-only / image / not a video we should touch
+    real = [c for attached, c in video_codecs if not attached]
+    vcodec = real[0] if real else video_codecs[0][1]
 
     try:
         size = int(fmt.get("size") or path.stat().st_size)
@@ -247,7 +256,7 @@ def _run_ffmpeg(cmd: list[str], what: str) -> bool:
 
 def _remux_cmd(src: Path, dst: Path) -> list[str]:
     return ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-            "-map", "0:v:0", "-map", "0:a:0?",
+            "-map", "0:V:0", "-map", "0:a:0?",
             "-c", "copy", "-movflags", "+faststart", str(dst)]
 
 
@@ -256,7 +265,7 @@ def _reencode_cmd(src: Path, dst: Path) -> list[str]:
     # are missing/irregular (chiefly a live-recorded .mkv), so the output mp4
     # carries a real duration instead of a 0-length moov.
     return ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts", "-i", str(src),
-            "-map", "0:v:0", "-map", "0:a:0?",
+            "-map", "0:V:0", "-map", "0:a:0?",
             "-c:v", "libx264", "-crf", "18", "-preset", "medium",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "256k",
