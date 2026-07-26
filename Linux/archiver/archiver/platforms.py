@@ -1,0 +1,1201 @@
+"""
+archiver.platforms
+──────────────────
+Strategy pattern: a uniform interface (`Platform`) implemented per source.
+The orchestrator only knows about Platform; it doesn't care whether it's
+talking to X via gallery-dl, TikTok via yt-dlp+gallery-dl, or Instagram
+via gallery-dl.
+
+Common interface (every platform must implement):
+  - name                                 : str
+  - users                                : tuple[str]
+  - health_check()                       : HealthStatus
+  - attempt_recovery()                   : bool
+  - download(username, db)               : int (new files registered)
+  - seed_archive(username, entries)      : int (entries newly added)
+  - archive_path(username)               : Path (where the archive lives)
+
+The `download()` / `seed_archive()` / `archive_path()` triple is what
+lets `archiver.reconcile` bootstrap an existing on-disk archive into
+the extractor's own dedup store without each platform's caller having
+to know whether the archive is sqlite or txt.
+
+Detection of "new" downloads: snapshot the user dir BEFORE the run,
+diff AFTER. Robust against extractor-set mtimes and the extractor's
+own archive (which doesn't tell us what was new THIS run vs. ever).
+"""
+
+from __future__ import annotations
+
+import abc
+import logging
+import os
+import random
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from datetime import timedelta, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from .config import Config, XConfig, TikTokConfig, InstagramConfig
+    from core import ItemStore
+
+log = logging.getLogger(__name__)
+
+# gallery_dl.config is PROCESS-GLOBAL state (config.clear/set mutate one shared
+# dict) and every extractor caches it at init. With platforms running
+# concurrently (orchestrator fans them out), two in-process gallery-dl jobs — X
+# and Instagram, or the IG heavy pass and the IG stories fast lane — would stomp
+# each other's config. This lock serializes the config-set + job.run() critical
+# section across ALL in-process gallery-dl jobs. It is held per-USER only, so it
+# is released during the long inter-user sleeps: a fast platform (X) still
+# interleaves during Instagram's multi-minute gaps. As a bonus it guarantees a
+# single request stream per account at a time — itself a good anti-ban property.
+# (TikTok's yt-dlp path uses no global config, and its photo pass is a
+# subprocess, so neither is affected by this lock.)
+_GDL_LOCK = threading.Lock()
+
+from core.files import MEDIA_EXTENSIONS  # one definition, shared suite-wide
+# Gone-account signals live in core so the archiver extractors and the recorder
+# ban check share one verdict. Aliased to the historical private names so the
+# call sites below read unchanged.
+from core.account_gone import (
+    ACCOUNT_GONE_SIGNALS as _ACCOUNT_GONE_SIGNALS,
+    match_account_gone as _match_account_gone,
+)
+
+
+# ── Status types ──────────────────────────────────────────────────────────────
+
+@dataclass
+class HealthStatus:
+    healthy: bool
+    reason:  str = ""
+
+    @classmethod
+    def ok(cls)         -> "HealthStatus": return cls(True)
+    @classmethod
+    def fail(cls, msg)  -> "HealthStatus": return cls(False, msg)
+
+
+class AuthError(RuntimeError):
+    """Raised by Platform.download when credentials are bad/expired."""
+
+
+class AccountGoneError(RuntimeError):
+    """Raised by Platform.download when the account itself is gone — banned,
+    suspended, or deleted — as opposed to AuthError (our credentials expired).
+    The orchestrator reacts by moving the user to the banned list and dropping
+    it from the active user list, so we stop wasting fetches on it every run.
+
+    Distinct from AuthError on purpose: an auth failure is recoverable (refresh
+    cookies) and trips the circuit breaker; a gone account never comes back and
+    should be retired, not retried."""
+
+
+class _ExtractorErrorDetector(logging.Handler):
+    """Sniffs an extractor's log stream for the two terminal conditions we act
+    on: expired auth (→ AuthError) and a gone account (→ AccountGoneError).
+
+    gallery-dl / yt-dlp report these through their own loggers rather than by
+    raising, so a logging.Handler is the only reliable interception point.
+    `auth_signals` differ per platform (IG has checkpoint/challenge wording);
+    the gone signals are shared via _match_account_gone."""
+
+    # gallery-dl's IG extractor reports a profile it can't resolve as
+    # "Requested user could not be found" — which, unlike the account_gone
+    # wording, is EXACTLY what a dead/challenged session produces for EVERY
+    # profile. On its own it's ambiguous (one genuinely-deleted user says the
+    # same), so it's tracked separately here and only escalated to a session-
+    # death AuthError by the caller when it hits a whole run of users. See
+    # InstagramPlatform._download_impl.
+    _NOT_FOUND_MARKERS = ("could not be found",)
+
+    def __init__(self, auth_signals: tuple[str, ...]):
+        super().__init__()
+        self.auth_signals = auth_signals
+        self.auth_failed  = False
+        self.account_gone = False
+        self.gone_reason  = ""
+        self.not_found    = False
+
+    def note(self, msg: str) -> None:
+        """Classify a single message. Public so exception handlers can feed in
+        the str(exc) text on the same footing as logged lines."""
+        if any(s in msg for s in self.auth_signals):
+            self.auth_failed = True
+        low = msg.lower()
+        if any(m in low for m in self._NOT_FOUND_MARKERS):
+            self.not_found = True
+        reason = _match_account_gone(low)
+        if reason and not self.account_gone:
+            self.account_gone = True
+            self.gone_reason  = msg.strip()[:200] or reason
+
+    def emit(self, record):
+        self.note(record.getMessage())
+
+
+# ── Platform ABC ──────────────────────────────────────────────────────────────
+
+class Platform(abc.ABC):
+    """
+    Strategy interface for all platforms.
+
+    Subclasses MUST set `name` as a class attribute — used as a stable
+    identifier in the DB and the on-disk folder structure.
+
+    `fetches` is True for real extractors and False for user-managed folders
+    (LocalPlatform). The orchestrator routes a non-fetching platform through
+    the reconcile-and-upload-only path every run, which (unlike the per-user
+    download path) also sweeps files dropped directly in the platform folder.
+    """
+    name: str
+    fetches: bool = True
+
+    def __init__(self, config: "Config"):
+        self.config = config
+
+    def download_root(self, username: str) -> Path:
+        """Returns {output_dir}/{platform}/{username}/, ensures it exists."""
+        p = Path(self.config.output_dir) / self.name / username
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def inter_user_delay(self) -> float:
+        """Seconds to pause BEFORE fetching the next user in a run. The base
+        keeps the historical flat `SLEEP_MAX * 2` (X relies on this). Platforms
+        with their own Pacing block (IG, TikTok) override it with a randomized
+        gap so a multi-account cycle doesn't advance on a fixed metronome —
+        even spacing is itself a bot tell."""
+        return self.config.sleep_max * 2
+
+    @property
+    @abc.abstractmethod
+    def users(self) -> tuple[str, ...]: ...
+
+    @abc.abstractmethod
+    def health_check(self) -> HealthStatus: ...
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        """Proactive, age-based cookie re-export from the browser. Runs every
+        preflight, BEFORE health_check, so a server-side-invalidated session
+        (which still passes the file health-check) is replaced before it
+        silently fails. No-op for platforms without browser-backed cookies."""
+        return
+
+    @abc.abstractmethod
+    def attempt_recovery(self) -> bool: ...
+
+    @abc.abstractmethod
+    def download(self, username: str, db: "ItemStore") -> int: ...
+
+    @abc.abstractmethod
+    def archive_path(self, username: str) -> Path:
+        """Where this platform's per-user extractor archive lives."""
+        ...
+
+    @abc.abstractmethod
+    def seed_archive(self, username: str, entries: Iterable[str]) -> int:
+        """
+        Insert `entries` into the per-user extractor archive (sqlite for
+        gallery-dl, txt for yt-dlp). Idempotent: re-seeding existing
+        entries is a no-op. Returns the count actually inserted.
+
+        Used by reconcile/bootstrap to teach the extractor "you already
+        have these locally; don't re-fetch."
+        """
+        ...
+
+
+class LocalPlatform(Platform):
+    """
+    A user-managed folder treated like a platform — but with NO download.
+
+    Files live under {output_dir}/{name}/{username}/ and are managed by hand
+    (you drop them in). Each immediate subfolder is a "username". Every cycle,
+    reconcile walks them and enqueues new files exactly as for a real platform,
+    so they inherit the full pipeline: platform-style captions ("@user · name"),
+    routing (TELEGRAM_CHAT_ID_<NAME>_<USER> / config), the min-batch gate, and
+    the delete-after-upload policy. Only the fetch step is skipped.
+
+    No auth (always healthy) and no extractor archive (manual files have no
+    upstream id to seed).
+    """
+    fetches = False   # user-managed; never downloads
+
+    def __init__(self, config: "Config", name: str):
+        super().__init__(config)
+        self.name = name   # per-instance, unlike the built-in platforms
+
+    @property
+    def users(self) -> tuple[str, ...]:
+        """Auto-discovered: each non-hidden subfolder of {output_dir}/{name}/
+        is a username. No registration step — make a folder, it's a user."""
+        root = Path(self.config.output_dir) / self.name
+        if not root.is_dir():
+            return ()
+        return tuple(sorted(
+            d.name for d in root.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        ))
+
+    def health_check(self) -> HealthStatus:
+        return HealthStatus.ok()           # nothing to authenticate
+
+    def attempt_recovery(self) -> bool:
+        return True
+
+    def download(self, username: str, db: "ItemStore") -> int:
+        return 0                            # user-managed; reconcile enqueues
+
+    def archive_path(self, username: str) -> Path:
+        # Unused (seed_archive is a no-op) but the interface requires a path.
+        d = Path(self.config.state_dir) / "local" / self.name
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{username}.txt"
+
+    def seed_archive(self, username: str, entries: Iterable[str]) -> int:
+        return 0                            # no extractor → nothing to seed
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _snapshot_media_files(root: Path) -> set[Path]:
+    return {
+        f.resolve()
+        for f in root.rglob("*")
+        if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
+    }
+
+
+def _cookies_file_health(path_str: str,
+                         required_cookies: set[str]) -> HealthStatus:
+    """Shared cookies.txt validation used by TikTok and Instagram."""
+    path = Path(path_str)
+    if not path.exists():
+        return HealthStatus.fail(f"cookies file missing: {path}")
+    if path.stat().st_size < 200:
+        return HealthStatus.fail(
+            f"cookies file suspiciously small ({path.stat().st_size} bytes)"
+        )
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    found: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) >= 6:
+            found.add(fields[5])
+
+    missing = required_cookies - found
+    if missing:
+        return HealthStatus.fail(f"missing auth cookies: {sorted(missing)}")
+    return HealthStatus.ok()
+
+
+def _maybe_refresh_stale_cookies(cfg_block, domain: str,
+                                 required: set[str]) -> None:
+    """Proactively re-export cookies from Firefox when the on-disk file is
+    older than `cookie_refresh_days`.
+
+    The file health-check only proves the cookie NAMES are present, not that
+    the session is still valid — a sessionid invalidated server-side (e.g. by
+    re-login elsewhere, as happened to IG on 2026-07-22) keeps passing the
+    health-check, so `attempt_recovery` never fires and the archiver silently
+    harvests zero. Re-pulling from the live browser session on an age cadence
+    is the backstop: as long as the account is logged in in Firefox, every
+    refresh picks up the current session. No-op without a FIREFOX_PROFILE or
+    with cookie_refresh_days<=0."""
+    days = float(getattr(cfg_block, "cookie_refresh_days", 0) or 0)
+    profile = getattr(cfg_block, "firefox_profile", "")
+    if days <= 0 or not profile:
+        return
+    path = Path(cfg_block.cookies_file)
+    try:
+        age_days = ((time.time() - path.stat().st_mtime) / 86400.0
+                    if path.exists() else float("inf"))
+    except OSError:
+        return
+    if age_days < days:
+        return
+    try:
+        from .cookies import refresh_for_domain
+        n = refresh_for_domain(
+            domain=domain, profile_name=profile,
+            output_path=cfg_block.cookies_file, required_cookies=required,
+        )
+        log.info("[cookies] %s stale (%.1fd ≥ %.1fd) — refreshed %d from Firefox",
+                 domain, age_days, days, n)
+    except Exception as e:
+        log.warning("[cookies] proactive refresh of %s failed (using existing "
+                    "file): %s", domain, e)
+
+
+def _seed_gallery_dl_sqlite(archive_path: Path, entries: Iterable[str]) -> int:
+    """
+    Idempotently insert entries into a gallery-dl archive.sqlite3.
+    Schema: `CREATE TABLE archive (entry PRIMARY KEY) WITHOUT ROWID`.
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(archive_path, timeout=10.0)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS archive (entry PRIMARY KEY) "
+            "WITHOUT ROWID"
+        )
+        added = 0
+        for e in entries:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO archive VALUES (?)", (e,),
+            )
+            added += cur.rowcount
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
+def _seed_ytdlp_txt(archive_path: Path, entries: Iterable[str]) -> int:
+    """
+    Idempotently insert entries into a yt-dlp download-archive.txt.
+    Format: one line per entry, "<extractor> <id>" (already formatted by caller).
+    """
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[str] = set()
+    if archive_path.exists():
+        existing = set(
+            line.strip()
+            for line in archive_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        )
+    new = [e for e in entries if e not in existing]
+    if not new:
+        return 0
+    # Append-only; safer than rewrite.
+    with archive_path.open("a", encoding="utf-8") as f:
+        for e in new:
+            f.write(e + "\n")
+    return len(new)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  X / Twitter — via gallery-dl Python API
+# ══════════════════════════════════════════════════════════════════════════════
+
+class XPlatform(Platform):
+    """
+    Downloads X/Twitter media via gallery-dl with direct cookie injection.
+
+    Health check: verifies all 3 cookie env vars are non-empty and ct0
+    is long enough (~160 hex chars).
+
+    Recovery: no automatic recovery — X cookies are 1FA + device-bound.
+    Returns False → circuit breaker will skip this platform for the run.
+    """
+    name = "x"
+
+    def __init__(self, config: "Config"):
+        super().__init__(config)
+        assert config.x is not None, "XPlatform requires Config.x to be set"
+        self.x_cfg: XConfig = config.x
+
+    @property
+    def users(self) -> tuple[str, ...]:
+        return self.x_cfg.users
+
+    def inter_user_delay(self) -> float:
+        """Randomized gap between users, like IG/TikTok — a fixed metronome is
+        itself a bot tell. Replaces the old flat SLEEP_MAX*2."""
+        p = self.x_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
+
+    def health_check(self) -> HealthStatus:
+        if not self.x_cfg.auth_token:
+            return HealthStatus.fail("X_AUTH_TOKEN is empty")
+        if not self.x_cfg.ct0:
+            return HealthStatus.fail("X_CT0 is empty")
+        if not self.x_cfg.twid:
+            return HealthStatus.fail("X_TWID is empty")
+        if len(self.x_cfg.ct0) < 50:
+            return HealthStatus.fail(
+                f"X_CT0 looks too short ({len(self.x_cfg.ct0)} chars) — "
+                "likely a copy mistake; re-paste from DevTools."
+            )
+        return HealthStatus.ok()
+
+    def attempt_recovery(self) -> bool:
+        log.error(
+            "X auth cannot be auto-refreshed. To recover:\n"
+            "  1. Open Firefox → x.com (logged in) → F12 → Storage → Cookies\n"
+            "  2. Copy auth_token, ct0, twid values\n"
+            "  3. Update X_AUTH_TOKEN, X_CT0, X_TWID in .env\n"
+            "  4. Re-run."
+        )
+        return False
+
+    def archive_path(self, username: str) -> Path:
+        d = Path(self.config.state_dir) / "gallery_dl" / self.name
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{username}_archive.sqlite3"
+
+    def seed_archive(self, username: str, entries: Iterable[str]) -> int:
+        return _seed_gallery_dl_sqlite(self.archive_path(username), entries)
+
+    def download(self, username: str, db: "ItemStore") -> int:
+        import gallery_dl.config
+        import gallery_dl.job
+        import gallery_dl.exception
+
+        user_dir = self.download_root(username)
+        before   = _snapshot_media_files(user_dir)
+        pace     = self.x_cfg.pacing
+
+        date_min_ts = _compute_date_min(db, self.name, username, slack_days=1)
+        if date_min_ts:
+            log.info("  Incremental: date-min=%s",
+                     _ts_to_date_str(date_min_ts))
+        else:
+            log.info("  First run: fetching all media for @%s", username)
+
+        extractor_cfg: dict = {
+            "cookies": {
+                "auth_token": self.x_cfg.auth_token,
+                "ct0":        self.x_cfg.ct0,
+                "twid":       self.x_cfg.twid,
+            },
+            "ytdl-format": (
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+                "/bestvideo[ext=mp4]+bestaudio"
+                "/bestvideo+bestaudio/best"
+            ),
+            "image-quality": "orig",
+            "retweets":  False,
+            "replies":   False,
+            "quoted":    False,
+            "videos":    True,
+            "filename":       "{date:%Y%m%d}_{tweet_id}_{num}.{extension}",
+            "directory":      [self.name, username],
+            "base-directory": self.config.output_dir,
+            "archive":        str(self.archive_path(username)),
+            "mtime":          False,  # don't trust the post's Last-Modified
+            "postprocessors": [{
+                "name":     "metadata",
+                "event":    "post",
+                "filename": "{date:%Y%m%d}_{tweet_id}_{num}.json",
+            }],
+            # Conservative, jittered pacing (safety over speed) — X's own
+            # Pacing block, decoupled from the global SLEEP_*. Randomized ranges
+            # turn a burst into human-looking traffic; sleep-429 STOPS on a
+            # rate-limit instead of retrying into a harder block.
+            "sleep":         [pace.sleep_min, pace.sleep_max],
+            "sleep-request": [pace.sleep_request_min, pace.sleep_request_max],
+            "sleep-429":     pace.sleep_429,
+            "retries":       pace.retries,
+        }
+        if date_min_ts:
+            extractor_cfg["date-min"] = date_min_ts
+
+        detector = _ExtractorErrorDetector(
+            auth_signals=("AuthRequired", "AuthenticationError", "401", "403"))
+
+        def _run(url: str) -> None:
+            try:
+                job = gallery_dl.job.DownloadJob(url)
+                job.run()
+            except gallery_dl.exception.AuthenticationError as e:
+                detector.auth_failed = True
+                log.error("  gallery-dl auth error: %s", e)
+            except Exception as e:
+                # gallery-dl raises NotFoundError for a gone profile; classify
+                # it (and any auth/gone wording) the same way logged lines are.
+                if type(e).__name__ == "NotFoundError":
+                    detector.account_gone = True
+                    detector.gone_reason = str(e).strip()[:200] or "profile not found"
+                else:
+                    detector.note(str(e))
+                log.error("  gallery-dl error for %s: %s", url, e)
+
+        # Serialize the global gallery_dl.config critical section (see _GDL_LOCK).
+        # Both X passes run under one lock hold; released before the next user.
+        with _GDL_LOCK:
+            gallery_dl.config.clear()
+            for key, value in extractor_cfg.items():
+                gallery_dl.config.set(("extractor", "twitter"), key, value)
+
+            gdl_logger = logging.getLogger("gallery_dl")
+            gdl_logger.addHandler(detector)
+            try:
+                # Pass 1: the media timeline (original-tweet media only).
+                log.info("  gallery-dl → @%s (media)", username)
+                _run(f"https://x.com/{username}/media")
+
+                # Pass 2: supplemental with-replies timeline to capture media the
+                # user posted in reply tweets. Text-only replies yield no files;
+                # the shared archive dedups anything already fetched in pass 1.
+                gallery_dl.config.set(("extractor", "twitter"), "replies", True)
+                log.info("  gallery-dl → @%s (replies)", username)
+                _run(f"https://x.com/{username}/with_replies")
+            finally:
+                gdl_logger.removeHandler(detector)
+
+        # Auth failure takes precedence: it's recoverable, so never retire an
+        # account when the real problem is our own expired cookies.
+        if detector.auth_failed:
+            raise AuthError(
+                "X cookies appear expired or invalid (gallery-dl reported auth error)."
+            )
+        if detector.account_gone:
+            raise AccountGoneError(detector.gone_reason or "account not found")
+
+        return _register_new_files(self.name, username, user_dir, before, db)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TikTok — yt-dlp for videos, gallery-dl subprocess for photo carousels
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TikTokPlatform(Platform):
+    """
+    TikTok needs two extractors: yt-dlp (videos with curl_cffi TLS
+    impersonation) + gallery-dl (photo carousels). Both share the same
+    cookies.txt and can be auto-refreshed from a Firefox profile.
+
+    The seed_archive() method targets the yt-dlp txt archive — that's
+    what blocks TikTok video re-downloads. Photo carousels are
+    deduplicated by gallery-dl, with its OWN archive at a separate path
+    (see `_photo_archive_path`) — fixing a v1 oversight where the photo
+    pass had no archive flag set.
+    """
+    name = "tiktok"
+
+    AUTH_COOKIES = {"sessionid", "sid_tt"}
+
+    def __init__(self, config: "Config"):
+        super().__init__(config)
+        assert config.tiktok is not None, "TikTokPlatform requires Config.tiktok"
+        self.tt_cfg: TikTokConfig = config.tiktok
+
+    @property
+    def users(self) -> tuple[str, ...]:
+        return self.tt_cfg.users
+
+    def inter_user_delay(self) -> float:
+        p = self.tt_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
+
+    def health_check(self) -> HealthStatus:
+        return _cookies_file_health(self.tt_cfg.cookies_file, self.AUTH_COOKIES)
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        _maybe_refresh_stale_cookies(
+            self.tt_cfg, "tiktok.com", self.AUTH_COOKIES)
+
+    def attempt_recovery(self) -> bool:
+        if not self.tt_cfg.firefox_profile:
+            log.error(
+                "TikTok cookies unhealthy and no FIREFOX_PROFILE set — "
+                "can't auto-recover. Set FIREFOX_PROFILE in .env or "
+                "manually refresh %s.", self.tt_cfg.cookies_file,
+            )
+            return False
+        try:
+            from .cookies import refresh_for_domain
+            n = refresh_for_domain(
+                domain           = "tiktok.com",
+                profile_name     = self.tt_cfg.firefox_profile,
+                output_path      = self.tt_cfg.cookies_file,
+                required_cookies = self.AUTH_COOKIES,
+            )
+            log.info("  Cookie auto-refresh: %d cookies → %s",
+                     n, self.tt_cfg.cookies_file)
+            return True
+        except Exception as e:
+            log.error("  Cookie refresh failed: %s", e)
+            return False
+
+    def archive_path(self, username: str) -> Path:
+        d = Path(self.config.state_dir) / "yt_dlp" / self.name
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{username}_archive.txt"
+
+    def _photo_archive_path(self, username: str) -> Path:
+        """Gallery-dl-format archive for TikTok PHOTO carousels (separate
+        from yt-dlp's video archive). Fixes the v1 oversight where photo
+        re-fetches weren't deduplicated at the extractor level."""
+        d = Path(self.config.state_dir) / "gallery_dl" / self.name
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{username}_photo_archive.sqlite3"
+
+    def seed_archive(self, username: str, entries: Iterable[str]) -> int:
+        """
+        Most TikTok entries from identity.archive_entry_for are of the
+        form `tiktok <id>` (yt-dlp txt format). We can't tell from the
+        entry string alone whether the original was a video or a photo,
+        but yt-dlp's archive is the right place for both video IDs to
+        live (photos won't be in there, but gallery-dl will dedup them
+        via its own archive on first re-walk).
+        """
+        return _seed_ytdlp_txt(self.archive_path(username), entries)
+
+    def download(self, username: str, db: "ItemStore") -> int:
+        import yt_dlp
+
+        user_dir = self.download_root(username)
+        before   = _snapshot_media_files(user_dir)
+
+        date_after = _compute_date_after_str(db, self.name, username)
+        if date_after:
+            log.info("  Incremental: posts on/after %s", date_after)
+        else:
+            log.info("  First run: fetching all available posts for @%s", username)
+
+        ydl_opts = self._build_ydl_opts(user_dir, date_after, username)
+
+        profile_url = f"https://www.tiktok.com/@{username}"
+        log.info("  yt-dlp → @%s", username)
+
+        auth_failed   = False
+        account_gone  = ""
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ret = ydl.download([profile_url])
+                if ret:
+                    log.warning("  yt-dlp returned non-zero exit code: %s", ret)
+        except yt_dlp.utils.DownloadError as e:
+            msg = str(e).lower()
+            if any(s in msg for s in
+                   ("login", "unauthorized", "403", "401",
+                    "private account", "verify", "captcha")):
+                auth_failed = True
+            else:
+                # Only consider "gone" when it's NOT an auth/private problem —
+                # a private account still exists and may come back.
+                account_gone = _match_account_gone(msg) and str(e).strip()[:200]
+            log.error("  yt-dlp DownloadError: %s", e)
+        except Exception as e:
+            log.error("  yt-dlp unexpected error: %s", e, exc_info=True)
+
+        gone_from_photos = self._download_photo_posts(username, user_dir)
+
+        if auth_failed:
+            raise AuthError("TikTok auth appears expired (yt-dlp reported login failure).")
+        # Require BOTH extractors to agree the account is gone before retiring
+        # it — a TikTok profile that yields nothing from yt-dlp but is found by
+        # the gallery-dl pass (or vice-versa) is alive, just photo-only/video-
+        # only. Agreement makes a false ban very unlikely.
+        if account_gone and gone_from_photos:
+            raise AccountGoneError(account_gone or gone_from_photos)
+
+        return _register_new_files(self.name, username, user_dir, before, db)
+
+    def _build_ydl_opts(self, user_dir: Path, date_after: str | None,
+                        username: str) -> dict:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+
+        pace = self.tt_cfg.pacing
+
+        TIKTOK_FORMAT = (
+            "bestvideo[format_id!*=download_addr][ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[format_id!*=download_addr]+bestaudio"
+            "/best[format_id!*=download_addr][ext=mp4]"
+            "/best[format_id!*=download_addr]"
+            "/best"
+        )
+
+        opts: dict = {
+            "outtmpl":             str(user_dir / "%(upload_date)s_%(id)s.%(ext)s"),
+            "format":              TIKTOK_FORMAT,
+            "merge_output_format": "mp4",
+            "cookiefile":          self.tt_cfg.cookies_file,
+            "impersonate":         ImpersonateTarget.from_str("chrome"),
+            "writeinfojson":       True,
+            "overwrites":          False,
+            # TikTok photo carousels appear in profile playlists but have no
+            # video formats. gallery-dl owns those entries in the second pass,
+            # so do not abort the whole yt-dlp profile walk when one is found.
+            "ignore_no_formats_error": True,
+            # Tell yt-dlp about its archive — same one we seed during reconcile.
+            "download_archive":    str(self.archive_path(username)),
+            # Pace from TikTok's OWN Pacing block, decoupled from the global
+            # SLEEP_* (which only X still uses). yt-dlp has no sleep-429 knob, so
+            # the request gap + a capped exponential back-off (base sleep_max, up
+            # to sleep_429) stand in for it, and extractor_retries bounds how
+            # many times the profile walk itself re-attempts before giving up.
+            "sleep_interval":              pace.sleep_min,
+            "max_sleep_interval":          pace.sleep_max,
+            "sleep_interval_requests":     pace.sleep_request_min,
+            "concurrent_fragment_downloads": 1,
+            "retries":             pace.retries,
+            "fragment_retries":    pace.retries,
+            "extractor_retries":   pace.retries,
+            "retry_sleep_functions": {
+                "http":     lambda n: min(pace.sleep_max * (2 ** n), pace.sleep_429),
+                "fragment": lambda n: min(pace.sleep_max * (2 ** n), pace.sleep_429),
+            },
+            "quiet":         True,
+            "no_warnings":   False,
+            "logger":        _YtdlpLogger(),
+            "geo_bypass":    True,
+            "playlistreverse": False,
+        }
+        if date_after:
+            from yt_dlp.utils import DateRange
+            opts["daterange"] = DateRange(start=date_after, end=None)
+        return opts
+
+    # Container extensions gallery-dl must NOT fetch here: those are VIDEOS,
+    # which yt-dlp already downloaded in the same cycle. Letting gallery-dl grab
+    # them too is the TikTok double-upload bug at its source — the same clip
+    # lands twice (`<id>.mp4` from yt-dlp, `<id>_0.mp4` from gallery-dl), wasting
+    # bandwidth and leaving an orphan copy on disk. gallery-dl's job in this pass
+    # is photo carousels ONLY.
+    _GDL_SKIP_EXTS = ("mp4", "m4a", "mov", "webm", "mkv", "m4v", "aac", "mp3")
+
+    def _download_photo_posts(self, username: str, user_dir: Path) -> str:
+        """Fetch TikTok photo carousels via gallery-dl. Returns a gone-reason
+        string if gallery-dl's stderr reports the account is suspended/deleted,
+        else '' (including when gallery-dl is unavailable — absence of evidence
+        is not evidence the account is gone)."""
+        # Drop video files BEFORE download via a per-file metadata filter on the
+        # extension. This is extractor-agnostic (every gallery-dl file carries
+        # `extension`) and, unlike `extractor.tiktok.videos=false`, does NOT
+        # substitute a junk cover image for a skipped video — the video file is
+        # simply not written. Photo posts (jpg/png/webp/heic) pass untouched, so
+        # yt-dlp owns videos and gallery-dl owns photos, with no overlap.
+        pace = self.tt_cfg.pacing
+        skip = ",".join(repr(e) for e in self._GDL_SKIP_EXTS)
+        cmd = [
+            # Invoke gallery-dl via OUR OWN interpreter, never the bare
+            # `gallery-dl` command. gallery_dl is a dependency of this venv
+            # (the X strategy imports it in-process), so this always runs a
+            # working copy — a bare name resolves through PATH, where a stale
+            # shim from an unrelated Python can shadow it (exactly how the
+            # recorder's bare `yt-dlp` broke: a dead `pip install --user` shim
+            # was first on PATH). Worse, this path swallows FileNotFoundError
+            # as "skip photo posts", so a broken shim would silently drop a
+            # feature rather than fail loudly.
+            sys.executable, "-m", "gallery_dl",
+            "--cookies",     self.tt_cfg.cookies_file,
+            "--directory",   str(user_dir),
+            "--filename",    "{date:%Y%m%d}_{id}_{num}.{extension}",
+            "--filter",      f"extension not in ({skip})",
+            # v1 oversight fix: photo carousels now have their OWN archive,
+            # preventing re-fetches even when files exist on disk.
+            "--download-archive", str(self._photo_archive_path(username)),
+            # Pace + 429 back-off from TikTok's own Pacing block (matches the
+            # yt-dlp video pass above; --sleep-429 is gallery-dl's rate-limit
+            # wait, the one knob yt-dlp lacks).
+            "--sleep",         str(pace.sleep_min),
+            "--sleep-request", str(pace.sleep_request_min),
+            "-o", f"extractor.tiktok.sleep-429={pace.sleep_429}",
+            # Align the photo pass's fingerprint to the cookie origin (Firefox).
+            "-o", f"extractor.tiktok.browser={self.tt_cfg.browser}",
+            f"https://www.tiktok.com/@{username}",
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=600,
+            )
+            if result.returncode not in (0, 1):
+                log.warning("  gallery-dl exit %d: %s",
+                            result.returncode, result.stderr[:300])
+            reason = _match_account_gone((result.stderr or "").lower())
+            if reason:
+                return result.stderr.strip()[:200] or reason
+        except FileNotFoundError:
+            log.debug("  gallery-dl not in PATH; skipping photo posts.")
+        except subprocess.TimeoutExpired:
+            log.warning("  gallery-dl timed out (>10 min)")
+        except Exception as e:
+            log.error("  gallery-dl error: %s", e)
+        return ""
+
+
+class _YtdlpLogger:
+    _EXPECTED_PHOTO_MESSAGES = (
+        "no video formats found",
+        "requested format is not available",
+    )
+
+    @classmethod
+    def _is_expected_photo_message(cls, msg: str) -> bool:
+        lower = msg.lower()
+        return any(fragment in lower for fragment in cls._EXPECTED_PHOTO_MESSAGES)
+
+    def debug(self,   msg: str):
+        if not msg.startswith("[debug]"):
+            log.debug("yt-dlp: %s", msg)
+    def warning(self, msg: str):
+        if self._is_expected_photo_message(msg):
+            log.debug("yt-dlp: TikTok photo post delegated to gallery-dl: %s", msg)
+        else:
+            log.warning("yt-dlp: %s", msg)
+    def error(self, msg: str):
+        if self._is_expected_photo_message(msg):
+            log.debug("yt-dlp: TikTok photo post delegated to gallery-dl: %s", msg)
+        else:
+            log.error("yt-dlp: %s", msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Instagram — gallery-dl Python API (posts + reels)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class InstagramPlatform(Platform):
+    """
+    Downloads Instagram media via gallery-dl with cookies.txt auth.
+
+    Why gallery-dl (and not yt-dlp): IG support is unified — posts and
+    reels under one extractor with per-subcategory routing. yt-dlp's IG
+    extractor is video-only and flakier for carousels.
+
+    Why posts+reels by default (not stories/highlights):
+      - Smaller surface area = lower ban risk.
+      - Stories disappear; their checkpointing logic would be its own
+        special case ("don't fail just because the story expired").
+      - INSTAGRAM_INCLUDE lets you opt into more later if you accept it.
+    """
+    name = "instagram"
+
+    AUTH_COOKIES = {"sessionid", "csrftoken", "ds_user_id"}
+
+    # A dead/challenged IG session makes gallery-dl report EVERY profile as
+    # "could not be found" while raising nothing — the archiver then silently
+    # harvests zero for days (this bit us 2026-07-22). Guard: count users in a
+    # run that come back not-found AND empty; once N in a row do, escalate to
+    # an AuthError so the circuit breaker PAUSES Instagram (never retires
+    # anyone — that stays the account_gone path's job). N is high enough that a
+    # handful of genuinely-deleted users won't trip it. Override with
+    # $IG_SESSION_DEATH_THRESHOLD.
+    _SESSION_DEATH_THRESHOLD = int(
+        os.environ.get("IG_SESSION_DEATH_THRESHOLD", "5"))
+
+    def __init__(self, config: "Config"):
+        super().__init__(config)
+        assert config.instagram is not None, \
+            "InstagramPlatform requires Config.instagram to be set"
+        self.ig_cfg: InstagramConfig = config.instagram
+        # Consecutive not-found+empty users seen in the CURRENT run (heavy pass
+        # only). Reset by any user that yields media; escalates at threshold.
+        self._consec_notfound = 0
+
+    @property
+    def users(self) -> tuple[str, ...]:
+        return self.ig_cfg.users
+
+    def health_check(self) -> HealthStatus:
+        return _cookies_file_health(self.ig_cfg.cookies_file, self.AUTH_COOKIES)
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        _maybe_refresh_stale_cookies(
+            self.ig_cfg, "instagram.com", self.AUTH_COOKIES)
+
+    def attempt_recovery(self) -> bool:
+        if not self.ig_cfg.firefox_profile:
+            log.error(
+                "Instagram cookies unhealthy and no FIREFOX_PROFILE set — "
+                "can't auto-recover. Set FIREFOX_PROFILE in .env or "
+                "manually refresh %s.", self.ig_cfg.cookies_file,
+            )
+            return False
+        try:
+            from .cookies import refresh_for_domain
+            n = refresh_for_domain(
+                domain           = "instagram.com",
+                profile_name     = self.ig_cfg.firefox_profile,
+                output_path      = self.ig_cfg.cookies_file,
+                required_cookies = self.AUTH_COOKIES,
+            )
+            log.info("  Cookie auto-refresh: %d cookies → %s",
+                     n, self.ig_cfg.cookies_file)
+            return True
+        except Exception as e:
+            log.error("  Cookie refresh failed: %s", e)
+            return False
+
+    def archive_path(self, username: str) -> Path:
+        d = Path(self.config.state_dir) / "gallery_dl" / self.name
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{username}_archive.sqlite3"
+
+    def seed_archive(self, username: str, entries: Iterable[str]) -> int:
+        return _seed_gallery_dl_sqlite(self.archive_path(username), entries)
+
+    def inter_user_delay(self) -> float:
+        p = self.ig_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
+
+    def stories_inter_user_delay(self) -> float:
+        """Shorter between-user gap for the stories fast lane — a story sweep
+        touches many friends and must finish well inside the 24h window, so it
+        uses its own (tighter) gap while KEEPING the cautious per-request pacing."""
+        return random.uniform(self.ig_cfg.stories_user_gap_min,
+                              self.ig_cfg.stories_user_gap_max)
+
+    def download(self, username: str, db: "ItemStore") -> int:
+        """Heavy pass: the configured posts/reels include, incremental via
+        date-min. Time-insensitive, so it runs at the slow IG pacing."""
+        date_min_ts = _compute_date_min(db, self.name, username, slack_days=1)
+        if date_min_ts:
+            log.info("  Incremental: date-min=%s", _ts_to_date_str(date_min_ts))
+        else:
+            log.info("  First run: fetching all %s for @%s",
+                     self.ig_cfg.include, username)
+        return self._download_impl(username, db, include=self.ig_cfg.include,
+                                   date_min_ts=date_min_ts, label="posts/reels")
+
+    def download_stories(self, username: str, db: "ItemStore") -> int:
+        """Fast lane: stories only, NO date-min (stories are all <24h; the
+        extractor archive dedups within their life). Deliberately does not
+        advance the posts/reels incremental checkpoints — the orchestrator's
+        stories pass skips those — so the two lanes never interfere."""
+        log.info("  stories → @%s", username)
+        return self._download_impl(username, db, include="stories",
+                                   date_min_ts=None, label="stories")
+
+    def _download_impl(self, username: str, db: "ItemStore", *,
+                       include: str, date_min_ts: int | None,
+                       label: str) -> int:
+        import gallery_dl.config
+        import gallery_dl.job
+        import gallery_dl.exception
+
+        user_dir = self.download_root(username)
+        before   = _snapshot_media_files(user_dir)
+        pace     = self.ig_cfg.pacing
+
+        # Per-subcategory filename — `{post_shortcode}_{num}` keeps carousel
+        # images uniquely named AND parseable by identity.resolve. `media_id`
+        # is a fallback for any item lacking a shortcode (some story media).
+        ig_filename = "{date:%Y%m%d}_{post_shortcode|media_id}_{num}.{extension}"
+
+        extractor_cfg: dict = {
+            "cookies":        self.ig_cfg.cookies_file,
+            # Present as the browser that minted the session cookie (Firefox by
+            # default): sets a matching User-Agent AND TLS cipher order, so the
+            # replayed sessionid doesn't read as a script driving a stolen
+            # session — the primary bot signal after request rate.
+            "browser":        self.ig_cfg.browser,
+            "include":        include,
+            "videos":         True,
+            "previews":       False,
+            "filename":       ig_filename,
+            "directory":      [self.name, username],
+            "base-directory": self.config.output_dir,
+            "archive":        str(self.archive_path(username)),
+            "mtime":          False,
+            # IG bans aggressively — pace it from its OWN Pacing block (see
+            # config._IG_PACING_DEFAULTS), decoupled from the global SLEEP_*.
+            #   sleep-request : random gap between API calls (the key knob)
+            #   sleep         : extra jittered gap before each file download
+            #   sleep-429     : hard back-off when IG returns HTTP 429. Without
+            #                   this, `retries` would hammer straight into the
+            #                   rate-limit wall — the fast path to a disable.
+            #   retries       : kept low ON PURPOSE; sleep-429 does the waiting.
+            "sleep-request": [pace.sleep_request_min, pace.sleep_request_max],
+            "sleep":         [pace.sleep_min, pace.sleep_max],
+            "sleep-429":     pace.sleep_429,
+            "retries":       pace.retries,
+        }
+        if date_min_ts:
+            extractor_cfg["date-min"] = date_min_ts
+
+        detector = _ExtractorErrorDetector(auth_signals=(
+            "AuthRequired", "AuthenticationError",
+            "login_required", "challenge_required",
+            "checkpoint_required",
+            "401", "403",
+        ))
+        url = f"https://www.instagram.com/{username}/"
+        log.info("  gallery-dl → @%s [%s]", username, label)
+
+        # Serialize the global-config critical section (see _GDL_LOCK). Held for
+        # this one user's job only; released before the caller's inter-user gap.
+        with _GDL_LOCK:
+            gallery_dl.config.clear()
+            for key, value in extractor_cfg.items():
+                gallery_dl.config.set(("extractor", "instagram"), key, value)
+
+            gdl_logger = logging.getLogger("gallery_dl")
+            gdl_logger.addHandler(detector)
+            try:
+                job = gallery_dl.job.DownloadJob(url)
+                job.run()
+            except gallery_dl.exception.AuthenticationError as e:
+                detector.auth_failed = True
+                log.error("  gallery-dl auth error: %s", e)
+            except Exception as e:
+                if type(e).__name__ == "NotFoundError":
+                    detector.account_gone = True
+                    detector.gone_reason = str(e).strip()[:200] or "profile not found"
+                else:
+                    detector.note(str(e))
+                log.error("  gallery-dl error for @%s: %s", username, e)
+            finally:
+                gdl_logger.removeHandler(detector)
+
+        # Auth/challenge is recoverable → never retire on it.
+        if detector.auth_failed:
+            raise AuthError(
+                "Instagram cookies appear expired or the account is challenged "
+                "(checkpoint/2FA). Open Firefox → instagram.com, clear any "
+                "pending verification, then re-run."
+            )
+        if detector.account_gone:
+            raise AccountGoneError(detector.gone_reason or "account not found")
+
+        new = _register_new_files(self.name, username, user_dir, before, db)
+
+        # Session-death detection (heavy pass only — the stories lane has its
+        # own short-lived content and isn't a reliable signal). A dead IG
+        # session makes gallery-dl report "could not be found" for every
+        # profile without raising; count a run of such empty users and, at the
+        # threshold, raise AuthError so the circuit breaker pauses IG instead
+        # of silently spinning for days. A user that returns media clears the
+        # counter — one or two genuinely-deleted accounts won't escalate.
+        if label == "posts/reels":
+            if detector.not_found and new == 0:
+                self._consec_notfound += 1
+                if self._consec_notfound >= self._SESSION_DEATH_THRESHOLD:
+                    raise AuthError(
+                        f"Instagram session appears dead: "
+                        f"{self._consec_notfound} consecutive profiles reported "
+                        f"'could not be found' with zero media. The sessionid is "
+                        f"likely invalidated by a challenge/bot-flag (cookie "
+                        f"expiry is not the signal). Refresh cookies/instagram.txt "
+                        f"and clear any pending IG checkpoint before resuming."
+                    )
+            elif new > 0:
+                self._consec_notfound = 0
+
+        return new
+
+
+# ── Checkpoint helpers (shared across platforms) ──────────────────────────────
+
+def _compute_date_min(db: "ItemStore", platform: str, username: str,
+                      slack_days: int = 1) -> int | None:
+    """
+    Compute a Unix timestamp `date-min` for the next extractor call.
+
+    Strategy:
+      1. Prefer `MAX(upload_date WHERE status='sent')` — the actual
+         frontier of confirmed-archived content. This is what makes
+         incremental work even with `delete_after_upload=true`.
+      2. Fall back to `last_run_utc` if there's no completed upload yet.
+      3. Apply slack_days as a safety subtraction (covers timezone slop
+         and posts edited late in a day).
+
+    Returns None on first-ever run (no DB knowledge of this user) AND whenever
+    the user is flagged as needing a full-history walk — a freshly added user,
+    or one re-armed via `run --full-history`. In both cases a None cutoff makes
+    the extractor traverse the entire timeline; its own archive (sqlite) still
+    skips every post already downloaded, so only missing old content arrives.
+    """
+    if db.needs_full_history(platform, username):
+        return None
+
+    floor_str = db.max_sent_upload_date(platform, username)
+    if floor_str:
+        try:
+            dt = _date_str_to_datetime(floor_str)
+            cutoff = dt - timedelta(days=slack_days)
+            return int(cutoff.timestamp())
+        except ValueError:
+            pass  # fall through to last_run
+
+    last_run = db.get_last_run(platform, username)
+    if last_run:
+        cutoff = last_run - timedelta(days=slack_days)
+        ts = (cutoff.replace(tzinfo=timezone.utc).timestamp()
+              if cutoff.tzinfo is None else cutoff.timestamp())
+        return int(ts)
+
+    return None
+
+
+def _compute_date_after_str(db: "ItemStore", platform: str, username: str,
+                            slack_days: int = 1) -> str | None:
+    """
+    Same as _compute_date_min but returns YYYYMMDD string for yt-dlp
+    DateRange. Returns None on first-ever run.
+    """
+    ts = _compute_date_min(db, platform, username, slack_days)
+    if ts is None:
+        return None
+    return _ts_to_date_str(ts)
+
+
+def _ts_to_date_str(ts: int) -> str:
+    from datetime import datetime as _dt
+    return _dt.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
+
+
+def _date_str_to_datetime(s: str):
+    from datetime import datetime as _dt
+    return _dt.strptime(s, "%Y%m%d").replace(tzinfo=timezone.utc)
+
+
+# ── Shared registration helper ────────────────────────────────────────────────
+
+def _register_new_files(
+    platform: str,
+    username: str,
+    user_dir: Path,
+    before:   set[Path],
+    db:       "ItemStore",
+) -> int:
+    """
+    Diff before/after, register new files in DB. Delegates to the
+    identity resolver so we use the SAME identifier logic as reconcile.
+    Returns count of NEW files registered.
+    """
+    from core import identity
+    from core.hashing import full_hash
+
+    after = _snapshot_media_files(user_dir)
+    new_files = sorted(after - before)
+
+    added = 0
+    for f in new_files:
+        try:
+            size = f.stat().st_size
+        except OSError:
+            log.warning("  Skipping vanished file: %s", f)
+            continue
+        if size < 100:
+            log.warning("  Skipping tiny file (%d bytes): %s", size, f.name)
+            try: f.unlink()
+            except OSError: pass
+            continue
+
+        ident = identity.resolve(f)
+        inserted = db.add_item(
+            source          = "archiver",
+            platform        = platform,
+            username        = username,
+            identifier      = ident.identifier,
+            file_path       = str(f),
+            upload_date     = ident.upload_date,
+            file_size_bytes = size,
+            title           = ident.title,
+            priority        = 10,
+            # Stamp the content hash so the dispatcher's global dedup guarantee
+            # covers platform downloads too. The file was just written, so it's
+            # warm in cache — the hash is cheap.
+            content_hash    = full_hash(f),
+        )
+        if inserted:
+            added += 1
+            log.info("  + %s (%.1f MB)", f.name, size / 1_048_576)
+    log.info("  Download done: @%s — %d new file(s)", username, added)
+    return added

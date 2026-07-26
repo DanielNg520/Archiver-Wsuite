@@ -1,0 +1,505 @@
+"""
+core.ingest
+───────────
+The ONE primitive every producer funnels a finished file through to become a
+claimable item row. Replaces the scattered "stat → resolve → add_item" snippets
+the archiver/recorder open-coded, and is the only path loose/orphaned files have.
+
+TEMPLATE METHOD — register_file runs a fixed skeleton:
+
+    stabilize → hash → dedup-collapse → resolve identity → insert
+
+Each step is a private function so a future producer can override one without
+re-deriving the others. The order is the contract:
+
+  1. stabilize FIRST. A half-written file must never get a row — a row makes it
+     claimable, and the dispatcher would upload (and then delete) garbage. This
+     is the load-bearing guard for loose-file drops, where mid-copy is common.
+
+  2. hash before insert so EVERY row carries content_hash. The dispatcher's
+     global-dedup guarantee is only as good as this stamp being universal.
+
+  3. dedup-collapse BEFORE inserting a second row. Global dedup means "these
+     exact bytes are removed as if never there": if a row already holds this
+     content_hash we keep exactly one physical copy (the better-named one, via
+     core.dedup winner rules) and never create a duplicate row. EXCEPTION:
+     orphaned (chat_id-folder) drops skip this step entirely — a drop-zone
+     "leaves no trace" (its row is deleted after send), so a re-added file must
+     always upload again rather than be suppressed against a stale twin.
+
+  4/5. identity + insert only happen for genuinely new content.
+
+ATOMICITY: ingestion runs in a producer's single-process pass, so the
+read-then-write on content_hash isn't globally atomic — but the items table's
+UNIQUE(file_path) and UNIQUE(platform, identifier) constraints are the backstop
+that rejects a racing duplicate, so the worst case is a redundant hash, never a
+double row.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Callable
+
+from . import identity, media_prep, stability
+from .dedup import _pick_winner
+from .files import cleanup_sidecars, ORPHANED_SOURCE_NAME
+from .grouping import split_group_key
+from .hashing import full_hash
+from .models import Status
+from .stores import ProducerStore
+
+log = logging.getLogger(__name__)
+
+# When an oversize original is split into parts, those parts are demoted in the
+# send queue so they sort AFTER every normal (unsplit) file of the same
+# (platform, username) folder — a big file's chunks always tail its user's
+# block instead of interleaving with smaller files by discovery time. The offset
+# is added to the part's own priority; it is large enough to dominate the spread
+# of normal producer priorities within one cluster (recorder=5, archiver=10,
+# loose=100), so parts always outrank-lower every sibling. Cluster POSITION is
+# unaffected: the cluster anchor keys on MIN(priority) over the user, so a
+# demoted part never drags its whole user block to the tail — only the parts move.
+SPLIT_PART_PRIORITY_DEMOTE = 1_000_000
+
+
+class IngestOutcome(str, Enum):
+    """What register_file did. str-Enum so it logs/serializes as plain text."""
+    INSERTED       = "inserted"        # new content → new pending row
+    REARMED        = "rearmed"         # bytes' only twin had FAILED; row reset to pending
+    DEDUP_DROPPED  = "dedup_dropped"   # bytes already known; incoming file deleted
+    DEDUP_ADOPTED  = "dedup_adopted"   # incoming file won on name; row re-pointed, old deleted
+    ALREADY_KNOWN  = "already_known"   # this exact file_path already has a row
+    UNSTABLE       = "unstable"        # still being written; skipped this pass
+    HASH_FAILED    = "hash_failed"     # unreadable; skipped
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    outcome:      IngestOutcome
+    item_id:      int | None = None    # set for INSERTED / DEDUP_ADOPTED
+    content_hash: str | None = None
+
+    @property
+    def inserted(self) -> bool:
+        """True when this call made content newly claimable — a brand-new row
+        (INSERTED) or a re-armed previously-failed twin (REARMED)."""
+        return self.outcome in (IngestOutcome.INSERTED, IngestOutcome.REARMED)
+
+
+def register_file(
+    store:    ProducerStore,
+    path:     Path,
+    *,
+    source:    str,
+    platform:  str,
+    username:  str,
+    chat_id:    str | None = None,
+    group_key:  str | None = None,
+    caption:    str | None = None,
+    priority:   int = 100,
+    identifier: str | None = None,
+    topic_id:   int | None = None,
+) -> IngestResult:
+    """Register one finished media file as a pending upload. Never raises for
+    an expected condition (unstable / unreadable / duplicate) — it reports the
+    outcome so a bulk scan can keep going.
+
+    `identifier` overrides the resolver's identifier (date/title still come
+    from the resolver chain). Producers with their own stable identity scheme
+    — the recorder's `recorder_<stem>` — pass it so a file registered live and
+    the same file re-registered by a sweep collide on UNIQUE(platform,
+    identifier) instead of duplicating."""
+    path = Path(path)
+
+    # 1. stabilize — refuse to register a file that's still being written.
+    if not stability.is_stable(path):
+        return IngestResult(IngestOutcome.UNSTABLE)
+
+    # Cheap short-circuit: this exact path is already tracked.
+    if store.has_file_path(str(path)):
+        return IngestResult(IngestOutcome.ALREADY_KNOWN)
+
+    # 2. hash — the global-dedup key, stamped on every row.
+    digest = full_hash(path)
+    if digest is None:
+        return IngestResult(IngestOutcome.HASH_FAILED)
+
+    # 3. dedup-collapse — if these exact bytes already have a row, keep one copy.
+    #    SKIPPED for orphaned (chat_id-folder) drops: a chat_id folder is a pure
+    #    drop-zone that must "leave no trace" — maybe_delete removes its row after
+    #    the send, so a file re-added to the folder has to upload AGAIN every
+    #    time. Gating it through content-hash dedup would suppress that re-add
+    #    against a lingering 'sent' twin (a platform copy of the same bytes, or a
+    #    not-yet-cleaned orphaned row) — exactly the "re-added file never
+    #    re-uploaded" bug. Real sources (platforms, pseudo-platforms) keep the
+    #    global-dedup guarantee; only the drop-zone opts out.
+    if source != ORPHANED_SOURCE_NAME:
+        twin = store.find_by_content_hash(digest)
+        if twin is not None:
+            return _collapse(store, path, twin, digest)
+
+    # 4. resolve identity (sidecar > filename > path-hash fallback). An
+    #    explicit producer identifier wins; date/title still resolve normally.
+    ident = identity.resolve(path)
+
+    # 5. insert — writing the row IS the enqueue. Stamp file_size_bytes (free
+    #    here — the file is already on disk and hashed) so the row carries a real
+    #    size: the dispatcher's per-album byte cap (claim_batch) needs it, and a
+    #    NULL size there forces the item to ship as a single. Best-effort — a
+    #    vanished file just leaves it NULL, exactly as before.
+    try:
+        size_bytes: int | None = path.stat().st_size
+    except OSError:
+        size_bytes = None
+    inserted = store.add_item(
+        source          = source,
+        platform        = platform,
+        username        = username,
+        identifier      = identifier or ident.identifier,
+        file_path       = str(path),
+        upload_date     = ident.upload_date,
+        title           = ident.title,
+        caption         = caption,
+        priority        = priority,
+        content_hash    = digest,
+        chat_id         = chat_id,
+        group_key       = group_key,
+        topic_id        = topic_id,
+        file_size_bytes = size_bytes,
+    )
+    if not inserted:
+        # Lost a race on UNIQUE(platform, identifier) — another row claimed
+        # this identity between our checks and the insert. Treat as known.
+        return IngestResult(IngestOutcome.ALREADY_KNOWN, content_hash=digest)
+
+    return IngestResult(IngestOutcome.INSERTED,
+                        item_id=store.id_of(str(path)),
+                        content_hash=digest)
+
+
+# Outcomes that mean "this output is handled" — a row exists, was re-armed, or
+# its bytes were deduped away. UNSTABLE / HASH_FAILED mean "couldn't register,
+# retry next pass" and must NOT let us retire the original (its bytes would be
+# lost). Mirrors archiver.reconcile._register's accounted/not-accounted split.
+_ACCOUNTED = frozenset({
+    IngestOutcome.INSERTED, IngestOutcome.ALREADY_KNOWN,
+    IngestOutcome.DEDUP_DROPPED, IngestOutcome.DEDUP_ADOPTED,
+    IngestOutcome.REARMED,
+})
+
+
+@dataclass
+class PreparedResult:
+    """Aggregate outcome of register_media: Telegram-prep one source file, then
+    register every output it produced (one for a passthrough/convert, several
+    for an oversize split). `outcomes` is per-output, in output order."""
+    outcomes:    list[IngestOutcome] = field(default_factory=list)
+    prep_ok:     bool                = True
+    transformed: bool                = False   # prep replaced the original
+    error:       str | None          = None
+    busy:        bool                = False   # another worker is preparing this
+                                               # same source now; skip, retry next
+
+    @property
+    def inserted(self) -> int:
+        return sum(1 for o in self.outcomes if o == IngestOutcome.INSERTED)
+
+    @property
+    def any_inserted(self) -> bool:
+        """True when this call made content newly claimable (a fresh row or a
+        re-armed failed twin) — the register_file.inserted contract, lifted to
+        the multi-output case so callers keep a single 'did anything queue?'."""
+        return any(o in (IngestOutcome.INSERTED, IngestOutcome.REARMED)
+                   for o in self.outcomes)
+
+    @property
+    def all_accounted(self) -> bool:
+        return bool(self.outcomes) and all(o in _ACCOUNTED for o in self.outcomes)
+
+
+def register_media(
+    store:    ProducerStore,
+    path:     Path,
+    *,
+    source:    str,
+    platform:  str,
+    username:  str,
+    chat_id:    str | None = None,
+    caption:    str | None = None,
+    priority:   int = 100,
+    topic_id:   int | None = None,
+    group_key:  str | None = None,
+    split_threshold_bytes: int | None = None,
+    identifier_for: Callable[[Path], str] | None = None,
+    caption_for:    Callable[[Path], str | None] | None = None,
+    album_split_parts: bool = True,
+    retire_original:   Callable[[Path], None] | None = None,
+) -> PreparedResult:
+    """Telegram-prep a file, then register every output as a pending upload.
+
+    This is the media-prep layer ABOVE register_file — the same prepare →
+    register-each-output → retire-original skeleton core.orphaned and
+    archiver.reconcile run, lifted into core so the recorder's live enqueue and
+    startup sweep share one Telegram-readiness guarantee. A producer that goes
+    through here can never enqueue a file Telegram rejects at upload
+    (FilePartsInvalid): a non-streamable video is converted, one over the upload
+    ceiling (or `split_threshold_bytes`, recorder split mode) is split into
+    parts, and EACH output is registered. Images and already-streamable
+    in-ceiling files pass straight through (one cheap ffprobe), so the common
+    case behaves exactly as a bare register_file.
+
+    `split_threshold_bytes` lowers the split trigger below the ~3.9 GiB ceiling
+    (recorder split mode); None keeps the ceiling. `identifier_for(out)` /
+    `caption_for(out)` override identity/caption per output (the recorder's
+    recorder_<stem> scheme); a None from caption_for falls back to `caption`.
+    Split parts share one album group_key minted from the ORIGINAL stem when
+    `album_split_parts`, so the dispatcher ships them as one ordered batch. An
+    explicit `group_key` overrides that mint and is applied to EVERY output — a
+    producer stamps it to album a set of files spanning separate register_media
+    calls (the recorder's reconnect-stitched broadcast segments).
+    `retire_original(path)` is invoked once prep replaced the original AND every
+    output is accounted for — the caller owns the delete policy / safebrake; it
+    is skipped if any output failed to register, so source bytes are never lost.
+
+    Never raises for an expected condition — a prep or register failure is
+    reported, the original is left on disk, and the caller keeps going."""
+    path = Path(path)
+    # Stabilize BEFORE prep — the same "a half-written file must never get a row"
+    # guard register_file runs, lifted ABOVE prepare(). prepare() probes the file
+    # (ffprobe) to decide convert/split/passthrough; probing a file that is still
+    # being written reads an incomplete stream, and a passthrough of that raw file
+    # would enqueue bytes that only look like a valid video once the write
+    # finishes — exactly the wedge that had a raw HEVC re-encoded on every send.
+    # is_stable's stat-sleep-stat catches an in-flight copy; register_file re-checks
+    # each output, so this is the outer of two guards, not a replacement.
+    if not stability.is_stable(path):
+        return PreparedResult(
+            prep_ok=False,
+            error=f"not yet stable (still being written): {path.name}")
+    try:
+        prep = media_prep.prepare(path, split_threshold_bytes=split_threshold_bytes)
+    except Exception as e:                       # pragma: no cover — defensive
+        log.exception("register_media: prepare raised on %s", path)
+        return PreparedResult(prep_ok=False, error=str(e))
+    if prep.busy:
+        # Another worker's sweep is already converting/splitting this exact file.
+        # Not a failure and not raw-registerable — leave it for the next sweep,
+        # by which time the holder will have registered it and retired the source.
+        return PreparedResult(prep_ok=True, busy=True)
+    if not prep.ok:
+        return PreparedResult(prep_ok=False, error=prep.error)
+
+    # Split parts of one original share a synthetic album key, minted from the
+    # ORIGINAL stem so every part — whatever its per-part name — lands in the
+    # same ordered album rather than going out as separate messages.
+    #
+    # An explicit caller `group_key` overrides the per-file split mint: it lets a
+    # producer album a SET of files that arrive through separate register_media
+    # calls (the recorder stamps every segment of one reconnect-stitched
+    # broadcast with one key). It also wins when a segment is itself oversize and
+    # split — those sub-parts then join the broadcast album rather than forming
+    # their own, so the whole broadcast still ships as one ordered batch.
+    album_gk = group_key if group_key is not None else (
+        split_group_key(platform, username, path.stem)
+        if prep.individual and album_split_parts else None)
+
+    # Demote a split original's parts so they queue behind every normal file of
+    # the same folder (see SPLIT_PART_PRIORITY_DEMOTE). prep.individual is set
+    # ONLY for split output, so a plain convert/passthrough keeps its priority.
+    part_priority = (priority + SPLIT_PART_PRIORITY_DEMOTE
+                     if prep.individual else priority)
+
+    outcomes: list[IngestOutcome] = []
+    for out in prep.outputs:
+        ident = identifier_for(out) if identifier_for else None
+        cap = caption_for(out) if caption_for else None
+        res = register_file(
+            store, out,
+            source     = source,
+            platform   = platform,
+            username   = username,
+            chat_id    = chat_id,
+            group_key  = album_gk,
+            caption    = cap if cap is not None else caption,
+            priority   = part_priority,
+            identifier = ident,
+            topic_id   = topic_id,
+        )
+        outcomes.append(res.outcome)
+
+    result = PreparedResult(outcomes=outcomes, prep_ok=True,
+                            transformed=prep.transformed)
+    if (prep.transformed and retire_original is not None
+            and result.all_accounted):
+        retire_original(path)
+    return result
+
+
+# Failure-signature marking a quarantined row as OVERSIZE (Telegram's ~8000
+# part ceiling). Matches both the server error ("FilePartsInvalidError: ...")
+# and the dispatcher's preflight ("OversizeFileError: FilePartsInvalid
+# (preflight): ..."). Deliberately the same substring store.py's transient
+# classifier EXCLUDES — these rows never auto-re-arm, so without this pass
+# they wait for a manual split + `reset failed`.
+_OVERSIZE_ERROR_SIG = "filepartsinvalid"
+
+
+def recover_oversize_failed(store, *, max_splits: int = 1) -> int:
+    """Self-healing pass for oversize-quarantined rows: split the file, requeue
+    the parts, retire the poison row. Returns rows recovered (split or re-armed).
+
+    A row lands here when a file over the upload ceiling reached the queue —
+    historically the keep-original-as-document hole, now guarded at ingest AND
+    by the dispatcher's preflight, so this pass is the backstop for rows queued
+    by pre-fix code or any future producer bug. Design mirrors the manual
+    recovery procedure (ops/RUNBOOK.md "FilePartsInvalid"):
+
+      • stream-copy split (media_prep.split_for_upload — full quality, prep-
+        locked) into `<stem>_partNNN` files beside the original;
+      • each part registered with the ROW's own routing (source/platform/
+        username/chat_id/topic_id/priority) under a synthetic album key minted
+        from `<stem> [original]` — distinct from the converted-parts key, so
+        the two albums never merge;
+      • the original is deleted (its bytes live on in the parts) BEFORE the row
+        (stores.delete contract: a row deleted while its file remains would be
+        re-ingested — and a re-ingest would re-CONVERT, duplicating content);
+        if the unlink fails the quarantined row is kept as the tombstone that
+        blocks re-ingest, and the pass retries next sweep.
+
+    A row whose file is now UNDER the ceiling (user replaced it) is simply
+    re-armed; a row whose file is gone is left for the dispatcher's
+    delete_failed_missing GC. `max_splits` bounds ffmpeg work per pass (a split
+    is minutes for a multi-GB file) — the sweep cadence heals a backlog
+    incrementally without wedging the sweeper. Never raises for an expected
+    condition."""
+    try:
+        rows = store.list_items(status=Status.FAILED.value, limit=200)
+    except Exception:                            # pragma: no cover — defensive
+        log.exception("recover_oversize: could not list failed rows")
+        return 0
+    recovered = splits = 0
+    for row in rows:
+        if _OVERSIZE_ERROR_SIG not in (row.last_error or "").lower():
+            continue
+        path = Path(row.file_path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue                 # file gone → dispatcher's GC owns the row
+        if size <= media_prep.max_upload_bytes():
+            if store.rearm_failed(row.id):
+                log.info("recover_oversize: %s now under ceiling — re-armed "
+                         "id=%d", path.name, row.id)
+                recovered += 1
+            continue
+        if splits >= max_splits:
+            continue                             # next sweep takes the next one
+        splits += 1
+        parts = media_prep.split_for_upload(path)
+        if parts is None:
+            continue                 # busy / AutoSplitter missing — retry later
+        gk = split_group_key(row.platform, row.username,
+                             f"{path.stem} [original]")
+        accounted = 0
+        for part in parts:
+            try:
+                res = register_file(
+                    store, part,
+                    source    = row.source,
+                    platform  = row.platform,
+                    username  = row.username,
+                    chat_id   = row.chat_id,
+                    topic_id  = row.topic_id,
+                    group_key = gk,
+                    caption   = part.name,
+                    priority  = row.priority,
+                )
+            except Exception:                    # pragma: no cover — defensive
+                log.exception("recover_oversize: register_file on %s", part)
+                continue
+            if res.outcome not in (IngestOutcome.HASH_FAILED,
+                                   IngestOutcome.UNSTABLE):
+                accounted += 1
+        if accounted != len(parts):
+            log.warning("recover_oversize: %s — only %d/%d parts registered; "
+                        "original + row kept, retrying next sweep",
+                        path.name, accounted, len(parts))
+            continue
+        try:
+            cleanup_sidecars(row.file_path)      # delete file first (see above)
+        except OSError as e:
+            log.warning("recover_oversize: could not remove %s (%s) — row kept "
+                        "as tombstone", path.name, e)
+            continue
+        store.delete(row.id)
+        recovered += 1
+        log.info("recover_oversize: %s (%.2f GB) split into %d part(s), row "
+                 "id=%d retired", path.name, size / 1e9, len(parts), row.id)
+    return recovered
+
+
+def _collapse(
+    store:  ProducerStore,
+    incoming: Path,
+    twin:   "object",   # core.models.Item; avoid import cycle in annotation
+    digest: str,
+) -> IngestResult:
+    """Resolve a byte-identical collision between an incoming file and an
+    existing row's file. Keep exactly ONE physical copy — the winner by
+    core.dedup rules (canonical name > sidecar > has-row > earliest > path).
+
+    A second row is never created. But if the twin had permanently FAILED its
+    bytes were never delivered, so collapsing onto it silently would lose the
+    re-introduced content. In that case we keep the winning copy AND re-arm the
+    row (failed → pending) so it sends — reported as REARMED. find_by_content_
+    hash prefers a deliverable twin, so a 'failed' twin means it's the only one."""
+    failed = (twin.status == Status.FAILED.value)
+    existing = Path(twin.file_path)
+
+    def _finish(adopted: bool) -> IngestResult:
+        """Apply the re-arm (if the twin had failed) and pick the outcome."""
+        if failed and store.rearm_failed(twin.id):
+            log.info("ingest: re-arm failed twin id=%d from %s "
+                     "(bytes never delivered)", twin.id, incoming.name)
+            return IngestResult(IngestOutcome.REARMED, item_id=twin.id,
+                                content_hash=digest)
+        outcome = (IngestOutcome.DEDUP_ADOPTED if adopted
+                   else IngestOutcome.DEDUP_DROPPED)
+        return IngestResult(outcome,
+                            item_id=(twin.id if adopted else None),
+                            content_hash=digest)
+
+    # If the twin's file vanished, the incoming copy simply takes its place:
+    # re-point the row, no deletion needed.
+    if not existing.exists():
+        store.relink_file(twin.id, str(incoming))
+        log.info("ingest: dedup adopt (twin file gone) %s → row id=%d",
+                 incoming.name, twin.id)
+        return _finish(adopted=True)
+
+    # db_meta: the twin has a row (use its discovered_at); the incoming file
+    # has none yet. _pick_winner reads None as "no row".
+    winner, _losers = _pick_winner(
+        [incoming, existing],
+        {incoming: None, existing: twin.discovered_at},
+    )
+
+    if winner == existing:
+        # Existing copy wins → incoming is the redundant one. Delete it "as if
+        # never there" (file + sidecars); the row keeps pointing at `existing`.
+        cleanup_sidecars(str(incoming))
+        log.info("ingest: dedup drop %s (dup of row id=%d)",
+                 incoming.name, twin.id)
+        return _finish(adopted=False)
+
+    # Incoming wins (better/canonical name) → ADOPT: re-point the row at the
+    # incoming file, then retire the old copy.
+    store.relink_file(twin.id, str(incoming))
+    cleanup_sidecars(str(existing))
+    log.info("ingest: dedup adopt %s → row id=%d (retired %s)",
+             incoming.name, twin.id, existing.name)
+    return _finish(adopted=True)
