@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import abc
 import logging
+import os
 import random
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -105,19 +107,32 @@ class _ExtractorErrorDetector(logging.Handler):
     `auth_signals` differ per platform (IG has checkpoint/challenge wording);
     the gone signals are shared via _match_account_gone."""
 
+    # gallery-dl's IG extractor reports a profile it can't resolve as
+    # "Requested user could not be found" — which, unlike the account_gone
+    # wording, is EXACTLY what a dead/challenged session produces for EVERY
+    # profile. On its own it's ambiguous (one genuinely-deleted user says the
+    # same), so it's tracked separately here and only escalated to a session-
+    # death AuthError by the caller when it hits a whole run of users. See
+    # InstagramPlatform._download_impl.
+    _NOT_FOUND_MARKERS = ("could not be found",)
+
     def __init__(self, auth_signals: tuple[str, ...]):
         super().__init__()
         self.auth_signals = auth_signals
         self.auth_failed  = False
         self.account_gone = False
         self.gone_reason  = ""
+        self.not_found    = False
 
     def note(self, msg: str) -> None:
         """Classify a single message. Public so exception handlers can feed in
         the str(exc) text on the same footing as logged lines."""
         if any(s in msg for s in self.auth_signals):
             self.auth_failed = True
-        reason = _match_account_gone(msg.lower())
+        low = msg.lower()
+        if any(m in low for m in self._NOT_FOUND_MARKERS):
+            self.not_found = True
+        reason = _match_account_gone(low)
         if reason and not self.account_gone:
             self.account_gone = True
             self.gone_reason  = msg.strip()[:200] or reason
@@ -166,6 +181,13 @@ class Platform(abc.ABC):
 
     @abc.abstractmethod
     def health_check(self) -> HealthStatus: ...
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        """Proactive, age-based cookie re-export from the browser. Runs every
+        preflight, BEFORE health_check, so a server-side-invalidated session
+        (which still passes the file health-check) is replaced before it
+        silently fails. No-op for platforms without browser-backed cookies."""
+        return
 
     @abc.abstractmethod
     def attempt_recovery(self) -> bool: ...
@@ -279,6 +301,44 @@ def _cookies_file_health(path_str: str,
     return HealthStatus.ok()
 
 
+def _maybe_refresh_stale_cookies(cfg_block, domain: str,
+                                 required: set[str]) -> None:
+    """Proactively re-export cookies from Firefox when the on-disk file is
+    older than `cookie_refresh_days`.
+
+    The file health-check only proves the cookie NAMES are present, not that
+    the session is still valid — a sessionid invalidated server-side (e.g. by
+    re-login elsewhere, as happened to IG on 2026-07-22) keeps passing the
+    health-check, so `attempt_recovery` never fires and the archiver silently
+    harvests zero. Re-pulling from the live browser session on an age cadence
+    is the backstop: as long as the account is logged in in Firefox, every
+    refresh picks up the current session. No-op without a FIREFOX_PROFILE or
+    with cookie_refresh_days<=0."""
+    days = float(getattr(cfg_block, "cookie_refresh_days", 0) or 0)
+    profile = getattr(cfg_block, "firefox_profile", "")
+    if days <= 0 or not profile:
+        return
+    path = Path(cfg_block.cookies_file)
+    try:
+        age_days = ((time.time() - path.stat().st_mtime) / 86400.0
+                    if path.exists() else float("inf"))
+    except OSError:
+        return
+    if age_days < days:
+        return
+    try:
+        from .cookies import refresh_for_domain
+        n = refresh_for_domain(
+            domain=domain, profile_name=profile,
+            output_path=cfg_block.cookies_file, required_cookies=required,
+        )
+        log.info("[cookies] %s stale (%.1fd ≥ %.1fd) — refreshed %d from Firefox",
+                 domain, age_days, days, n)
+    except Exception as e:
+        log.warning("[cookies] proactive refresh of %s failed (using existing "
+                    "file): %s", domain, e)
+
+
 def _seed_gallery_dl_sqlite(archive_path: Path, entries: Iterable[str]) -> int:
     """
     Idempotently insert entries into a gallery-dl archive.sqlite3.
@@ -351,6 +411,12 @@ class XPlatform(Platform):
     def users(self) -> tuple[str, ...]:
         return self.x_cfg.users
 
+    def inter_user_delay(self) -> float:
+        """Randomized gap between users, like IG/TikTok — a fixed metronome is
+        itself a bot tell. Replaces the old flat SLEEP_MAX*2."""
+        p = self.x_cfg.pacing
+        return random.uniform(p.user_gap_min, p.user_gap_max)
+
     def health_check(self) -> HealthStatus:
         if not self.x_cfg.auth_token:
             return HealthStatus.fail("X_AUTH_TOKEN is empty")
@@ -390,6 +456,7 @@ class XPlatform(Platform):
 
         user_dir = self.download_root(username)
         before   = _snapshot_media_files(user_dir)
+        pace     = self.x_cfg.pacing
 
         date_min_ts = _compute_date_min(db, self.name, username, slack_days=1)
         if date_min_ts:
@@ -424,9 +491,14 @@ class XPlatform(Platform):
                 "event":    "post",
                 "filename": "{date:%Y%m%d}_{tweet_id}_{num}.json",
             }],
-            "sleep":         self.config.sleep_min,
-            "sleep-request": self.config.sleep_max,
-            "retries":       6,
+            # Conservative, jittered pacing (safety over speed) — X's own
+            # Pacing block, decoupled from the global SLEEP_*. Randomized ranges
+            # turn a burst into human-looking traffic; sleep-429 STOPS on a
+            # rate-limit instead of retrying into a harder block.
+            "sleep":         [pace.sleep_min, pace.sleep_max],
+            "sleep-request": [pace.sleep_request_min, pace.sleep_request_max],
+            "sleep-429":     pace.sleep_429,
+            "retries":       pace.retries,
         }
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
@@ -521,6 +593,10 @@ class TikTokPlatform(Platform):
 
     def health_check(self) -> HealthStatus:
         return _cookies_file_health(self.tt_cfg.cookies_file, self.AUTH_COOKIES)
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        _maybe_refresh_stale_cookies(
+            self.tt_cfg, "tiktok.com", self.AUTH_COOKIES)
 
     def attempt_recovery(self) -> bool:
         if not self.tt_cfg.firefox_profile:
@@ -792,11 +868,25 @@ class InstagramPlatform(Platform):
 
     AUTH_COOKIES = {"sessionid", "csrftoken", "ds_user_id"}
 
+    # A dead/challenged IG session makes gallery-dl report EVERY profile as
+    # "could not be found" while raising nothing — the archiver then silently
+    # harvests zero for days (this bit us 2026-07-22). Guard: count users in a
+    # run that come back not-found AND empty; once N in a row do, escalate to
+    # an AuthError so the circuit breaker PAUSES Instagram (never retires
+    # anyone — that stays the account_gone path's job). N is high enough that a
+    # handful of genuinely-deleted users won't trip it. Override with
+    # $IG_SESSION_DEATH_THRESHOLD.
+    _SESSION_DEATH_THRESHOLD = int(
+        os.environ.get("IG_SESSION_DEATH_THRESHOLD", "5"))
+
     def __init__(self, config: "Config"):
         super().__init__(config)
         assert config.instagram is not None, \
             "InstagramPlatform requires Config.instagram to be set"
         self.ig_cfg: InstagramConfig = config.instagram
+        # Consecutive not-found+empty users seen in the CURRENT run (heavy pass
+        # only). Reset by any user that yields media; escalates at threshold.
+        self._consec_notfound = 0
 
     @property
     def users(self) -> tuple[str, ...]:
@@ -804,6 +894,10 @@ class InstagramPlatform(Platform):
 
     def health_check(self) -> HealthStatus:
         return _cookies_file_health(self.ig_cfg.cookies_file, self.AUTH_COOKIES)
+
+    def maybe_refresh_stale_cookies(self) -> None:
+        _maybe_refresh_stale_cookies(
+            self.ig_cfg, "instagram.com", self.AUTH_COOKIES)
 
     def attempt_recovery(self) -> bool:
         if not self.ig_cfg.firefox_profile:
@@ -959,7 +1053,31 @@ class InstagramPlatform(Platform):
         if detector.account_gone:
             raise AccountGoneError(detector.gone_reason or "account not found")
 
-        return _register_new_files(self.name, username, user_dir, before, db)
+        new = _register_new_files(self.name, username, user_dir, before, db)
+
+        # Session-death detection (heavy pass only — the stories lane has its
+        # own short-lived content and isn't a reliable signal). A dead IG
+        # session makes gallery-dl report "could not be found" for every
+        # profile without raising; count a run of such empty users and, at the
+        # threshold, raise AuthError so the circuit breaker pauses IG instead
+        # of silently spinning for days. A user that returns media clears the
+        # counter — one or two genuinely-deleted accounts won't escalate.
+        if label == "posts/reels":
+            if detector.not_found and new == 0:
+                self._consec_notfound += 1
+                if self._consec_notfound >= self._SESSION_DEATH_THRESHOLD:
+                    raise AuthError(
+                        f"Instagram session appears dead: "
+                        f"{self._consec_notfound} consecutive profiles reported "
+                        f"'could not be found' with zero media. The sessionid is "
+                        f"likely invalidated by a challenge/bot-flag (cookie "
+                        f"expiry is not the signal). Refresh cookies/instagram.txt "
+                        f"and clear any pending IG checkpoint before resuming."
+                    )
+            elif new > 0:
+                self._consec_notfound = 0
+
+        return new
 
 
 # ── Checkpoint helpers (shared across platforms) ──────────────────────────────

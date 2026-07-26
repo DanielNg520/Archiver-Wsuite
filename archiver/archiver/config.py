@@ -167,11 +167,23 @@ _IG_PACING_DEFAULTS = Pacing(
     user_gap_min      = 180.0, user_gap_max    = 420.0,   # 3–7 min between users
 )
 _TIKTOK_PACING_DEFAULTS = Pacing(
-    sleep_request_min = 10.0, sleep_request_max = 20.0,
-    sleep_min         = 5.0,  sleep_max         = 10.0,
-    sleep_429         = 600.0,          # 10-min back-off
-    retries           = 4,
-    user_gap_min      = 60.0, user_gap_max     = 150.0,   # 1–2.5 min between users
+    sleep_request_min = 15.0, sleep_request_max = 30.0,
+    sleep_min         = 5.0,  sleep_max         = 12.0,
+    sleep_429         = 900.0,          # 15-min back-off (safety over speed)
+    retries           = 3,             # low on purpose — sleep_429 does the waiting
+    user_gap_min      = 120.0, user_gap_max    = 240.0,   # 2–4 min between users
+)
+# X/Twitter had NO pacing block before 2026-07-25 — it ran on the flat global
+# SLEEP with no request jitter, no 429 back-off, and a fixed user metronome
+# (all bot tells), while its auth_token can't be auto-refreshed. Bring it up to
+# the same conservative, jittered, safety-over-speed profile as the others. The
+# box runs 24/7, so time is the cheap resource; a locked X account is not.
+_X_PACING_DEFAULTS = Pacing(
+    sleep_request_min = 20.0, sleep_request_max = 45.0,
+    sleep_min         = 6.0,  sleep_max         = 12.0,
+    sleep_429         = 900.0,          # 15-min back-off on rate-limit
+    retries           = 3,
+    user_gap_min      = 120.0, user_gap_max    = 300.0,   # 2–5 min between users
 )
 
 
@@ -219,6 +231,7 @@ class XConfig:
     auth_token: str
     ct0:        str
     twid:       str
+    pacing:     Pacing
 
     @classmethod
     def from_store(cls, store: PolicyStore, *, require_auth: bool = True) -> "XConfig":
@@ -231,6 +244,7 @@ class XConfig:
             auth_token = get("X_AUTH_TOKEN"),
             ct0        = get("X_CT0"),
             twid       = get("X_TWID"),
+            pacing     = Pacing.from_env("X", defaults=_X_PACING_DEFAULTS),
         )
 
 

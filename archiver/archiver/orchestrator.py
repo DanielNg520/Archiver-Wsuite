@@ -914,6 +914,12 @@ class Archiver:
         }
 
     async def _ensure_platform_healthy(self, platform: Platform) -> bool:
+        # Proactive, age-based cookie refresh from the browser BEFORE the file
+        # health-check. The health-check only proves cookie names are present,
+        # not that the session is live, so a server-side-invalidated session
+        # (IG, 2026-07-22) would otherwise pass and silently harvest zero.
+        await asyncio.to_thread(platform.maybe_refresh_stale_cookies)
+
         status: HealthStatus = platform.health_check()
         if status.healthy:
             return True
