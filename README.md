@@ -239,9 +239,20 @@ credentials. Writing the row *is* the handoff.
 
 The download cutoff (`date_floor`) reads `MAX(upload_date WHERE status='sent')`
 straight from the one table, so it only advances past posts the dispatcher has
-actually confirmed delivered. While the recorder is actively recording TikTok,
-the archiver skips the TikTok *download* step (it reads the recorder's
-lockfile); uploads of existing TikTok backlog still proceed.
+actually confirmed delivered. What actually makes a re-scan incremental is the
+per-user **extractor archive** (gallery-dl sqlite / yt-dlp txt), which skips
+re-downloading anything already fetched — the `date-min` we pass is a no-op for
+the Twitter/Instagram extractors (they never read it). To stop the *walk* as
+well as the *download*, X sets gallery-dl `skip=abort:N` (`X_ABORT_AFTER`,
+default 20): the timeline is newest-first, so once the walk crosses `N`
+consecutive already-archived files it aborts instead of paging the user's whole
+history — turning the supplemental `/with_replies` pass from a full-timeline
+crawl into a near-frontier stop, with no media lost. It only engages when a
+`date_floor` exists, so a first run / `--full-history` still walks fully. IG is
+deliberately left without it (no second pass; its 0-new passes already finish in
+~2 min). While the recorder is actively recording TikTok, the archiver skips the
+TikTok *download* step (it reads the recorder's lockfile); uploads of existing
+TikTok backlog still proceed.
 
 Detailed docs: [archiver/README.md](archiver/README.md).
 

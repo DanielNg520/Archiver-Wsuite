@@ -128,6 +128,16 @@ class Pacing:
       - user_gap_[min|max]: random pause between successive accounts in one run,
         so a multi-account cycle reads like a person opening profiles, not a
         scanner sweeping a list.
+      - abort_after: gallery-dl `skip=abort:N` — stop the timeline walk after N
+        CONSECUTIVE already-archived files. The timeline is newest-first and the
+        extractor archive holds everything already downloaded, so once the walk
+        crosses into the archived backlog it aborts instead of paging the user's
+        entire history every cycle (the `date-min` we pass is a no-op for the
+        Twitter/Instagram extractors — they never read it; the archive is the
+        real frontier). Only ever engages when a frontier already exists — a
+        first run or a --full-history re-arm has no date floor, so it's left to
+        walk fully. 0 disables. yt-dlp platforms (TikTok) ignore this — their
+        equivalent is break_on_existing.
     """
     sleep_request_min: float
     sleep_request_max: float
@@ -137,6 +147,7 @@ class Pacing:
     retries:           int
     user_gap_min:      float
     user_gap_max:      float
+    abort_after:       int = 20
 
     @classmethod
     def from_env(cls, prefix: str, *, defaults: "Pacing") -> "Pacing":
@@ -153,6 +164,7 @@ class Pacing:
             retries           = _opti(f"{p}_RETRIES",           defaults.retries),
             user_gap_min      = _optf(f"{p}_USER_GAP_MIN",      defaults.user_gap_min),
             user_gap_max      = _optf(f"{p}_USER_GAP_MAX",      defaults.user_gap_max),
+            abort_after       = _opti(f"{p}_ABORT_AFTER",       defaults.abort_after),
         )
 
 

@@ -502,6 +502,16 @@ class XPlatform(Platform):
         }
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
+            # Early-stop the newest-first walk once it crosses into the archived
+            # backlog: after `abort_after` consecutive already-archived files
+            # gallery-dl raises StopExtraction (swallowed inside job.run()), so
+            # both the /media and /with_replies passes stop near the frontier
+            # instead of paging the whole timeline. Gated on date_min_ts so a
+            # first run / --full-history (no floor) still walks fully. `date-min`
+            # itself is a no-op for the Twitter extractor — the archive is what
+            # actually makes this incremental.
+            if pace.abort_after > 0:
+                extractor_cfg["skip"] = f"abort:{pace.abort_after}"
 
         detector = _ExtractorErrorDetector(
             auth_signals=("AuthRequired", "AuthenticationError", "401", "403"))
@@ -1008,6 +1018,13 @@ class InstagramPlatform(Platform):
         }
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
+            # NOTE: no `skip=abort` here (unlike XPlatform). Measured IG steady-
+            # state passes finish in ~2 min even at 0 new — IG has no second
+            # /with_replies walk and doesn't waste time paging past its frontier,
+            # so the early-stop buys nothing here while changing walk-termination
+            # on the most ban-sensitive platform. The `abort_after` knob still
+            # exists on the IG Pacing block as a one-line opt-in if that ever
+            # changes (set INSTAGRAM_ABORT_AFTER + add the skip line back).
 
         detector = _ExtractorErrorDetector(auth_signals=(
             "AuthRequired", "AuthenticationError",
