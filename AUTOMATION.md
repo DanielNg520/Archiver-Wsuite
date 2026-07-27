@@ -176,6 +176,14 @@ ops health
    downloads new media and inserts pending `items` rows (priority 10), then
    sleeps 2–4h and repeats. If the recorder holds the TikTok lock, it skips
    TikTok downloads that cycle.
+   - **Walk order is staleness-first**, not alphabetical: within a platform the
+     users scanned longest ago (or never) go first, so a cycle — or a restart
+     mid-cycle — favors whoever a previous pass didn't reach instead of starving
+     the tail. Bounded jitter shuffles equal-staleness users (anti-detection).
+     **Priority users** (hand-marked via `archiver priority`, or opt-in
+     auto-detected regular posters) lead every cycle and get re-scanned partway
+     through a long pass so frequent posters stay fresh. See USER-GUIDE.md
+     "Scan order & priority users" for the knobs.
    - **Ingest sweeper (background, every ~3 min).** The heavy download cycle
      only reconciles the *drop folders* (record folder, orphaned chat_id dirs,
      local platforms) at its tail — hours apart. So `archiver loop` also runs a

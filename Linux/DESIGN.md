@@ -47,7 +47,8 @@ other. ops imports no *worker* (core is fine). Installs are pipx venvs with an
 | **`env.py`** | env parsing; req=fail-loud, opt*=warn+default (self-healing tunables) | `req`, `opt`, `opt_int/float/bool`, `MissingEnvVar` |
 | `instance_lock.py` | generic singleton flock; `_already_running_error` hook | `InstanceLock`, `InstanceAlreadyRunning` |
 | `deletion.py` | safebrake guard on every delete path | `DeletionGuard` |
-| `policy_store.py`/`policies.py` | config.toml scoped resolution (user>platform>default) | `PolicyStore`, `DeletePolicy`,`BatchPolicy`,`DedupPolicy`,`AutoIngestPolicy`,`DownloadPolicy`,`SortPolicy`,`FailedRetryPolicy`,`ProtectionPolicy` |
+| `policy_store.py`/`policies.py` | config.toml scoped resolution (user>platform>default) | `PolicyStore`, `DeletePolicy`,`BatchPolicy`,`DedupPolicy`,`AutoIngestPolicy`,`DownloadPolicy`,`SortPolicy`,`FailedRetryPolicy`,`ProtectionPolicy`,`PriorityPolicy` |
+| `scan_order.py` | per-cycle user walk order: staleness-first (oldest `checkpoints.last_run_utc` first) + jitter; `due_for_reinjection` (min-of count/time trigger for priority re-scan); `auto_priority` (rank regular posters by distinct post-days). Pure; store supplies `last_runs_for_platform`/`active_days_since`, orchestrator `_priority_users`/`_auto_regulars_cached` apply caps + 2-week cache | `order_users`, `due_for_reinjection`, `auto_priority` |
 | `sanitize.py` | banned-word strip (names+captions) | `Sanitizer`, `ReloadingSanitizer` |
 | `sorter.py` | move loose files into platform/user homes | `sort_unsorted` |
 | `termui.py` | shared terminal UI + `human_size`/`human_duration`/`age` (SI style) | `banner`, `field`, `setup_logging` |
@@ -157,10 +158,10 @@ PYTHONPATH="ops:core" "$PY" -m ops._selftest_logrotate
 "$PY" -m ops._selftest_update
 ```
 Full battery: core{_account_gone,_drain_eta,_fixes,_manual_delete,_media_prep,
-_quarantine,_register_media,_safebrake,_termui}, archiver{_ban_quarantine,_routes_dir},
+_quarantine,_register_media,_safebrake,_scan_order,_termui}, archiver{_ban_quarantine,_routes_dir},
 dispatcher{_client_for,_config,_fast_upload,_keepalive},
 recorder{_ban_escalation,_capture,_reconnect,_skip_safetynet,_ui,_watch,platforms/_tiktok_browser},
-ops/{_logrotate,_update}(-m), tests/test_seams. (24 selftests + seam suite.)
+ops/{_logrotate,_update}(-m), tests/test_seams. (25 selftests + seam suite.)
 
 ## Gotchas
 - **Editable installs import the working tree** → a worker restart loads whatever

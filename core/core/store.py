@@ -1297,6 +1297,55 @@ class ItemStore:
             (platform, username),
         ).fetchone()
 
+    def last_runs_for_platform(self, platform: str) -> dict[str, float]:
+        """username → epoch-seconds of last scan, for every checkpointed user
+        on `platform`. One query drives the whole-roster scan ordering (see
+        core.scan_order); users with no row / an unparseable stamp are simply
+        absent, which the ordering treats as 'never scanned' (front of queue)."""
+        out: dict[str, float] = {}
+        for r in self.conn.execute(
+            "SELECT username, last_run_utc FROM checkpoints WHERE platform=?",
+            (platform,),
+        ):
+            raw = r["last_run_utc"]
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if not dt.tzinfo:
+                dt = dt.replace(tzinfo=timezone.utc)
+            out[r["username"]] = dt.timestamp()
+        return out
+
+    def active_days_since(self, platform: str, since_yyyymmdd: str
+                          ) -> dict[str, int]:
+        """username → number of DISTINCT post dates on/after `since_yyyymmdd`
+        (a 'YYYYMMDD' string), for `platform`. Distinct dates, not row count, so
+        a burst album (many files, one day) counts once — the signal we want for
+        'regular poster' is how many days a user was active, not raw volume.
+        Drives the smart auto-priority detection (core.scan_order.auto_priority);
+        upload_date is a zero-padded YYYYMMDD string so lexical >= is date >=."""
+        out: dict[str, int] = {}
+        for r in self.conn.execute(
+            "SELECT username, COUNT(DISTINCT upload_date) AS n FROM items "
+            "WHERE platform=? AND upload_date IS NOT NULL AND upload_date>=? "
+            "GROUP BY username",
+            (platform, since_yyyymmdd),
+        ):
+            out[r["username"]] = r["n"]
+        return out
+
+    def scan_order(self, platform: str, usernames: "Sequence[str]",
+                   **kwargs) -> tuple[str, ...]:
+        """Convenience: staleness-first walk order for `platform`'s users,
+        reading last-run stamps from checkpoints. Extra kwargs (jitter_seconds,
+        priority, rng) pass straight through to core.scan_order.order_users."""
+        from core.scan_order import order_users
+        return order_users(usernames, self.last_runs_for_platform(platform),
+                           **kwargs)
+
     def get_last_run(self, platform: str, username: str) -> "datetime | None":
         r = self.get_checkpoint(platform, username)
         if not r or not r["last_run_utc"]:

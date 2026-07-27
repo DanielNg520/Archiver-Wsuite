@@ -28,10 +28,15 @@ The CHECKPOINT change vs v1:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import random
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from core.scan_order import due_for_reinjection, auto_priority
 
 from .config import Config
 from .lock_reader import tiktok_lock_held
@@ -42,7 +47,8 @@ from .reconcile import (
 )
 
 from core import (
-    ItemStore, DeletePolicy, DedupPolicy, DownloadPolicy, DeletionGuard,
+    ItemStore, DeletePolicy, DedupPolicy, DownloadPolicy, PriorityPolicy,
+    DeletionGuard,
     dedup_user, cleanup_sidecars, parse_route, prune_empty_dirs,
     prune_route_dirs,
     recover_oversize_failed,
@@ -146,6 +152,8 @@ class Archiver:
         self.delete_policy   = DeletePolicy(config.policy_store)
         self.dedup_policy    = DedupPolicy(config.policy_store)
         self.download_policy = DownloadPolicy(config.policy_store)
+        # Scan-order priority: which users lead every cycle + get re-injected.
+        self.priority_policy = PriorityPolicy(config.policy_store)
         # The safebrake. Threaded into every disk-deletion path (reconcile
         # re-introduction cleanup, disk-full purge) so a protected scope is
         # never touched, regardless of which path would have deleted it.
@@ -577,6 +585,74 @@ class Archiver:
                 log.error("[%s] platform loop crashed: %s", p.name, outcome,
                           exc_info=outcome)
 
+    def _priority_users(self, platform: str, roster, db) -> set[str]:
+        """The priority set for this platform's `roster` — computed PER PLATFORM,
+        so the caps below apply independently to each. Two SEPARATE sources with
+        SEPARATE caps so they never compete for slots: manual PriorityPolicy
+        marks (up to priority_manual_cap) plus, if enabled, smart auto-detected
+        regular posters (up to auto_priority_cap). The auto ranking is recomputed
+        only every `auto_priority_refresh_days` (cached in the DB), so auto
+        membership is stable between refreshes and a user who goes quiet drops off
+        at the next one; manual marks never expire."""
+        cfg = self.config
+        roster_set = set(roster)
+
+        manual = sorted(u for u in roster_set
+                        if self.priority_policy.is_priority(platform, u))
+        m_cap = max(0, getattr(cfg, "priority_manual_cap", 10))
+        if m_cap:
+            manual = manual[:m_cap]           # deterministic truncation
+        manual_set = set(manual)
+
+        a_cap = max(0, getattr(cfg, "auto_priority_cap", 10))
+        if not getattr(cfg, "auto_priority", False) or a_cap <= 0:
+            return manual_set
+
+        ranked = self._auto_regulars_cached(platform, db)   # ordered, most-active
+        auto: list[str] = []
+        for u in ranked:
+            if u in roster_set and u not in manual_set:
+                auto.append(u)
+                if len(auto) >= a_cap:
+                    break
+        return manual_set | set(auto)
+
+    def _auto_regulars_cached(self, platform: str, db) -> tuple[str, ...]:
+        """Ranked regular posters for `platform`, recomputed at most once every
+        `auto_priority_refresh_days` and cached in the metadata table as JSON
+        {computed_at, users}. Returns the cached ranking between refreshes."""
+        cfg = self.config
+        key = f"auto_priority:{platform}"
+        now = datetime.now(timezone.utc)
+        refresh_s = max(1.0, cfg.auto_priority_refresh_days) * 86400.0
+
+        raw = db.meta_get(key)
+        if raw:
+            try:
+                cached = json.loads(raw)
+                computed = datetime.fromisoformat(
+                    cached["computed_at"].replace("Z", "+00:00"))
+                if (now - computed).total_seconds() < refresh_s:
+                    return tuple(cached.get("users", []))
+            except (ValueError, KeyError, TypeError):
+                pass   # malformed cache → recompute
+
+        window = max(1.0, cfg.auto_priority_window_days)
+        since = (now - timedelta(days=window)).strftime("%Y%m%d")
+        counts = db.active_days_since(platform, since)
+        # Store at most `auto_priority_cap` regulars — never need more (that's
+        # the ceiling on how many auto users can be promoted).
+        ranked = auto_priority(counts,
+                               min_active_days=cfg.auto_priority_min_days,
+                               limit=max(1, getattr(cfg, "auto_priority_cap", 10)))
+        db.meta_set(key, json.dumps({
+            "computed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "users": list(ranked),
+        }))
+        log.info("[%s] auto-priority refreshed: %d regular poster(s) — %s",
+                 platform, len(ranked), ", ".join(ranked) or "(none)")
+        return ranked
+
     async def _run_one_platform(
         self,
         platform: Platform,
@@ -612,20 +688,54 @@ class Archiver:
                                     user_filter, platform.name)
                         return
 
-                for i, username in enumerate(users):
-                    if i > 0:
+                # Staleness-first walk order: whoever was scanned longest ago
+                # (or never) goes first, so a cycle — or a restart mid-cycle —
+                # naturally favors the users a previous cycle didn't reach,
+                # instead of always re-scanning the alphabetical head and
+                # starving the tail. Bounded jitter also breaks the fixed-sweep
+                # bot tell. A single-user filtered run has nothing to order.
+                if not user_filter and len(users) > 1:
+                    ordered = db.scan_order(
+                        platform.name, users,
+                        jitter_seconds=self.config.scan_jitter_s)
+                else:
+                    ordered = tuple(users)
+
+                # PRIORITY users: lead the walk AND get re-injected partway
+                # through a long roster pass so regular posters stay fresh.
+                # Manual PriorityPolicy marks (always kept) plus, opt-in, smart
+                # auto-detected regular posters filling the remaining slots up to
+                # priority_cap. A filtered run ignores priority (it's one user).
+                # `rest` keeps the staleness order for everyone else.
+                prio_set: set[str] = set()
+                if not user_filter:
+                    prio_set = self._priority_users(platform.name, ordered, db)
+                    if prio_set:
+                        log.debug("[%s] priority users: %s", platform.name,
+                                  ", ".join(sorted(prio_set)))
+                rest = [u for u in ordered if u not in prio_set]
+
+                # Single scan of one user: the inter-user gap (skipped only
+                # before the very first scan of the whole walk), circuit check,
+                # status hook, and the archive call — shared by the priority
+                # passes and the main walk so re-injected scans are paced and
+                # reported identically.
+                walked = [0]
+
+                async def _scan(username: str) -> None:
+                    if walked[0] > 0:
                         gap = platform.inter_user_delay()
                         log.debug("[%s] inter-user pacing: sleeping %.0fs "
                                   "before @%s", platform.name, gap, username)
                         await asyncio.sleep(gap)
+                    walked[0] += 1
                     if platform.name in self._tripped:
                         log.warning("[%s/%s] skipped — circuit tripped this run",
                                     platform.name, username)
                         results[f"{platform.name}/{username}"] = {
                             "status": "skipped", "reason": "circuit-tripped",
                         }
-                        continue
-
+                        return
                     key = f"{platform.name}/{username}"
                     if on_user is not None:
                         try:
@@ -640,6 +750,34 @@ class Archiver:
                         log.error("[%s] uncaught error: %s",
                                   key, e, exc_info=True)
                         results[key] = {"status": "error", "reason": str(e)}
+
+                def _priority_pass() -> list[str]:
+                    # Fresh random order every pass — no fixed priority sweep.
+                    p = list(prio_set)
+                    random.shuffle(p)
+                    return p
+
+                # Lead with a priority pass, then walk the rest, re-injecting a
+                # priority pass whenever the min-of 'fit interval' fires.
+                for pu in _priority_pass():
+                    await _scan(pu)
+                last_prio = time.monotonic()
+                since_prio = 0
+                for username in rest:
+                    await _scan(username)
+                    since_prio += 1
+                    if prio_set and due_for_reinjection(
+                            since_prio, time.monotonic() - last_prio,
+                            every_n_users=self.config.priority_reinject_users,
+                            every_seconds=self.config.priority_reinject_seconds):
+                        log.debug("[%s] re-injecting %d priority user(s) "
+                                  "(after %d users / %.0fs)", platform.name,
+                                  len(prio_set), since_prio,
+                                  time.monotonic() - last_prio)
+                        for pu in _priority_pass():
+                            await _scan(pu)
+                        last_prio = time.monotonic()
+                        since_prio = 0
             finally:
                 db.close()
                 # This platform is done (all users, or an early health-check

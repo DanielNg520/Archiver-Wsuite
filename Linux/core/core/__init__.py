@@ -18,7 +18,7 @@ from .policy_store import PolicyStore
 from .policies import (
     DeletePolicy, RecorderDeletePolicy, DedupPolicy, BooleanPolicy,
     BatchPolicy, AutoIngestPolicy, DownloadPolicy, ProtectionPolicy,
-    SortPolicy, FailedRetryPolicy, validate_overrides,
+    SortPolicy, FailedRetryPolicy, PriorityPolicy, validate_overrides,
 )
 from .files import (cleanup_sidecars, orphaned_kind, album_bucket,
                     prune_empty_dirs, prune_route_dirs, MAX_ALBUM_BYTES)
@@ -52,7 +52,7 @@ __all__ = [
     "ProducerStore", "QueueStore", "AdminStore",
     "PolicyStore", "DeletePolicy", "RecorderDeletePolicy", "DedupPolicy",
     "BooleanPolicy", "BatchPolicy", "AutoIngestPolicy", "DownloadPolicy",
-    "ProtectionPolicy", "SortPolicy", "FailedRetryPolicy",
+    "ProtectionPolicy", "SortPolicy", "FailedRetryPolicy", "PriorityPolicy",
     "validate_overrides", "cleanup_sidecars", "orphaned_kind", "album_bucket",
     "prune_empty_dirs", "prune_route_dirs", "MAX_ALBUM_BYTES",
     "DeletionGuard",

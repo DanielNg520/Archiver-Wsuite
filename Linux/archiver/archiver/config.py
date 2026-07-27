@@ -395,6 +395,39 @@ class Config:
 
     auth_failure_threshold: int = 3
 
+    # ── Scan ordering (core.scan_order) ──────────────────────────────────────
+    # Users are walked staleness-first (oldest-scanned first) so a cycle — or a
+    # restart mid-cycle — favors whoever a previous cycle didn't reach, instead
+    # of re-sweeping the alphabetical head and starving the tail. `scan_jitter_s`
+    # is the width of a random offset added to each user's last-run key before
+    # sorting: users within that window of each other shuffle every cycle (breaks
+    # the fixed-sweep bot tell); users more stale than the window still lead. 0 =
+    # strict staleness, no randomness.
+    scan_jitter_s: float = 21600.0   # 6h
+    # Priority users (PriorityPolicy) are walked first AND re-injected mid-cycle
+    # so regular posters stay fresh through a long roster pass. The re-inject
+    # 'fit interval' is a min-of trigger: whichever of these two comes first
+    # since the last priority pass. <=0 disables that arm; both<=0 = first-pass
+    # only (no re-injection).
+    priority_reinject_users:   int   = 8
+    priority_reinject_seconds: float = 1800.0   # 30 min
+    # SEPARATE caps for the two priority sources, so auto-detected regulars never
+    # compete with hand-marked users for slots (default 10 each → up to 20 total).
+    # Each bounds re-injection cost independently. 0 = uncapped for that source.
+    priority_manual_cap:       int   = 10
+    auto_priority_cap:         int   = 10
+    # Smart auto-priority: fold 'regular posters' into the priority set without
+    # marking them by hand. A user who posted on >= `auto_priority_min_days`
+    # distinct days within the last `auto_priority_window_days` qualifies. The
+    # auto selection is RECOMPUTED only every `auto_priority_refresh_days` (default
+    # 2 weeks) and cached in the DB between refreshes, so membership is stable for
+    # a stretch and a user who goes quiet drops off at the next refresh — manual
+    # marks never expire. OFF by default; explicit marks apply regardless.
+    auto_priority:             bool  = False
+    auto_priority_window_days: float = 30.0
+    auto_priority_min_days:    int   = 8
+    auto_priority_refresh_days: float = 14.0
+
     enabled_platforms: frozenset[str] = field(default_factory=frozenset)
     reconcile_after_run: bool = False
     # User-managed folders treated as platforms (no download). Names only;
@@ -455,6 +488,16 @@ class Config:
             sleep_min         = float(_opt("SLEEP_MIN", "3")),
             sleep_max         = float(_opt("SLEEP_MAX", "8")),
             max_concurrent_platforms = _opti("ARCHIVER_MAX_CONCURRENT_PLATFORMS", 0),
+            scan_jitter_s     = _optf("ARCHIVER_SCAN_JITTER_S", 21600.0),
+            priority_reinject_users   = _opti("ARCHIVER_PRIORITY_REINJECT_USERS", 8),
+            priority_reinject_seconds = _optf("ARCHIVER_PRIORITY_REINJECT_S", 1800.0),
+            priority_manual_cap = _opti("ARCHIVER_PRIORITY_MANUAL_CAP", 10),
+            auto_priority_cap   = _opti("ARCHIVER_AUTO_PRIORITY_CAP", 10),
+            auto_priority     = _opt("ARCHIVER_AUTO_PRIORITY", "false").lower()
+                                in {"1", "true", "yes", "on"},
+            auto_priority_window_days = _optf("ARCHIVER_AUTO_PRIORITY_WINDOW_DAYS", 30.0),
+            auto_priority_min_days    = _opti("ARCHIVER_AUTO_PRIORITY_MIN_DAYS", 8),
+            auto_priority_refresh_days = _optf("ARCHIVER_AUTO_PRIORITY_REFRESH_DAYS", 14.0),
             enabled_platforms = enabled,
             reconcile_after_run = _opt("RECONCILE_AFTER_RUN", "false").lower()
                                   in {"1", "true", "yes", "on"},

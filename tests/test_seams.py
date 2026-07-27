@@ -2866,10 +2866,13 @@ def test_concurrent_platform_loops_seam() -> None:
 
     def make_arch(max_conc=0):
         a = object.__new__(Archiver)
-        a.config = SimpleNamespace(db_path=db_path, max_concurrent_platforms=max_conc)
+        a.config = SimpleNamespace(db_path=db_path, max_concurrent_platforms=max_conc,
+                                   scan_jitter_s=0.0, priority_reinject_users=8,
+                                   priority_reinject_seconds=1800.0)
         a._tripped = set()
         a._fetches = lambda p: True
         a._deleting_users = lambda n: frozenset()
+        a.priority_policy = SimpleNamespace(is_priority=lambda p, u: False)
         async def healthy(p): return True
         a._ensure_platform_healthy = healthy
         return a
@@ -2940,6 +2943,118 @@ def test_concurrent_platform_loops_seam() -> None:
         arch3, [mkplat("instagram"), mkplat("x")], None, rt, {}, None))
     ok(inflight["peak"] == 1,
        "ARCHIVER_MAX_CONCURRENT_PLATFORMS=1 → never more than one loop in flight")
+
+    # (e): staleness-first order — a never-scanned user leads a stale one, both
+    # lead a freshly-scanned one, on a real store with real checkpoints.
+    from datetime import timedelta
+    s = ItemStore.open(db_path)
+    s.set_last_run("x", "u1", rt - timedelta(days=5))   # stale
+    s.set_last_run("x", "u2", rt)                        # fresh
+    s.close()
+    def mkplat3(name, users):
+        return SimpleNamespace(name=name, users=users,
+                               inter_user_delay=lambda: 0.0)
+    arch4 = make_arch()
+    order = []
+    async def au4(platform, username, run_time, db):
+        order.append(username); return {"status": "ok"}
+    arch4._archive_user = au4
+    asyncio.run(Archiver._run_platforms(
+        arch4, [mkplat3("x", ("u2", "u1", "u3"))], None, rt, {}, None))
+    # u3 never scanned (front), then u1 (5d stale), then u2 (fresh) last.
+    ok(order == ["u3", "u1", "u2"],
+       f"staleness-first walk: never > stale > fresh ({order})")
+
+    # (f): priority users lead AND are re-injected mid-walk. Mark u1 priority,
+    # re-inject every 1 user, on an 8-user roster → u1 appears repeatedly and
+    # first.
+    arch5 = make_arch()
+    arch5.priority_policy = SimpleNamespace(
+        is_priority=lambda p, u: u == "p1")
+    arch5.config.priority_reinject_users = 2
+    arch5.config.priority_reinject_seconds = 0.0   # count-arm only
+    seq = []
+    async def au5(platform, username, run_time, db):
+        seq.append(username); return {"status": "ok"}
+    arch5._archive_user = au5
+    roster = ("a", "b", "c", "d", "p1", "e", "f")
+    asyncio.run(Archiver._run_platforms(
+        arch5, [mkplat3("x", roster)], None, rt, {}, None))
+    ok(seq[0] == "p1", f"priority user leads the walk ({seq[:3]})")
+    ok(seq.count("p1") >= 3,
+       f"priority user re-injected multiple times ({seq.count('p1')}x: {seq})")
+    ok(set(u for u in seq) == set(roster),
+       "every roster user still scanned at least once")
+
+    # (g): SMART auto-priority — a regular poster (many distinct post dates in
+    # the window) is auto-promoted and leads, without any explicit mark.
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    s2 = ItemStore.open(db_path)
+    today = _dt.now(_tz.utc)
+    for k in range(10):   # 'reg' posted on 10 distinct recent days
+        d = (today - _td(days=k)).strftime("%Y%m%d")
+        s2.add_item(source="archiver", platform="ap", username="reg",
+                    identifier=f"reg_{d}", file_path=f"/ap/reg/{d}",
+                    upload_date=d, file_size_bytes=1, title="t", priority=10)
+    old = (today - _td(days=400)).strftime("%Y%m%d")   # 'quiet' posted long ago
+    s2.add_item(source="archiver", platform="ap", username="quiet",
+                identifier="quiet_old", file_path="/ap/quiet/old",
+                upload_date=old, file_size_bytes=1, title="t", priority=10)
+    s2.close()
+    arch6 = make_arch()
+    arch6.config.auto_priority = True
+    arch6.config.auto_priority_window_days = 30.0
+    arch6.config.auto_priority_min_days = 8
+    arch6.config.auto_priority_refresh_days = 14.0
+    arch6.config.priority_manual_cap = 10
+    arch6.config.auto_priority_cap = 10
+    arch6.priority_policy = SimpleNamespace(is_priority=lambda p, u: False)
+    seq2 = []
+    async def au6(platform, username, run_time, db):
+        seq2.append(username); return {"status": "ok"}
+    arch6._archive_user = au6
+    asyncio.run(Archiver._run_platforms(
+        arch6, [mkplat3("ap", ("quiet", "reg"))], None, rt, {}, None))
+    ok(seq2 and seq2[0] == "reg",
+       f"auto-priority: regular poster leads the walk ({seq2})")
+
+    # (h): SEPARATE per-source caps — manual (up to manual_cap) and auto (up to
+    # auto_cap) never compete for slots; and the auto ranking is cached (not
+    # recomputed) within the refresh interval.
+    s3 = ItemStore.open(db_path)
+    for name, ndays in [("r1", 20), ("r2", 15), ("r3", 12), ("r4", 10)]:
+        for k in range(ndays):
+            d = (today - _td(days=k)).strftime("%Y%m%d")
+            s3.add_item(source="archiver", platform="cp", username=name,
+                        identifier=f"{name}_{d}", file_path=f"/cp/{name}/{d}",
+                        upload_date=d, file_size_bytes=1, title="t", priority=10)
+    s3.close()
+    archc = make_arch()
+    archc.config.auto_priority = True
+    archc.config.auto_priority_window_days = 30.0
+    archc.config.auto_priority_min_days = 8
+    archc.config.auto_priority_refresh_days = 14.0
+    archc.config.priority_manual_cap = 10            # manual cap (generous)
+    archc.config.auto_priority_cap = 2               # auto capped at 2
+    # m1 manual (kept regardless of post activity).
+    archc.priority_policy = SimpleNamespace(is_priority=lambda p, u: u == "m1")
+    dbc = ItemStore.open(db_path)
+    roster_c = ("m1", "r1", "r2", "r3", "r4", "z")
+    pset = Archiver._priority_users(archc, "cp", roster_c, dbc)
+    ok("m1" in pset, f"manual mark always in priority set ({pset})")
+    # manual(m1) independent of auto; auto capped at 2 → top-2 regulars r1,r2.
+    ok(pset == {"m1", "r1", "r2"},
+       f"separate caps: manual + top-2 auto, no slot competition ({pset})")
+    # Cache present + reused: mutate the stored ranking and confirm it's honored
+    # (proves we didn't recompute from the DB within the interval).
+    import json as _json
+    dbc.meta_set("auto_priority:cp", _json.dumps(
+        {"computed_at": today.strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "users": ["r4", "r3"]}))
+    pset2 = Archiver._priority_users(archc, "cp", roster_c, dbc)
+    ok(pset2 == {"m1", "r4", "r3"},
+       f"auto ranking served from cache within interval ({pset2})")
+    dbc.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -107,6 +107,27 @@ class DedupPolicy(BooleanPolicy):
         return self.is_enabled(platform, username)
 
 
+class PriorityPolicy(BooleanPolicy):
+    """Mark a (platform, user) as PRIORITY for scan ordering.
+
+    Priority users are walked FIRST in every cycle (in randomized order, not a
+    fixed sweep) and — via the orchestrator's re-injection — re-scanned again
+    partway through a long cycle, so regular/high-frequency posters stay fresh
+    instead of waiting a full multi-hour roster pass. It's a per-user mark on the
+    existing list, resolved hierarchically like every other policy (a
+    platform-scope `priority=true` would prioritize the whole platform, which is
+    rarely what you want — prefer per-user). Default OFF.
+
+    Set with `archiver priority set --platform X --user Y --on true`. Ordering
+    itself lives in core.scan_order; this policy only answers 'is this user
+    marked?'."""
+    KEY     = "priority"
+    DEFAULT = False
+
+    def is_priority(self, platform: str, username: str) -> bool:
+        return self.is_enabled(platform, username)
+
+
 class BatchPolicy:
     """Minimum-album-size gate for PLATFORM (archiver) uploads.
 

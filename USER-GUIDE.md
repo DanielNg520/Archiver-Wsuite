@@ -69,6 +69,47 @@ same change.
 pace, so slow Instagram no longer blocks X/TikTok. `ARCHIVER_MAX_CONCURRENT_PLATFORMS`
 caps it (`0`/unset = all; `1` = fully sequential, a rollback switch).
 
+## Scan order & priority users
+
+Each cycle the loop walks a platform's users **staleness-first**: whoever was
+scanned longest ago (or never) goes first. This matters because with a big roster
+and safety-first pacing a full pass can take many hours — so if the loop restarts
+mid-pass, the users a previous cycle didn't reach are now at the *front*, not
+starved at the back. (The old behavior was a fixed alphabetical sweep, which left
+late-alphabet accounts days behind.) A random jitter shuffles users of similar
+staleness so the order isn't a predictable sweep — also an anti-detection win.
+
+On top of that, you can mark **priority users** who lead every cycle *and* get
+re-scanned partway through a long pass, so your regular posters stay fresh:
+
+```bash
+archiver priority set --platform x --user someone --on true   # mark priority
+archiver priority                                             # show who's priority
+archiver priority unset --platform x --user someone           # back to normal
+```
+
+Two independent, **per-platform** caps keep the priority list bounded so the
+re-scans don't dominate a cycle: manual marks (default 10) and auto-detected
+regulars (default 10) never compete for slots.
+
+**Smart auto-priority (opt-in).** Turn it on and the loop auto-promotes your
+*regular posters* — accounts that posted on many distinct days recently — without
+marking them by hand. The selection is recomputed only every couple of weeks
+(cached in between), so it's stable and an account that goes quiet drops off at
+the next refresh. Manual marks never expire.
+
+| `.env` key | Default | What it does |
+|---|---|---|
+| `ARCHIVER_SCAN_JITTER_S` | `21600` (6h) | Random window that shuffles equal-staleness users. `0` = strict oldest-first |
+| `ARCHIVER_PRIORITY_MANUAL_CAP` | `10` | Max hand-marked priority users per platform (`0` = uncapped) |
+| `ARCHIVER_AUTO_PRIORITY_CAP` | `10` | Max auto-detected regulars per platform (`0` = uncapped) |
+| `ARCHIVER_PRIORITY_REINJECT_USERS` | `8` | Re-scan priority users after this many others… |
+| `ARCHIVER_PRIORITY_REINJECT_S` | `1800` (30m) | …or after this long — whichever comes first |
+| `ARCHIVER_AUTO_PRIORITY` | `false` | Enable smart auto-priority |
+| `ARCHIVER_AUTO_PRIORITY_WINDOW_DAYS` | `30` | Look-back window for "regular poster" |
+| `ARCHIVER_AUTO_PRIORITY_MIN_DAYS` | `8` | Distinct posting days in the window to qualify |
+| `ARCHIVER_AUTO_PRIORITY_REFRESH_DAYS` | `14` | How often the auto set is recomputed |
+
 ### Instagram stories (time-sensitive) — the fast lane
 
 Stories vanish in 24h, so they get a **separate, faster pass** decoupled from the

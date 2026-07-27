@@ -45,7 +45,10 @@ to Telegram inline. That coupling caused three problems this redesign fixes:
 
 3. **Live recording is real-time; archiving is batch.** They have opposite
    scheduling needs. Splitting them lets the recorder react in seconds while
-   the archiver runs every few hours.
+   the archiver runs every few hours. Within a cycle the archiver walks users
+   **staleness-first** (oldest-scanned first, with priority users leading and
+   re-injected) so no account is starved when a full pass takes hours — see
+   USER-GUIDE.md "Scan order & priority users".
 
 ## The one rule that holds it together
 

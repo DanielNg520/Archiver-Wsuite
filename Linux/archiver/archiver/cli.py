@@ -53,7 +53,7 @@ from .reconcile import (
 from core import ItemStore, DeletePolicy, RecorderDeletePolicy, DedupPolicy
 from core import (
     AutoIngestPolicy, CHAT_ID_PRIORITY, DeletionGuard, DownloadPolicy,
-    ProtectionPolicy,
+    ProtectionPolicy, PriorityPolicy,
 )
 from core import SortPolicy
 from core import cli as core_cli
@@ -502,6 +502,33 @@ def build_parser() -> argparse.ArgumentParser:
     sb_unset.add_argument("--platform", choices=PLATFORM_CHOICES)
     sb_unset.add_argument("--user", metavar="USERNAME",
                           help="Per-user override. Requires --platform.")
+
+    # ── priority (scan-order priority mark) ───
+    s_prio = sub.add_parser(
+        "priority",
+        help="Mark a user PRIORITY: walked first every cycle (randomized) and "
+             "re-scanned mid-cycle so regular posters stay fresh. Show or edit "
+             "per (platform, user).",
+    )
+    s_prio.add_argument("--platform", choices=PLATFORM_CHOICES)
+    s_prio.add_argument("--user", metavar="USERNAME")
+    prio_sub = s_prio.add_subparsers(dest="priority_action", required=False,
+                                     metavar="ACTION",
+                                     help="omit to print resolution; "
+                                          "'set'/'unset' to mutate config.toml")
+    prio_set = prio_sub.add_parser("set",
+        help="Turn priority on/off at global, per-platform, or per-user scope")
+    prio_set.add_argument("--platform", choices=PLATFORM_CHOICES)
+    prio_set.add_argument("--user", metavar="USERNAME",
+                          help="Per-user override. Requires --platform.")
+    prio_set.add_argument("--on", choices=["true", "false"], required=True,
+                          help="true = priority (scan first + re-inject); "
+                               "false = normal")
+    prio_unset = prio_sub.add_parser("unset",
+        help="Remove the priority override at the given scope")
+    prio_unset.add_argument("--platform", choices=PLATFORM_CHOICES)
+    prio_unset.add_argument("--user", metavar="USERNAME",
+                            help="Per-user override. Requires --platform.")
 
     # ── purge-sent (reclaim disk: delete on-disk copies of uploaded files) ───
     s_purge = sub.add_parser(
@@ -1208,6 +1235,17 @@ def cmd_safebrake(args, config: Config, db: ItemStore) -> int:
         action_attr = "safebrake_action",
         value_attr  = "on",
         cmd_label   = "safebrake",
+    )
+
+
+def cmd_priority(args, config: Config, db: ItemStore) -> int:
+    """Priority is just another BooleanPolicy (PriorityPolicy), so its
+    set/unset/show flow is identical to delete-/dedup-policy and safebrake."""
+    return _cmd_boolpolicy(
+        args, config, PriorityPolicy,
+        action_attr = "priority_action",
+        value_attr  = "on",
+        cmd_label   = "priority",
     )
 
 
@@ -2136,7 +2174,7 @@ def main() -> int:
 
     config_only = args.cmd in {
         "config", "platform", "run-settings", "migrate", "policy",
-        "dedup-policy", "safebrake", "purge-sent", "stats", "ingest", "queue",
+        "dedup-policy", "safebrake", "priority", "purge-sent", "stats", "ingest", "queue",
         "backfill", "auto-ingest", "local", "download", "sort", "auto-sort",
         "auto-retry", "banned", "delete", "deleting",
     }
@@ -2193,6 +2231,7 @@ def main() -> int:
             "policy":       cmd_policy,
             "dedup-policy": cmd_dedup_policy,
             "safebrake":    cmd_safebrake,
+            "priority":     cmd_priority,
             "purge-sent":   cmd_purge_sent,
             "migrate":      cmd_migrate,
         }
