@@ -34,11 +34,11 @@ dispatcher down (`ops health`, then `ops unload`) for a fully clean pass — a
 foreign file the dispatcher is about to send could otherwise race the unlink.
 
 Usage (from repo root):
-    PYTHONPATH="core" python -m tools.x_prune_foreign_gifs            # dry-run, foreign only
-    PYTHONPATH="core" python -m tools.x_prune_foreign_gifs --gifs     # dry-run, + GIF heuristic
-    PYTHONPATH="core" python -m tools.x_prune_foreign_gifs --apply
-    PYTHONPATH="core" python -m tools.x_prune_foreign_gifs --apply --gifs
-    PYTHONPATH="core" python -m tools.x_prune_foreign_gifs --apply --user someguy
+    PYTHONPATH="core" python3 -m tools.x_prune_foreign_gifs            # dry-run, foreign only
+    PYTHONPATH="core" python3 -m tools.x_prune_foreign_gifs --gifs     # dry-run, + GIF heuristic
+    PYTHONPATH="core" python3 -m tools.x_prune_foreign_gifs --apply
+    PYTHONPATH="core" python3 -m tools.x_prune_foreign_gifs --apply --gifs
+    PYTHONPATH="core" python3 -m tools.x_prune_foreign_gifs --apply --user someguy
 """
 
 from __future__ import annotations

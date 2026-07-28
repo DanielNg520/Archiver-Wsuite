@@ -1,8 +1,8 @@
 # Media Archiver Suite
 
 A four-process system that archives social media (X, Instagram, TikTok) and
-TikTok live streams to Telegram, losslessly and unattended. Runs on Windows
-under Task Scheduler.
+TikTok live streams to Telegram, losslessly and unattended. Runs on Linux
+under systemd.
 
 ```
 ┌─────────────┐       ┌──────────────┐
@@ -22,7 +22,7 @@ under Task Scheduler.
               │ (owns session)│
               └───────────────┘
 
-    ops  ──→ health checks + Task Scheduler control (reads everything, owns nothing)
+    ops  ──→ health checks + systemd/service control (reads everything, owns nothing)
 ```
 
 ## Why four processes instead of one
@@ -72,12 +72,12 @@ separate processes — not from giving them disjoint code.
 | [DESIGN.md](DESIGN.md) | dense code map — modules, seams, choke points, invariants |
 | [PROJECT_MAP.md](PROJECT_MAP.md) | 30-second orientation card |
 | [USER-GUIDE.md](USER-GUIDE.md) | task-oriented daily use — every upload path + commands |
-| [AUTOMATION.md](AUTOMATION.md) | Task Scheduler setup, what each automated piece does |
+| [AUTOMATION.md](AUTOMATION.md) | systemd setup, what each automated piece does |
 | [ops/RUNBOOK.md](ops/RUNBOOK.md) | failure recovery procedures |
 | [archiver/README.md](archiver/README.md) | archiver CLI, env vars, platforms |
 | [dispatcher/README.md](dispatcher/README.md) | dispatcher CLI, env vars, burner account, queue smoke test |
 | [recorder/README.md](recorder/README.md) | recorder config, split mode, cookies, quality/fallback behavior |
-| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (MSIX virtualization, `python -m pipx`, test invocation) |
+| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (self-contained `.config`, `python -m pipx`, test invocation) |
 
 Historical plan docs (kept as period records, paths may be outdated):
 [CONVERSION_PLAN.md](CONVERSION_PLAN.md) / [WINDOWS_PORT.md](WINDOWS_PORT.md)
@@ -87,37 +87,32 @@ ban quarantine + two-root storage split).
 
 ---
 
-## Install (Windows)
+## Install (Linux)
 
 The suite installs as **pipx apps with the shared `core` injected editable** —
 so day-to-day you just type `dispatcher status`, `ops health`, etc. No
 `PYTHONPATH`, no `python -m`.
 
-```powershell
-# 1. UTF-8 mode — the ONE Windows delta. Without it the workers' status glyphs
-#    (● ✓ →) crash with UnicodeEncodeError whenever stdout is redirected (Task
-#    Scheduler capture, pipes). Persistent, per-user; restart the shell after.
-setx PYTHONUTF8 1
-
-# 2. Install each app as its own pipx venv, then inject the shared core
+```bash
+# 1. Install each app as its own pipx venv, then inject the shared core
 #    library editable (apps don't depend on core directly). pipx puts
-#    dispatcher/recorder/archiver/ops on PATH via %USERPROFILE%\.local\bin.
+#    dispatcher/recorder/archiver/ops on PATH via ~/.local/bin.
 #    Always `python -m pipx` (never bare `pipx`) — stale shims shadow the exe
 #    in some shells (see CLAUDE.md).
-python -m pipx install .\dispatcher --python 3.13
-python -m pipx install .\recorder   --python 3.13
-python -m pipx install .\archiver   --python 3.13
-python -m pipx install .\ops        --python 3.13
+python -m pipx install ./dispatcher --python 3.13
+python -m pipx install ./recorder   --python 3.13
+python -m pipx install ./archiver   --python 3.13
+python -m pipx install ./ops        --python 3.13
 
-python -m pipx inject --editable dispatcher     .\core
-python -m pipx inject --editable recorder       .\core
-python -m pipx inject --editable media-archiver .\core   # archiver's package name
-python -m pipx inject --editable ops            .\core
+python -m pipx inject --editable dispatcher     ./core
+python -m pipx inject --editable recorder       ./core
+python -m pipx inject --editable media-archiver ./core   # archiver's package name
+python -m pipx inject --editable ops            ./core
 
-# 3. Recorder's headless-browser download (age-restricted lives). OPTIONAL:
+# 2. Recorder's headless-browser download (age-restricted lives). OPTIONAL:
 #    the recorder self-heals a missing/stale Chromium on first use (auto-runs
 #    this once), but pre-running it avoids a one-time inline delay mid-stream.
-& "$env:USERPROFILE\pipx\venvs\recorder\Scripts\python.exe" -m playwright install chromium
+~/.local/pipx/venvs/recorder/bin/python -m playwright install chromium
 ```
 
 Install order does not matter — `core` creates the schema idempotently
@@ -125,11 +120,11 @@ Install order does not matter — `core` creates the schema idempotently
 process connects. There is nothing to run by hand.
 
 `hachoir` (Telethon's video-metadata backend) is a **declared dispatcher
-dependency**, so a clean `python -m pipx install .\dispatcher` pulls it in. Without it,
+dependency**, so a clean `python -m pipx install ./dispatcher` pulls it in. Without it,
 album videos upload as 1×1 static images and the dispatcher refuses to start
 (`python -m pipx inject dispatcher hachoir` to repair an old venv).
 
-**First run requires interactive Telegram auth once** (Task Scheduler can't
+**First run requires interactive Telegram auth once** (systemd can't
 answer the SMS prompt) — see [AUTOMATION.md](AUTOMATION.md) step 1.
 
 **After editing code:** `python -m pipx reinstall <package>` (`dispatcher`, `recorder`,
@@ -141,68 +136,70 @@ Requirements on this box (already satisfied): Python 3.13; `ffmpeg`/`ffprobe`,
 
 ### Daily use — bare commands, from anywhere
 
-```powershell
+```bash
 ops health          # system status
 dispatcher start    # drain the queue → Telegram
 recorder start      # watch TikTok lives
 archiver start      # VOD pull cycle
 ```
 
-To run unattended (auto-start at logon, restart on crash) register the Task
-Scheduler services once — see [AUTOMATION.md](AUTOMATION.md):
+To run unattended (auto-start at login, restart on crash) register the
+systemd --user services once — see [AUTOMATION.md](AUTOMATION.md):
 
-```powershell
-ops install         # register task definitions (resolves the pipx .exes)
-ops load            # start + enable all workers
+```bash
+ops install         # write the systemd unit files (resolves the pipx bins)
+ops load            # enable --now all workers
 ```
 
 ---
 
 ## On-disk layout
 
-The suite is fully self-contained under the `.archive` root: config, DB,
-sessions, cookies, logs, and locks live in `.archive\.config` (see
-`core.platform.paths`; legacy pre-2026-07 installs under `%APPDATA%` are
-picked up until `tools/migrate_config_to_archive.py --apply` moves them —
-`%CONFIG%` below means `C:\Users\danie\.archive\.config`).
+On **Linux** the suite is self-contained **inside the checkout**: config, DB,
+sessions, cookies, logs, and locks all live in `<repo>/.config` (git-ignored),
+so the checkout carries its own state and nothing lands in `~/.config`. Set
+`ARCHIVER_CONFIG_HOME` to relocate it; `XDG_CONFIG_HOME` is intentionally *not*
+consulted (it would defeat self-containment). `$CONFIG` below means
+`<repo>/.config`. (On Windows the equivalent self-contained root is
+`~/.archive/.config`; see `core.platform.paths`.)
 
 | What | Where (this machine) |
 |------|----------------------|
-| config / DB / sessions / cookies / logs / locks | `%CONFIG%\archiver-suite`, `%CONFIG%\dispatcher`, `%CONFIG%\recorder` |
-| media output (`OUTPUT_DIR`) | `C:\Users\danie\.archive` |
+| config / DB / sessions / cookies / logs / locks | `$CONFIG/archiver-suite`, `$CONFIG/dispatcher`, `$CONFIG/recorder` |
+| media output (`OUTPUT_DIR`) | `~/.archive` |
 | chat_id route folders (`ROUTES_DIR`) | defaults to `OUTPUT_DIR` (single-tree layout); set it to move ONLY the route folders to another volume — everything else stays put |
-| recorder output | `C:\Users\danie\.archive\.records` (dot-prefixed so the orphaned scanner skips it) |
-| worker logs (service capture) | `%CONFIG%\archiver-suite\logs` |
-| AutoSplitter (oversize-video splitter) | `C:\Users\danie\Documents\Coding\autosplitter` — sibling checkout, auto-discovered by `core.media_prep`; no config needed |
+| recorder output | `~/.archive/.records` (dot-prefixed so the orphaned scanner skips it) |
+| worker logs (service capture) | `$CONFIG/archiver-suite/logs` |
+| AutoSplitter (oversize-video splitter) | `~/Coding/autosplitter` — sibling checkout, auto-discovered by `core.media_prep`; no config needed |
 
 ```
-%CONFIG%\archiver-suite\
+$CONFIG/archiver-suite/
     suite.db                THE ONE DATABASE: items + checkpoints + circuit
                             + metadata (+ -wal, -shm while running)
     config.toml             shared policy store (user lists + per-user
                             delete-after-upload / dedup policies)
     .env                    OUTPUT_DIR, ROUTES_DIR + shared tunables
-    cookies\ , logs\ , locks\ , launchers\
+    cookies/ , logs/ , locks/
 
-%CONFIG%\dispatcher\
+$CONFIG/dispatcher/
     .env                    Telegram credentials + chat routing
     session.session         dispatcher's Telegram session
 
-%CONFIG%\recorder\
+$CONFIG/recorder/
     .env                    TIKTOK_COOKIES_FILE
     config.toml             priority-ordered TikTok user list + output_dir;
                             optional split mode (split_at_chunk_size/_chunk_gib)
 
-C:\Users\danie\.archive\
-    x\ tiktok\ instagram\ …   platform download folders (per-user subfolders)
-    <platform>\.deleted\      quarantined banned users (moved, not deleted —
+~/.archive/
+    x/ tiktok/ instagram/ …   platform download folders (per-user subfolders)
+    <platform>/.deleted/      quarantined banned users (moved, not deleted —
                               restored by `banned unban`; scanners skip dot-dirs)
-    [<label>~]<chat_id>[.t<topic>]\   orphaned route folders (loose files → a
+    [<label>~]<chat_id>[.t<topic>]/   orphaned route folders (loose files → a
                               chat); optional `<label>~` prefix is cosmetic
                               (stripped before routing), optional `.t<topic>`
                               targets a forum topic. Live under ROUTES_DIR once
                               the two-root split is applied; here while unset
-    .records\                 recorder output
+    .records/                 recorder output
 ```
 
 > **Two-root split:** `ROUTES_DIR` (unset ⇒ `= OUTPUT_DIR`, byte-identical
@@ -264,7 +261,7 @@ registers the file in `suite.db` as a pending dispatcher item. Records one
 stream at a time; between recordings it re-scans the list so a higher-priority
 user who just went live gets picked up.
 
-Holds a lockfile (`%CONFIG%\archiver-suite\locks\tiktok.lock`) only while
+Holds a lockfile (`$CONFIG/archiver-suite/locks/tiktok.lock`) only while
 actively recording, so the archiver knows to skip TikTok downloads during that
 window. Live detection uses the `TikTokLive` library (not fragile scraping).
 
@@ -272,9 +269,9 @@ Detailed docs: recorder source headers; [DESIGN.md](DESIGN.md).
 
 ### ops — health checks and service management
 
-Reads the other three (via Task Scheduler, the SQLite DB, and the lockfile) but
-imports none of them. The service seam is `core.platform.service` (Task
-Scheduler tasks on Windows, launchd on macOS — same verbs on both). Provides:
+Reads the other three (via systemd, the SQLite DB, and the lockfile) but
+imports none of them. The service seam is `core.platform.service` (systemd
+tasks on Linux, launchd on macOS — same verbs on both). Provides:
 
 ```
 ops health        one-shot system status

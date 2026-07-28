@@ -10,14 +10,14 @@ recorder ──┐
 archiver ──┘
 ```
 
-All workers run under Task Scheduler (`com.duy.*`). Manage them with the `ops`
-tool, not raw `schtasks`, unless debugging Task Scheduler itself.
+All workers run under systemd --user (`com.duy.*`). Manage them with the `ops`
+tool, not raw `systemctl --user`, unless debugging systemd itself.
 
 ---
 
 ## Quick reference
 
-```powershell
+```bash
 ops health                 # is everything alive? queue depth? disk?
 ops watch                  # same, auto-refreshing
 ops load                   # start + enable all workers (all, or `ops load <name>`)
@@ -26,7 +26,7 @@ ops restart dispatcher     # restart one (dispatcher|recorder|archiver)
 ops update                 # redeploy on a code change (see "Updating the code")
 ```
 
-Log locations (all under `C:\Users\danie\.archive\.config\archiver-suite\logs\`):
+Log locations (all under `<repo>/.config/archiver-suite/logs\`):
 - Captured worker stdout/err: `<name>.out.log` / `<name>.err.log`
 - Rotated daily by the `logrotate` calendar job (copytruncate, gzip history)
 
@@ -39,7 +39,7 @@ before app logging started.
 
 From the repo root, one command does the whole safe-redeploy dance:
 
-```powershell
+```bash
 ops update
 ```
 
@@ -62,7 +62,7 @@ What it does, in order (package-aware — every case does the **minimum**):
 2. **Per-worker graceful drain** — only for the workers being restarted, each
    reaching its own stop point on its own clock (they need not be idle at the
    same instant):
-   - **dispatcher** → writes a cooperative stop-flag (`…\locks\dispatcher.stop`);
+   - **dispatcher** → writes a cooperative stop-flag (`…/locks/dispatcher.stop`);
      the drain loop checks it *between* batches and exits only after the
      file/album currently uploading finishes — never chopped mid-send. Waits up
      to `--stop-timeout` seconds (default 300).
@@ -72,8 +72,8 @@ What it does, in order (package-aware — every case does the **minimum**):
      the recorder is actually being restarted *and* recording.)
    - either falls back to a hard stop via the unload if its budget elapses.
 3. **Unload only the affected workers**, then **wait for their processes to
-   exit** + a short settle so the venv/exe locks are released before the
-   reinstall overwrites them (guards the Windows `WinError 32` shim lock).
+   exit** + a short settle, so the reinstall never overwrites a venv a worker is
+   still importing from (a half-updated venv mid-import).
 4. **Reinstall** only the changed worker packages (each pipx step retried a few
    times to ride out a transient exe lock): `pipx install --force ./archiver`
    (the app is **`media-archiver`**) / `./dispatcher` / `./recorder`, then
@@ -92,9 +92,9 @@ they're saved, and `ops update` needs only to record them. Do this once (and
 after any `ops` **dependency or console-script** change, the lone case editable
 can't pick up):
 
-```powershell
-python -m pipx install --force --editable .\ops
-python -m pipx inject ops --force --editable .\core
+```bash
+python -m pipx install --force --editable ./ops
+python -m pipx inject ops --force --editable ./core
 ```
 
 **Two naming traps** (why the hand-typed inject fails):
@@ -108,15 +108,15 @@ python -m pipx inject ops --force --editable .\core
 itself the first time (and after any edit to `ops`/`dispatcher` sources — `core`
 edits are editable and live on restart), reinstall those by hand once:
 
-```powershell
-python -m pipx install --force .\ops
-python -m pipx inject ops --force --editable .\core
-python -m pipx install --force .\dispatcher
-python -m pipx inject media-archiver --force --editable .\core
+```bash
+python -m pipx install --force ./ops
+python -m pipx inject ops --force --editable ./core
+python -m pipx install --force ./dispatcher
+python -m pipx inject media-archiver --force --editable ./core
 ```
 
 > If a package's absolute path changed, also run `ops uninstall && ops install`
-> to regenerate the Task Scheduler definitions (they embed absolute paths).
+> to regenerate the systemd unit definitions (they embed absolute paths).
 
 ---
 
@@ -126,10 +126,10 @@ Symptom: `ops health` shows dispatcher running but queue `pending` only climbs,
 never `sent`. Log shows auth/session errors.
 
 Telethon sessions expire or get invalidated (password change, logout-all-devices,
-too-long offline). Re-auth is interactive, so Task Scheduler must be out of the
+too-long offline). Re-auth is interactive, so systemd must be out of the
 way:
 
-```powershell
+```bash
 ops unload dispatcher
 dispatcher start                            # complete the SMS code prompt
 # wait for "connected", confirm a test send drains, then Ctrl-C
@@ -146,13 +146,13 @@ The queue is durable — nothing is lost while the session is down. Jobs wait at
 Symptom: recorder never finds anyone live even when they are; or archiver TikTok
 health check fails. Cookies from your browser go stale.
 
-```powershell
+```bash
 archiver cookies refresh                    # pulls fresh cookies from Firefox
 ops restart recorder
 ```
 
-The recorder reads `TIKTOK_COOKIES_FILE` from `C:\Users\danie\.archive\.config\recorder\.env`. On this
-machine it points at `C:\Users\danie\.archive\.config\archiver-suite\tiktok.txt`, so the archiver
+The recorder reads `TIKTOK_COOKIES_FILE` from `<repo>/.config/recorder/.env`. On this
+machine it points at `<repo>/.config/archiver-suite\tiktok.txt`, so the archiver
 refresh covers both.
 
 ---
@@ -169,19 +169,19 @@ Symptom: a worker crashes on startup with `database disk image is malformed`, or
 
 Prefer the repo's recovery tool, which salvages rows and preserves backups:
 
-```powershell
+```bash
 ops unload
-python tools\recover_suite_db.py            # inspect
-python tools\recover_suite_db.py --apply    # recover + back up the corrupt copy
+python tools/recover_suite_db.py            # inspect
+python tools/recover_suite_db.py --apply    # recover + back up the corrupt copy
 ops load
 ops health
 ```
 
 Manual fallback if you need it (`sqlite3` on PATH):
 
-```powershell
+```bash
 ops unload
-cd $env:USERPROFILE\.archive\.config\archiver-suite
+cd <repo>/.config\archiver-suite
 sqlite3 suite.db ".recover" | sqlite3 suite_recovered.db
 Rename-Item suite.db suite.db.corrupt
 Rename-Item suite_recovered.db suite.db
@@ -203,17 +203,17 @@ A yt-dlp capture can hang if a stream half-dies (socket open, no data). Restart
 the recorder — it terminates the capture cleanly (whole process tree) and
 releases the lock on shutdown:
 
-```powershell
+```bash
 ops restart recorder
 ```
 
 If the lock is STILL held after restart (stale lock — recorder was force-killed
 previously and `__exit__` never ran):
 
-```powershell
-Get-Content $env:USERPROFILE\.archive\.config\archiver-suite\locks\tiktok.lock   # check the pid inside
+```bash
+cat <repo>/.config/archiver-suite/locks/tiktok.lock   # check the pid inside
 # if that pid is dead:
-Remove-Item $env:USERPROFILE\.archive\.config\archiver-suite\locks\tiktok.lock
+rm <repo>/.config/archiver-suite/locks/tiktok.lock
 ```
 
 The archiver only skips TikTok *downloads* while this lock exists; a stale lock
@@ -222,20 +222,21 @@ liveness-gated and self-heals a dead one, but clearing it removes any doubt.)
 
 ---
 
-## A folder keeps reappearing on a drive you cleared
+## A folder keeps reappearing on a volume you cleared
 
-Symptom: an output folder you deleted/formatted (e.g. an old `D:\...` root)
-recreates itself, empty, and its rows error with `WinError 1005`
-(volume not recognized).
+Symptom: an output folder you deleted (e.g. an old `/mnt/...` mount that is now
+unmounted) recreates itself, empty, and its rows error with `ENODEV` / `ENOENT`
+(no such device / directory).
 
 Cause: stale `items` rows still hold the old path; a worker retrying them
 recreates the parent via `mkdir`. Stop writers, delete the dead rows, remove the
 folder:
 
-```powershell
+```bash
 ops unload
-python -c "import sqlite3,os; d=os.path.expanduser(r'~\.archive\.config\archiver-suite\suite.db'); c=sqlite3.connect(d); print('deleting', c.execute(\"DELETE FROM items WHERE REPLACE(file_path,char(92),'/') LIKE 'D:/%'\").rowcount); c.commit(); c.execute('PRAGMA wal_checkpoint(TRUNCATE)')"
-Remove-Item 'D:\<stale-folder>' -Recurse -Force
+# Replace /mnt/dead-volume with the stale path prefix these rows point at.
+python3 -c "import sqlite3,os; d=os.path.expanduser('<repo>/.config/archiver-suite/suite.db'); c=sqlite3.connect(d); print('deleting', c.execute(\"DELETE FROM items WHERE file_path LIKE '/mnt/dead-volume/%'\").rowcount); c.commit(); c.execute('PRAGMA wal_checkpoint(TRUNCATE)')"
+rm -rf /mnt/dead-volume/<stale-folder>
 ops load
 ```
 
@@ -249,7 +250,7 @@ Back up `suite.db` first; verify the rows aren't the only copy of live data
 There is no manual send path by design — the dispatcher is the only process that
 talks to Telegram. Fix the dispatcher, don't bypass it. To inspect what's stuck:
 
-```powershell
+```bash
 dispatcher status                            # counts + top pending
 dispatcher queue list --status failed --limit 100
 dispatcher queue retry <id>                  # reset a failed row to pending
@@ -269,7 +270,7 @@ dispatcher healthy. Usually the **min-batch gate**: platform albums are held
 until `min_batch_size` (default 10) files accumulate, or `min_batch_max_wait_h`
 (default 168h = 7 days) elapses.
 
-```powershell
+```bash
 dispatcher config set min_batch_size 1          # send whatever's pending now
 ops restart dispatcher                          # policies read at startup
 ```
@@ -316,7 +317,7 @@ Since 2026-07-12 this should not recur — and if it does, it **self-heals**:
 
 Manual fallback (archiver down, or you want it out NOW):
 
-```powershell
+```bash
 # 1. identify the file (see the failed row's file_path)
 # 2. split it losslessly next to itself (~3 parts for a 4-5 GB file)
 ffmpeg -v error -i IN.mp4 -c copy -f segment -segment_format mp4 `
@@ -330,40 +331,23 @@ ffmpeg -v error -i IN.mp4 -c copy -f segment -segment_format mp4 `
 
 ---
 
-## Config migration (%APPDATA% → .archive\.config)
+## Config location (self-contained checkout)
 
-Since 2026-07 the suite is self-contained: all per-app config lives under
-`C:\Users\danie\.archive\.config\<app>`. `core.platform.paths` auto-detects the
-new root (presence of `.archive\.config\archiver-suite`); until then a legacy
-`%APPDATA%` install keeps working untouched. To migrate a legacy box:
+On Linux the suite is self-contained **inside the checkout**: every per-app
+config dir (plus the DB, sessions, cookies, logs, and locks) lives under
+`<repo>/.config/<app>`, resolved by `core.platform.paths._config_home` from the
+editable-injected `core`'s own `__file__` — so it is correct in every pipx venv
+and moves with the checkout. There is nothing to migrate and no home-directory
+state to clean up: delete the checkout and the suite is gone.
 
-```powershell
-ops unload                                    # stop + disable workers
-ops uninstall                                 # tasks + launchers embed old log paths
-python tools\migrate_config_to_archive.py     # dry-run: inspect the plan
-python tools\migrate_config_to_archive.py --apply
-python -m pipx install --force .\dispatcher   # non-editable pkgs re-copy their code
-ops install                                   # regenerate tasks at the new paths
-ops load
-```
+`ARCHIVER_CONFIG_HOME` overrides the root on any OS (point it elsewhere to keep
+config outside the checkout). `XDG_CONFIG_HOME` is deliberately **not** consulted
+on Linux — honoring it (usually `~/.config`) would defeat self-containment.
 
-The tool refuses to run while workers are alive and rewrites the absolute
-paths inside the moved `.env` files (session, log, cookie paths).
-`ARCHIVER_CONFIG_HOME` overrides the root on any OS.
-
-> **Run this from a NORMAL user shell — never from inside an MSIX-packaged
-> app** (Claude desktop, anything under `AppData\Local\Packages\...`).
-> Packaged processes get `%APPDATA%` filesystem-virtualized: their "moves" of
-> Roaming dirs only touch a per-app overlay
-> (`...\Packages\<app>\LocalCache\Roaming`), the real dirs stay put, and the
-> restarted workers then find a half-copied target and start a FRESH suite.db
-> (this exact split-brain happened on 2026-07-12; recovered from the intact
-> real DB, ~30 duplicate sends). If the counts look wrong right after a
-> migration (`sent` near zero), `ops unload` immediately and check whether
-> `%APPDATA%\archiver-suite\suite.db` still exists — that one is the truth.
-
-*Status: this box was migrated 2026-07-12; `%APPDATA%` no longer holds suite
-config here.*
+> Legacy note: the Windows build of this suite migrated config out of
+> `%APPDATA%` into a self-contained `~/.archive/.config` root; that path and the
+> MSIX-virtualization caveat around it are Windows-only history and do not apply
+> to this Linux port.
 
 ---
 
@@ -375,11 +359,11 @@ to keep route folders on a separate volume from the platform downloads/records.
 Route folders are named `[<label>~]<chat_id>[.t<topic>]` — the `<label>~`
 prefix is cosmetic (stripped before routing), `.t<topic>` targets a forum topic.
 
-```powershell
-ops unload                                            # workers MUST be down
-python tools\migrate_split_roots.py --dest D:\routes  # dry-run: inspect
-python tools\migrate_split_roots.py --dest D:\routes --apply
-# then set ROUTES_DIR=D:\routes in .archive\.config\archiver-suite\.env
+```bash
+ops unload                                                  # workers MUST be down
+python3 tools/migrate_split_roots.py --dest /mnt/routes     # dry-run: inspect
+python3 tools/migrate_split_roots.py --dest /mnt/routes --apply
+# then set ROUTES_DIR=/mnt/routes in <repo>/.config/archiver-suite/.env
 ops load
 ```
 
@@ -390,7 +374,7 @@ ops load
 >
 > The move is **cross-drive** (copy+delete), so the destination volume needs
 > free space ≥ the route folders' total size; the source stays intact until
-> each folder's copy completes. `WinError 112` mid-run = destination full —
+> each folder's copy completes. `ENOSPC` (no space left) mid-run = destination full —
 > free space and re-run (already-moved folders are skipped as clashes).
 
 *Status (2026-07-17): `ROUTES_DIR=D:\routes` is set; the physical folder move is
@@ -418,7 +402,7 @@ tight. If it's getting tight:
   (`archiver policy` / dispatcher delete policy).
 - The archiver self-purges already-sent files on ENOSPC, but that's a last
   resort, not a strategy.
-- Recorder output (`C:\Users\danie\.archive\.records`) is NOT auto-deleted unless
+- Recorder output (`~/.archive/.records`) is NOT auto-deleted unless
   the dispatcher's `delete_after_upload_records` policy is on. Live recordings
   are large — check there first.
 
@@ -426,7 +410,7 @@ tight. If it's getting tight:
 
 ## Sanity checklist after any intervention
 
-```powershell
+```bash
 ops health
 ```
 

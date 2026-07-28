@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def _log_paths(tag: str) -> "tuple[Path, Path]":
     return d / f"{tag}.out.log", d / f"{tag}.err.log"
 
 
-if os.name == "nt":                                   # ── Windows / Task Scheduler ──
+if sys.platform == "win32":                           # ── Windows / Task Scheduler ──
 
     import csv as _csv
     import getpass
@@ -317,7 +318,7 @@ if os.name == "nt":                                   # ── Windows / Task Sc
             return "enabled"                      # "Ready", or a localized string
         return None
 
-else:                                                 # ── POSIX / launchd ──
+elif sys.platform == "darwin":                        # ── macOS / launchd ──
 
     _LAUNCH_AGENTS = Path("~/Library/LaunchAgents").expanduser()
 
@@ -454,3 +455,122 @@ else:                                                 # ── POSIX / launchd �
         if out.returncode == 0:
             return "enabled"
         return "disabled" if definition_exists(label) else None
+
+else:                                                 # ── Linux / systemd ──
+
+    _SYSTEMD_USER = Path("~/.config/systemd/user").expanduser()
+
+    def log_dir() -> Path:
+        return Path("~/.local/log").expanduser()
+
+    def _service_path(label: str) -> Path:
+        return _SYSTEMD_USER / f"{label}.service"
+
+    def _timer_path(label: str) -> Path:
+        return _SYSTEMD_USER / f"{label}.timer"
+
+    def _service_unit(spec: JobSpec) -> str:
+        out, err = _log_paths(spec.tag)
+        args_str = " ".join([spec.program] + spec.args)
+
+        # A calendar job is a one-shot triggered by its .timer: it runs once and
+        # exits. It must NOT carry Restart=always — systemd would relaunch it
+        # every RestartSec seconds in an endless loop the moment it succeeds.
+        if spec.kind == "calendar":
+            restart_block = "Type=oneshot\n"
+        else:
+            restart_block = "Restart=always\nRestartSec=30\n"
+
+        return (
+            "[Unit]\n"
+            f"Description=archiver-suite {spec.tag}\n"
+            "After=network.target\n"
+            "\n"
+            "[Service]\n"
+            f"ExecStart={args_str}\n"
+            f"{restart_block}"
+            f"StandardOutput=append:{out}\n"
+            f"StandardError=append:{err}\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+
+    def _timer_unit(spec: JobSpec) -> str:
+        hour, minute = spec.calendar or (4, 5)
+        return (
+            "[Unit]\n"
+            f"Description=archiver-suite calendar {spec.tag}\n"
+            "\n"
+            "[Timer]\n"
+            f"OnCalendar=*-*-* {hour:02d}:{minute:02d}:00\n"
+            "Persistent=true\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=timers.target\n"
+        )
+
+    def install(spec: JobSpec) -> None:
+        _SYSTEMD_USER.mkdir(parents=True, exist_ok=True)
+        log_dir().mkdir(parents=True, exist_ok=True)
+        if spec.kind == "calendar":
+            _service_path(spec.label).write_text(_service_unit(spec))
+            _timer_path(spec.label).write_text(_timer_unit(spec))
+        else:
+            _service_path(spec.label).write_text(_service_unit(spec))
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+
+    def uninstall(label: str) -> None:
+        s = _service_path(label)
+        t = _timer_path(label)
+        if s.exists():
+            s.unlink()
+        if t.exists():
+            t.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+
+    def load(label: str) -> "tuple[bool, str]":
+        unit = f"{label}.timer" if _timer_path(label).exists() else f"{label}.service"
+        r = subprocess.run(["systemctl", "--user", "enable", "--now", unit],
+                           capture_output=True, text=True)
+        return (r.returncode == 0, "loaded" if r.returncode == 0 else r.stderr.strip())
+
+    def unload(label: str) -> "tuple[bool, str]":
+        unit = f"{label}.timer" if _timer_path(label).exists() else f"{label}.service"
+        r = subprocess.run(["systemctl", "--user", "disable", "--now", unit],
+                           capture_output=True, text=True)
+        return (r.returncode == 0, "unloaded" if r.returncode == 0 else r.stderr.strip())
+
+    def restart(label: str) -> "tuple[bool, str]":
+        r = subprocess.run(["systemctl", "--user", "restart", f"{label}.service"],
+                           capture_output=True, text=True)
+        return (r.returncode == 0, "restarted" if r.returncode == 0 else r.stderr.strip())
+
+    def definition_exists(label: str) -> bool:
+        return _service_path(label).exists()
+
+    def running_pid(label: str) -> "int | None":
+        r = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", f"{label}.service"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        line = r.stdout.strip()
+        if line.startswith("MainPID="):
+            pid_str = line.split("=", 1)[1]
+            if pid_str != "0" and pid_str.isdigit():
+                return int(pid_str)
+        return None
+
+    def job_state(label: str) -> "str | None":
+        if not definition_exists(label):
+            return None
+        unit = f"{label}.timer" if _timer_path(label).exists() else f"{label}.service"
+        r = subprocess.run(["systemctl", "--user", "is-active", unit],
+                           capture_output=True, text=True)
+        if r.stdout.strip() == "active":
+            return "running"
+        r2 = subprocess.run(["systemctl", "--user", "is-enabled", unit],
+                            capture_output=True, text=True)
+        if r2.stdout.strip() == "enabled":
+            return "enabled"
+        return "disabled"

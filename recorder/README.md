@@ -14,20 +14,20 @@ the hub docs: [../README.md](../README.md) (architecture, install, layout),
 
 ## Run
 
-```powershell
-recorder start        # watch + record (the Task Scheduler service runs this)
+```bash
+recorder start        # watch + record (the systemd service runs this)
 recorder status       # who's live / being recorded right now
 recorder stats        # DB counts
 recorder record <user>            # one-shot: record a single user now
 recorder config add|remove|list|priority   # manage the watched-users list
 ```
 
-## Config — `C:\Users\danie\.archive\.config\recorder\`
+## Config — `<repo>/.config/recorder/`
 
 ```toml
 # config.toml
 [recorder]
-output_dir = "C:\\Users\\danie\\.archive\\.records"   # dot-prefixed: orphaned scanner skips it
+output_dir = "~/.archive/.records"   # dot-prefixed: orphaned scanner skips it
 split_at_chunk_size = true    # optional split mode: every recording over…
 split_chunk_gib     = 2.0     # …this size is cut into <=2 GiB album parts
 
@@ -37,7 +37,7 @@ users = [ "someuser", "another" ]   # order = priority when several go live
 
 ```ini
 # .env
-TIKTOK_COOKIES_FILE=C:\Users\danie\.archive\.config\archiver-suite\tiktok.txt
+TIKTOK_COOKIES_FILE=<repo>/.config/archiver-suite/tiktok.txt
 ```
 
 Cookies are shared with the archiver's TikTok extractor and auto-refreshed

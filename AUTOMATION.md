@@ -1,6 +1,6 @@
 # AUTOMATION.md — Running the suite unattended
 
-The complete guide to automating all four processes via Windows Task Scheduler,
+The complete guide to automating all four processes via systemd user services,
 plus what each automated piece does and how to verify it. Install and on-disk
 layout live in [README.md](README.md); this doc is only about running headless.
 
@@ -8,32 +8,24 @@ layout live in [README.md](README.md); this doc is only about running headless.
 
 ## What "automated" means here
 
-`ops` registers Task Scheduler tasks through `core.platform.service` — one per
-worker, plus a daily log-rotation job. Each task runs at logon and restarts on
-failure, the direct analog of a launchd LaunchAgent.
+`ops` registers systemd user services through `core.platform.service`. Each
+task runs as a user daemon and restarts on failure.
 
-| Task | Label | What Task Scheduler does |
+| Task | Label | What systemd does |
 |------|-------|--------------------------|
-| dispatcher | `com.duy.dispatcher` | starts at logon, restart-on-failure, drains the queue forever |
-| recorder | `com.duy.recorder` | starts at logon, restart-on-failure, watches for lives forever |
-| archiver | `com.duy.archiver` | starts at logon, runs `archiver loop` (download cycle → sleep 2–4h → repeat) PLUS a background ingest sweeper that enqueues drop-folder files every ~3 min; restart-on-failure |
-| logrotate | `com.duy.logrotate` | a calendar job (not a daemon), daily 04:05, copytruncate-rotates `C:\Users\danie\.archive\.config\archiver-suite\logs\*.log` so captured output can't grow unbounded |
+| dispatcher | `com.duy.dispatcher` | starts at boot (via linger), restart-on-failure, drains the queue forever |
+| recorder | `com.duy.recorder` | starts at boot (via linger), restart-on-failure, watches for lives forever |
+| archiver | `com.duy.archiver` | starts at boot, runs `archiver loop` PLUS a background ingest sweeper; restart-on-failure |
+| logrotate | `com.duy.logrotate` | a systemd timer (not a daemon), daily 04:05, copytruncate-rotates `~/.archive/.config/archiver-suite/logs/*.log` |
 
-**How the tasks run hidden.** Each task's action is a generated VBScript shim
-(`C:\Users\danie\.archive\.config\archiver-suite\launchers\<tag>.vbs`) that runs the worker through
-`cmd /c` with **no console window** but *waits* for it — so Task Scheduler keeps
-tracking liveness and RestartOnFailure still fires on a crash, while a clean
-stop (exit 0) does not trigger a restart. stdout/err are redirected to
-`C:\Users\danie\.archive\.config\archiver-suite\logs\<tag>.{out,err}.log`.
+**How the tasks run hidden.** Each task's action is a systemd service unit
+(`~/.config/systemd/user/<label>.service`) that runs the worker. Task liveness
+and RestartOnFailure is handled natively by systemd. stdout/err are redirected to
+`~/.local/log/<tag>.{out,err}.log`.
 
-RestartOnFailure interval is `PT1M` (Task Scheduler's hard 1-minute minimum);
+RestartOnFailure interval is 30 seconds;
 `ops install` regenerates every definition with this machine's absolute pipx
-`.exe` paths, so they always match where the CLIs actually live.
-
-> Both the task definitions and the launcher shims embed absolute config/log
-> paths — after moving the config root (see "Config migration" in
-> [ops/RUNBOOK.md](ops/RUNBOOK.md)) run `ops uninstall` + `ops install` to
-> regenerate them.
+paths, so they always match where the CLIs actually live.
 
 ---
 
@@ -41,78 +33,75 @@ RestartOnFailure interval is `PT1M` (Task Scheduler's hard 1-minute minimum);
 
 Run from anywhere (the CLIs are on PATH via pipx). Every check must pass.
 
-```powershell
+```bash
 # 1. All four resolve on PATH
-Get-Command dispatcher, archiver, recorder, ops | Select-Object Name, Source
+which dispatcher archiver recorder ops
 
 # 2. All import cleanly
-dispatcher --help > $null; if ($?) { "dispatcher OK" }
-archiver   --help > $null; if ($?) { "archiver OK" }
-recorder   --help > $null; if ($?) { "recorder OK" }
-ops health         > $null; if ($?) { "ops OK" }
+dispatcher --help > /dev/null && echo "dispatcher OK"
+archiver   --help > /dev/null && echo "archiver OK"
+recorder   --help > /dev/null && echo "recorder OK"
+ops health         > /dev/null && echo "ops OK"
 
 # 3. ffmpeg present (recorder + archiver need it)
-Get-Command ffmpeg | Select-Object Source
+which ffmpeg
 
 # 4. The shared suite database can be initialized
-$env:PYTHONPATH = "core"
+export PYTHONPATH="core"
 python -c "from core import ItemStore; s=ItemStore.open(); s.close(); print('suite.db OK')"
 
 # 5. The output root exists / is writable
-Test-Path C:\Users\danie\.archive
+test -d ~/.archive || echo "missing"
 ```
 
-Not installed yet? See [README.md](README.md) → **Install (Windows)**.
+Not installed yet? See [README.md](README.md) → **Install (Linux)**.
 
 ---
 
-## Step 1 — Telegram auth (one time, interactive, BEFORE Task Scheduler)
+## Step 1 — Telegram auth (one time, interactive, BEFORE systemd)
 
-Task Scheduler cannot type the SMS code. Authenticate the dispatcher's session
+systemd cannot type the SMS code. Authenticate the dispatcher's session
 by hand once:
 
-```powershell
+```bash
 dispatcher start
 ```
 
 Enter the code Telegram sends. When you see `telethon: connected` and it idles
 on the queue, Ctrl-C. Confirm the session file exists:
 
-```powershell
-Test-Path $env:USERPROFILE\.archive\.config\dispatcher\session.session
+```bash
+test -f ~/.archive/.config/dispatcher/session.session && echo "OK"
 ```
 
 The archiver has no Telegram session — the dispatcher owns Telegram credentials
 and routing.
 
 **Optional burner account.** If you route some chats through a second (burner)
-account, register it now too — its login is also interactive and Task Scheduler
-can't type the code:
+account, register it now too:
 
-```powershell
+```bash
 dispatcher burner login --phone +49…     # interactive, one time
 dispatcher burner chats add -100123      # chats the burner should send
 dispatcher burner status                 # confirm authorized + chats
 ```
 
-A burner that isn't logged in never blocks the daemon — those chats just fall
-back to the primary. See [dispatcher/README.md](dispatcher/README.md).
-
 ---
 
 ## Step 2 — Install the task definitions
 
-`ops install` generates all four definitions (with absolute paths + the hidden
-launcher shims) and registers them via `schtasks`, and creates the log dir:
+`ops install` generates all four definitions (with absolute paths) and registers them via `systemctl --user`, and creates the log dir:
 
-```powershell
+```bash
 ops install
 ```
 
 This does **not** start anything — the tasks activate on `ops load` (next step),
 which lets you stage the rollout. The **logrotate** calendar job is harmless on
-its own and keeps the captured `logs\*.log` from growing unbounded (gzip
-history, copytruncate so the append handle is never orphaned).
+its own and keeps the captured `logs/*.log` from growing unbounded.
+
+> **IMPORTANT**: To allow systemd user services to run when you are not logged in, you must enable linger:
+> `loginctl enable-linger $USER`
 
 ---
 
@@ -120,15 +109,14 @@ history, copytruncate so the append handle is never orphaned).
 
 You can load everything at once:
 
-```powershell
+```bash
 ops load
 ops health
 ```
 
-…or stage it if you'd rather add I/O load incrementally (bring one up, confirm
-`ops health`, then add the next):
+…or stage it if you'd rather add I/O load incrementally:
 
-```powershell
+```bash
 ops load dispatcher   # lowest load: idle-polls an empty queue
 ops health
 ops load archiver     # adds the download cycle + ingest sweeper
@@ -139,7 +127,7 @@ ops health
 
 Feed the queue manually to watch a drain end-to-end before walking away:
 
-```powershell
+```bash
 archiver start --once   # downloads, inserts pending rows, exits
 ops watch               # watch the dispatcher drain them
 ```
@@ -148,7 +136,7 @@ ops watch               # watch the dispatcher drain them
 
 ## Step 4 — Verify full automation
 
-```powershell
+```bash
 ops health
 ```
 
@@ -157,11 +145,11 @@ Expect all three workers `running`, queue `pending` trending toward 0,
 leave it open through one archiver cycle: archiver enqueues → dispatcher sends →
 rows go `sent`.
 
-To confirm restart-on-crash works, kill a worker tree and watch Task Scheduler
-respawn it within ~1 minute:
+To confirm restart-on-crash works, kill a worker tree and watch systemd
+respawn it within ~30 seconds:
 
-```powershell
-ops restart dispatcher   # or kill its tree in Task Manager, then:
+```bash
+ops restart dispatcher   # or kill it, then:
 ops health
 ```
 
@@ -169,7 +157,7 @@ ops health
 
 ## What each automated piece does, end to end
 
-1. **At logon**, Task Scheduler starts dispatcher, recorder, archiver.
+1. **At boot**, systemd starts dispatcher, recorder, archiver.
 2. **Dispatcher** connects to Telegram and polls `items` every 2s. On startup it
    runs the watchdog (reverts stuck `sending` rows).
 3. **Archiver** runs a cycle: for each configured user on each platform, it
@@ -199,12 +187,7 @@ ops health
    marks `sent`, and (if the delete policy is on) removes the local file +
    sidecars.
 6. **Auto-ban of gone accounts** — when an archiver cycle's extractor reports an
-   account is gone (suspended/banned/deleted, distinct from cookie expiry), the
-   archiver moves that user into a per-platform banned roster (`config.toml`)
-   and prints a summary at the end of the run. Already-queued uploads still
-   deliver. Inspect with `archiver banned list`; restore with `archiver banned
-   unban --platform <p> --user <u> --re-add`. Detection is conservative (auth
-   failures and per-item 404s never ban).
+   account is gone, the archiver moves that user into a per-platform banned roster.
 7. **You** run `ops health` whenever you want to check, and consult
    [ops/RUNBOOK.md](ops/RUNBOOK.md) if something breaks.
 
@@ -212,7 +195,7 @@ ops health
 
 ## Managing users and policies (no restart needed)
 
-```powershell
+```bash
 # Archiver VOD users
 archiver config add --platform x --user someone
 archiver config list
@@ -231,45 +214,33 @@ archiver local add mylibrary
 archiver download set --platform instagram --enabled false
 
 # Auto-ingest chat_id folders each cycle (default off)
-# folder name = destination: [<label>~]<chat_id>[.t<topic>] under ROUTES_DIR
 archiver auto-ingest set --enabled true
 
 # Upload batching (dispatcher; restart it to apply)
 dispatcher config set min_batch_size 10
 ```
 
-Archiver-side settings (users, local platforms, auto-ingest, download toggle,
-delete *policy*) are read on the next cycle — no reload. The **dispatcher** reads
-its policies (delete, min-batch) at startup, so `ops restart dispatcher` after
-changing those.
-
-> **Batching note:** with the default `min_batch_size = 10`, platform albums are
-> held until 10 files accumulate (or 7 days). Set `min_batch_size 1` to send
-> immediately. Recorder and chat_id uploads are never held.
+Archiver-side settings are read on the next cycle — no reload. The **dispatcher** reads
+its policies at startup, so `ops restart dispatcher` after changing those.
 
 ---
 
 ## Redeploying after a code change
 
-```powershell
+```bash
 ops update            # from the repo root
 ```
 
-One command: fingerprints the source (no-op if unchanged, `--force` to override),
-drains the dispatcher **cleanly** (finishes the in-flight upload via a
-cooperative stop-flag — never chopped), `pipx install --force`s the three worker
-apps, re-injects editable `core` into `media-archiver` (`--force`; the archiver's
-pipx app is `media-archiver`, not `archiver`), reloads every worker, and enters
-`ops watch`. `ops` itself is excluded (it is the running process). Full detail —
-including the one-time bootstrap reinstall of `ops`/`dispatcher` needed to obtain
-the command — is under "Updating the code" in [ops/RUNBOOK.md](ops/RUNBOOK.md).
+One command: fingerprints the source, drains the dispatcher **cleanly**, `pipx install --force`s the three worker
+apps, re-injects editable `core`, reloads every worker, and enters
+`ops watch`. Full detail is under "Updating the code" in [ops/RUNBOOK.md](ops/RUNBOOK.md).
 
 ---
 
 ## Turning it off
 
-```powershell
-ops unload            # stops + disables all workers (kills orphaned trees too)
+```bash
+ops unload            # stops + disables all workers
 ops unload recorder   # stop just one while you edit its config
 ```
 

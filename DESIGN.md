@@ -6,7 +6,7 @@ Verify `file:line` against code before trusting — comments may lag.
 
 ## TL;DR topology
 
-Four processes + ops, pivoting on **one SQLite file** (`C:\Users\danie\.archive\.config\archiver-suite\suite.db`).
+Four processes + ops, pivoting on **one SQLite file** (`<repo>/.config/archiver-suite/suite.db`).
 No IPC sockets; they coordinate via the DB + on-disk artifacts.
 
 ```
@@ -16,7 +16,7 @@ archiver (download+reconcile) ─┐                   ┌─ recorder (TikTok l
                                           │ dispatcher claims pending
                                           ▼
                                    dispatcher ──► Telegram (Telethon/MTProto)
-   ops: reads on-disk artifacts + Task Scheduler ONLY (imports core, never a worker)
+   ops: reads on-disk artifacts + systemd ONLY (imports core, never a worker)
    core: the shared lib every worker imports
 ```
 
@@ -102,7 +102,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | CLI: `start`, `status`, `stats`, `check-routes`, `banned-words`, `queue{list,retry,cancel}`, `config`, `burner{login,chats,status}` |
 
 ## ops/ops/
-`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` runs `python -m pipx` install×3 + `inject media-archiver --force --editable core` — **archiver app is `media-archiver`**, inject needs `--force`; imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (Task Scheduler on Windows, launchd on macOS); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env → `~\.archive\.config` (self-contained, when its `archiver-suite` dir exists) → legacy `%APPDATA%` (Windows) / `~/.config` (POSIX); migrated by `tools/migrate_config_to_archive.py`.
+`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` runs `python -m pipx` install×3 + `inject media-archiver --force --editable core` — **archiver app is `media-archiver`**, inject needs `--force`; imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS, Task Scheduler on Windows); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), Windows → `~/.archive/.config` (self-contained, when its `archiver-suite` dir exists) else legacy `%APPDATA%`, other POSIX/macOS → `$XDG_CONFIG_HOME` or `~/.config`.
 
 ## Seams (cross-process contracts; tests/test_seams.py, 271 checks, 35 seams)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
@@ -146,16 +146,16 @@ logrotate.
 - Required env fails loud; optional env warns+defaults.
 
 ## Run / test (from a NEUTRAL cwd — repo root lets ./core shadow the install)
-Windows PowerShell; note `;` (not `:`) is the PYTHONPATH separator.
-```powershell
-$env:PYTHONPATH = "core;archiver;recorder;dispatcher;ops"
-$PY = "$env:USERPROFILE\pipx\venvs\dispatcher\Scripts\python.exe"  # only venv with all of core+dispatcher+telethon
+Linux shell; `:` is the PYTHONPATH separator.
+```bash
+export PYTHONPATH="core:archiver:recorder:dispatcher:ops"
+PY=~/.local/pipx/venvs/dispatcher/bin/python   # only venv with all of core+dispatcher+telethon
 # seam suite + any selftest:
-& $PY tests\test_seams.py
-& $PY core\core\_selftest_media_prep.py   # etc.
+"$PY" tests/test_seams.py
+"$PY" core/core/_selftest_media_prep.py   # etc.
 # ops selftests are module-mode:
-$env:PYTHONPATH = "ops;core"; & $PY -m ops._selftest_logrotate
-& $PY -m ops._selftest_update
+PYTHONPATH="ops:core" "$PY" -m ops._selftest_logrotate
+"$PY" -m ops._selftest_update
 ```
 Full battery: core{_account_gone,_drain_eta,_fixes,_manual_delete,_media_prep,
 _quarantine,_register_media,_safebrake,_scan_order,_termui}, archiver{_ban_quarantine,_routes_dir},
@@ -165,7 +165,7 @@ ops/{_logrotate,_update}(-m), tests/test_seams. (25 selftests + seam suite.)
 
 ## Gotchas
 - **Editable installs import the working tree** → a worker restart loads whatever
-  branch is checked out. (all four run under Task Scheduler once `ops load`ed.)
+  branch is checked out. (all four run under systemd --user once `ops load`ed.)
 - No single pipx venv has every package; use `media-archiver` venv OR `PYTHONPATH`
   over the dispatcher venv for cross-worker tests.
 - ops soft-imports core (try/except + sys.path fallback to repo); deps=[].

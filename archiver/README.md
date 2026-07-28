@@ -2,7 +2,7 @@
 
 Unified downloader for X (Twitter), TikTok, and Instagram. It discovers and
 downloads media, then writes pending rows into the shared
-`C:\Users\danie\.archive\.config\archiver-suite\suite.db` database. The dispatcher is the only
+`<repo>/.config/archiver-suite/suite.db` database. The dispatcher is the only
 process that talks to Telegram.
 
 > Install, on-disk layout, and how the four processes fit together live in the
@@ -48,9 +48,9 @@ Version 1.1 highlights:
 └── pyproject.toml
 ```
 
-**User config lives in `C:\Users\danie\.archive\.config\archiver-suite\.env`** (outside the project).
+**User config lives in `<repo>/.config/archiver-suite/.env`** (outside the project).
 User lists and behavior policies live in
-`C:\Users\danie\.archive\.config\archiver-suite\config.toml`.
+`<repo>/.config/archiver-suite/config.toml`.
 
 ## First-time setup
 
@@ -58,8 +58,8 @@ Install the whole suite per the root [README.md](../README.md). The
 archiver-specific step is seeding its config, then filling in the env vars
 documented below:
 
-```powershell
-Copy-Item .env.example $env:USERPROFILE\.archive\.config\archiver-suite\.env
+```bash
+cp .env.example <repo>/.config/archiver-suite/.env
 # Fill in env vars — see Env reference below.
 archiver health
 archiver start --once
@@ -125,7 +125,7 @@ RECONCILE_AFTER_RUN=false
 When true, each `archiver run` finishes with a disk sweep that dedups platform
 folders, then queues any stable files missing from the shared dispatcher DB.
 That sweep also checks the recorder output directory from
-`C:\Users\danie\.archive\.config\recorder\config.toml`.
+`<repo>/.config/recorder/config.toml`.
 
 ### Delete after upload (3-level chain)
 ```bash
@@ -135,7 +135,7 @@ DELETE_AFTER_UPLOAD_X_ALICE=false          # per-user
 ```
 
 Run `archiver policy` to see the resolved decision per (platform, user).
-Policy changes are stored in `C:\Users\danie\.archive\.config\archiver-suite\config.toml`.
+Policy changes are stored in `<repo>/.config/archiver-suite/config.toml`.
 
 ### X
 ```bash
@@ -270,12 +270,12 @@ for sanity-checking what "incremental from where?" means at any point.
 
 ## Automation
 
-Unattended, the archiver runs `archiver loop` under Task Scheduler (registered
+Unattended, the archiver runs `archiver loop` under systemd --user (registered
 by `ops install` / started by `ops load`) — full setup in
 [../AUTOMATION.md](../AUTOMATION.md). `archiver loop --help` lists the interval
 and ingest-sweeper flags.
 
-```powershell
+```bash
 archiver loop --min 3600 --max 7200         # run it in the foreground to watch
-Get-Content -Wait $env:USERPROFILE\.archive\.config\archiver-suite\logs\archiver.out.log
+tail -f <repo>/.config/archiver-suite/logs/archiver.out.log
 ```

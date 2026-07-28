@@ -1,7 +1,7 @@
 # User Guide
 
 Task-oriented reference for daily use. Architecture is in **README.md**;
-the dense code map is in **DESIGN.md**; unattended (Task Scheduler) setup is in
+the dense code map is in **DESIGN.md**; unattended (systemd) setup is in
 **AUTOMATION.md**.
 
 The model in one line: **producers write file-rows into one `suite.db`; the
@@ -191,7 +191,7 @@ output_dir/-1001234567890/…                      → still works (bare id, no 
 The label is cosmetic — it's stripped before routing, so files still go to the
 bare chat_id. Split is on the **last** `~`, so the label may contain spaces,
 underscores, or dots. (Avoid `[name]_chat_id`-style names: `_` is a legal
-`@handle` character and `[ ]` are PowerShell/shell wildcards.) Do **not** start
+`@handle` character and `[ ]` are shell glob wildcards.) Do **not** start
 the folder name with a `.` — a leading dot marks a hidden/working dir and the
 whole folder is skipped by the scanner (`.name~<chat_id>` never routes;
 `name.surname~<chat_id>` is fine).
@@ -229,7 +229,7 @@ Telegram-compatible) into ≤2 GiB parts — each shipped as one ordered album �
 turn on split mode in the recorder's config:
 
 ```toml
-# C:\Users\danie\.archive\.config\recorder\config.toml
+# <repo>/.config/recorder/config.toml
 [recorder]
 split_at_chunk_size = true   # split recordings over the chunk size
 split_chunk_gib     = 2.0    # part size / split trigger (default 2 GiB)

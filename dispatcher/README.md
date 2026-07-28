@@ -21,11 +21,11 @@ dispatcher hachoir` to repair an old venv). After dispatcher source edits,
 
 ## First-run setup
 
-```powershell
-Copy-Item .env.example $env:USERPROFILE\.archive\.config\dispatcher\.env
+```bash
+cp .env.example <repo>/.config/dispatcher/.env
 ```
 
-Edit `C:\Users\danie\.archive\.config\dispatcher\.env` to fill in `TELEGRAM_API_ID`,
+Edit `<repo>/.config/dispatcher/.env` to fill in `TELEGRAM_API_ID`,
 `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, and `TELEGRAM_CHAT_ID`.
 
 Optional Telegram routing overrides live in the same file. TikTok videos use
@@ -35,7 +35,7 @@ use `TELEGRAM_CHAT_ID_TIKTOK_LIVE`, or
 
 First time you run `dispatcher start`, Telethon will prompt for the SMS
 auth code interactively and write a session file at
-`C:\Users\danie\.archive\.config\dispatcher\session.session`. After that, sessions persist.
+`<repo>/.config/dispatcher/session.session`. After that, sessions persist.
 
 ## Commands
 
@@ -105,10 +105,10 @@ Policies are read at startup — **restart the dispatcher** after changing them.
 
 ## Smoke test (no archiver involvement)
 
-```powershell
+```bash
 dispatcher status
 
-sqlite3 $env:USERPROFILE\.archive\.config\archiver-suite\suite.db
+sqlite3 <repo>/.config\archiver-suite/suite.db
 ```
 
 Then in the sqlite shell (use a real image path you created, forward slashes are

@@ -22,6 +22,11 @@ __pycache__/
 .venv/
 venv/
 
+# ── Self-contained config root (Linux): DB, config.toml, .env, sessions,
+#    cookies, logs and locks all live here so the checkout carries its own
+#    state. Never track any of it. ──
+.config/
+
 # ── Runtime state / databases / logs ──
 *.db
 *.db-wal
