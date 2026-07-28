@@ -499,6 +499,19 @@ class XPlatform(Platform):
             "sleep-request": [pace.sleep_request_min, pace.sleep_request_max],
             "sleep-429":     pace.sleep_429,
             "retries":       pace.retries,
+            # Keep ONLY media actually authored by @username. The /with_replies
+            # pass (below) renders full conversation threads, so gallery-dl drags
+            # in the PARENT tweets the user replied to — media posted by OTHER
+            # accounts. Those parents aren't replies/retweets/quotes, so the
+            # retweets/replies/quoted switches never catch them; an author filter
+            # does. Also drop reaction GIFs: the X GIF picker (Tenor/Giphy) uploads
+            # land as media type 'animated_gif', never original content. Filtered
+            # files are never written to the archive, so this can't poison the
+            # incremental frontier or the skip=abort early-stop.
+            "image-filter": (
+                f"author['name'].lower() == {username.lower()!r} "
+                f"and type != 'animated_gif'"
+            ),
         }
         if date_min_ts:
             extractor_cfg["date-min"] = date_min_ts
