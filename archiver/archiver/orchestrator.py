@@ -160,6 +160,10 @@ class Archiver:
         self.deletion_guard  = DeletionGuard(config.policy_store)
         # Per-platform tripped flag for THIS run. Resets each new Archiver.
         self._tripped: set[str] = set()
+        # One-shot guard so a missing (unmounted) separate ROUTES_DIR is warned
+        # about once per run, not on every route-touching phase. See
+        # _routes_dir_ready().
+        self._routes_warned: bool = False
         # Accounts retired (banned/deleted) DURING this run, reported at the end.
         self._banned_this_run: list[dict] = []
         # Serializes DROP-FOLDER ingestion (record folder, orphaned chat_id
@@ -313,7 +317,8 @@ class Archiver:
                 # folder only — an empty `<label>~<chat_id>` folder is a waiting
                 # drop-bucket, kept (core.prune_route_dirs). Single-tree layout
                 # (routes_dir == output_dir) is already fully covered above.
-                if self.config.routes_dir != self.config.output_dir:
+                if self.config.routes_dir != self.config.output_dir \
+                        and self._routes_dir_ready():
                     n += await asyncio.to_thread(
                         prune_route_dirs, self.config.routes_dir)
                 if n:
@@ -502,6 +507,29 @@ class Archiver:
         re-adopt them — every user-list consumer filters through this."""
         return frozenset(self.config.policy_store.list_deleting(platform_name))
 
+    def _routes_dir_ready(self) -> bool:
+        """Whether a *separate* ROUTES_DIR is actually present this cycle.
+
+        In the two-root split, ROUTES_DIR can point at another volume — e.g. a
+        removable drive. When that drive is unmounted its top-level folder is
+        simply absent, and walking it would silently ingest and prune nothing,
+        making an unmounted drive look identical to 'no route folders'. Rather
+        than fail quietly, log ONE clear warning per run and let callers skip
+        route work. A single-tree layout (routes_dir unset or == output_dir) is
+        always ready — its scans target output_dir, which always exists."""
+        rd = self.config.routes_dir
+        if not rd or rd == self.config.output_dir:
+            return True
+        if Path(rd).is_dir():
+            return True
+        if not self._routes_warned:
+            log.warning(
+                "routes drive not mounted — ROUTES_DIR %s is absent; skipping "
+                "chat_id route ingest + empty-folder prune this cycle "
+                "(remount it, e.g. `udisksctl mount -b <device>`)", rd)
+            self._routes_warned = True
+        return False
+
     def _maybe_ingest_orphaned(self, known_platform_names: set[str]) -> None:
         """When the auto_ingest_orphaned policy is on, scan output_dir's
         chat_id-named folders and enqueue loose files — the automated form of
@@ -510,6 +538,12 @@ class Archiver:
         from .reconcile import reconcile_pseudo_platform
 
         if not AutoIngestPolicy(self.config.policy_store).enabled():
+            return
+
+        # A separate ROUTES_DIR that is currently unmounted must not be walked:
+        # it would enqueue nothing AND, worse, could let reconcile see route
+        # files as 'gone'. Skip with a clear warning until the drive returns.
+        if not self._routes_dir_ready():
             return
 
         def _pseudo(name: str, scan_dir) -> None:
