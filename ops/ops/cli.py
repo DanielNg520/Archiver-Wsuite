@@ -11,7 +11,7 @@ ops.cli
                        then `ops load <name>` to bring it back)
   ops restart <name>   restart one service (dispatcher|recorder|archiver)
   ops update           on a codebase change: drain the dispatcher cleanly,
-                       pipx-reinstall the four packages, reload + watch
+                       uv-tool-reinstall the changed packages, reload + watch
   ops logrotate        copytruncate-rotate oversized worker logs (gzip history)
 
 install/load/unload/restart are thin wrappers over the OS service manager
@@ -389,8 +389,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("service", choices=list(LABELS))
     up = sub.add_parser(
         "update",
-        help="on a codebase change: drain the dispatcher cleanly, pipx-reinstall "
-             "the packages, reload + watch")
+        help="on a codebase change: drain the dispatcher cleanly, "
+             "uv-tool-reinstall the changed packages, reload + watch")
     up.add_argument("--repo", default=None,
                     help="suite repo root (default: current directory)")
     up.add_argument("--force", action="store_true",

@@ -38,10 +38,15 @@ dense code map. This file is only the traps that bite automated sessions.
   `.../Archiver-Suite/core/core`, not `.../Archiver-Suite/core`. (Hit for
   real during the recorder-notify feature, 2026-08-05 — recovered by
   reinstalling with the flag.)
-- Tests (`:` is the PYTHONPATH separator on Linux):
+- Tests (`:` is the PYTHONPATH separator on Linux; no pytest installed, plain
+  asserts). No single package's own `uv tool` venv (nor the bare system
+  `python`) has every dependency `tests/test_seams.py` needs — run
+  `python tools/setup_test_venv.py` once to build `.venv-test` (gitignored)
+  with the union of all five packages' dependencies, then:
   `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1
-  python tests/test_seams.py` (no pytest installed). Per-module `_selftest_*.py`
-  files run the same way.
+  .venv-test/bin/python3 tests/test_seams.py`. Per-module `_selftest_*.py`
+  files run the same way (or against a single package's own venv when the
+  module only needs that package's deps).
 - `import core` from the repo root picks up the outer `core/` folder as a
   namespace package and shadows the real one — run import checks from a
   neutral cwd.

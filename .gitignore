@@ -21,6 +21,7 @@ __pycache__/
 # ── pipx / venv (shouldn't be in repo, but just in case) ──
 .venv/
 venv/
+.venv-test/
 
 # ── Self-contained config root (Linux): DB, config.toml, .env, sessions,
 #    cookies, logs and locks all live here so the checkout carries its own

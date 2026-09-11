@@ -133,13 +133,6 @@ dependency entirely (see CLAUDE.md's environment traps). Editing `core`
 itself needs nothing beyond a worker restart — it's injected editable, so
 changes are live immediately.
 
-> **Known gap (2026-09-11):** `ops update`'s automated reinstall still shells
-> out to `pipx` internally (`ops/ops/update.py`), which is not installed on
-> this box — running `ops update` today fails outright. Until that's fixed,
-> reinstall manually with the `uv tool install --force --editable ...
-> --with-editable ./core` command above for whichever packages changed, then
-> `ops restart <service>` (or `ops unload && ops load`).
-
 Requirements on this box (already satisfied): Python 3.13; `ffmpeg`/`ffprobe`,
 `yt-dlp`, `gallery-dl` on PATH; a Firefox profile for cookie auto-refresh.
 
@@ -290,18 +283,18 @@ ops load          start + enable all workers
 ops unload        stop all workers
 ops restart <s>   restart one service (dispatcher|recorder|archiver)
 ops update        after a code change: drain the dispatcher cleanly,
-                  reinstall the four packages, reload every worker, then
-                  watch — currently broken on this box (see the note above,
-                  reinstall manually with `uv tool install` until fixed)
+                  reinstall the changed packages, reload every worker,
+                  then watch
 ```
 
 `ops update` is the one-command redeploy. It fingerprints the source (a no-op
 when nothing changed since the last update, `--force` to override), sets a
 cooperative stop-flag so the dispatcher finishes its in-flight upload before
-exiting (never chopped mid-album), then reinstalls
-`media-archiver`/`dispatcher`/`recorder` and re-injects editable `core`, reloads,
-and drops into `watch`. Run it from the repo root (or `--repo <path>`).
-**Currently broken on this box** — see the known-gap note under Install.
+exiting (never chopped mid-album), then reinstalls whichever of
+`media-archiver`/`dispatcher`/`recorder` changed via `uv tool install --force
+--editable <pkg> --with-editable ./core` (re-injecting editable `core` in the
+same command), reloads, and drops into `watch`. Run it from the repo root
+(or `--repo <path>`).
 
 Also ships [ops/RUNBOOK.md](ops/RUNBOOK.md) (failure recovery).
 

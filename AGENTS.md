@@ -57,27 +57,27 @@ does not touch `tests/test_seams.py`, which stays oversized — see
   that bite automated sessions," not a feature list — a `quarantine`/`ban_check`
   entry there would be scope creep against its own header, not a fix.
 
-- [ ] **`ops/ops/update.py` still shells out to `pipx`; this deployment has none
-  installed.** Confirmed 2026-09-11: `python3 -m pipx` raises `ModuleNotFoundError`
-  on this box, and `uv tool list` shows all four worker packages are actually
-  `uv tool`-managed. `ops update`'s reinstall step (`reinstall_steps`/`_pipx_argv`
-  in `ops/ops/update.py`) will fail outright the moment it's invoked. Not a docs
-  problem — this is a real code bug, callouts added to README.md/AUTOMATION.md/
-  ops/RUNBOOK.md/DESIGN.md point at the manual `uv tool install --force --editable
-  ./<pkg> --with-editable ./core` workaround in the meantime. Needs a real fix
-  (swap the `pipx` argv-building in `update.py` for the equivalent `uv tool`
-  invocation) — per this repo's supervisor/TriAPI convention, that should go
-  through TriAPI's dispatch, not a hand-edit, given the size of the blast radius
-  (it's the one-command production redeploy path).
+- [x] **`ops/ops/update.py` shelled out to `pipx`; this deployment has none
+  installed.** Fixed 2026-09-11 via TriAPI dispatch (DeepSeek drafted,
+  Claude-audited and applied): `reinstall_steps` now emits one
+  `install --force --editable <pkg> --with-editable core` step per changed
+  worker package (no separate inject step — `ARCHIVER_APP`/the pipx
+  install+inject two-step is gone); `_pipx_argv` is renamed `_uv_tool_argv`
+  and resolves every package-directory token (not just the trailing one) to
+  an absolute path; `run_reinstall` builds `uv tool …` argv instead of
+  `python -m pipx …`. `ops/ops/_selftest_update.py` updated to match;
+  29/29 checks pass (`PYTHONPATH="core:ops" ~/.local/share/uv/tools/ops/bin/python3
+  -m ops._selftest_update` — the `ops` uv-tool venv has core injected, unlike
+  the bare system python).
 
-- [ ] **No single dev venv can run `tests/test_seams.py` on this box.** Confirmed
-  2026-09-11: the `dispatcher` uv-tool venv lacks `gallery_dl`, the `media-archiver`
-  venv lacks `telethon`, and the system `python3` lacks everything (not even
-  `tomli_w`). Since the pipx→uv tool port, nobody built a combined dev
-  environment with the union of all five packages' dependencies. DESIGN.md's
-  Run/test section now documents this as a known gap instead of a working
-  recipe. Needs either a `uv sync`-based workspace venv or an explicit
-  "install every package's deps into one throwaway venv for testing" recipe.
+- [x] **No single dev venv could run `tests/test_seams.py` on this box.** Fixed
+  2026-09-11 via TriAPI dispatch: new `tools/setup_test_venv.py` creates
+  `.venv-test` (gitignored) and `uv pip install -e`'s all five packages into
+  it in one call, giving the union of their dependencies. Verified end to
+  end: `python tools/setup_test_venv.py` then
+  `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1
+  .venv-test/bin/python3 tests/test_seams.py` → **ALL PASS (285 checks)**,
+  the first time this suite has run end-to-end since the pipx→uv tool port.
 
 - [ ] **`core/core/manual_delete.py`'s `_default_trash` docstring says "Recycle
   Bin"** — a Windows-era leftover; `send2trash` actually targets the

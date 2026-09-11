@@ -75,18 +75,14 @@ What it does, in order (package-aware — every case does the **minimum**):
    exit** + a short settle, so the reinstall never overwrites a venv a worker is
    still importing from (a half-updated venv mid-import).
 4. **Reinstall** only the changed worker packages (each step retried a few
-   times to ride out a transient exe lock): `pipx install --force ./archiver`
-   (the app is **`media-archiver`**) / `./dispatcher` / `./recorder`, then
-   `pipx inject media-archiver --force --editable ./core` **iff** the archiver
-   was reinstalled. `ops` and `core` are **never** force-reinstalled here — both
-   are editable (see below), so they ride along live. (See the naming traps.)
-
-   > **This step is currently broken on this box (confirmed 2026-09-11):**
-   > `ops/ops/update.py` still shells out to `python -m pipx`, but this
-   > deployment runs on `uv tool` venvs and `pipx` isn't installed at all —
-   > `ops update` fails outright at this step. Not yet fixed; see AGENTS.md
-   > tech debt. Use the manual reinstall command in the Bootstrap section
-   > below instead until it is.
+   times to ride out a transient exe lock): one `uv tool install --force
+   --editable ./archiver --with-editable ./core` (the app is
+   **`media-archiver`**) / `./dispatcher` / `./recorder` step per changed
+   package — each install call also re-injects the editable `core` in the
+   same command, so there is no separate inject step. `ops` and `core` are
+   **never** force-reinstalled here — both are editable (see below), so they
+   ride along live. (See the naming traps.) Fixed 2026-09-11 via TriAPI
+   dispatch — see AGENTS.md tech debt for the before/after.
 5. On success it records the new per-package fingerprint, **reloads the
    restarted workers**, and enters `ops watch`. On a reinstall failure it clears
    the flag, reloads with the *previously* installed code, leaves the
@@ -97,8 +93,7 @@ running process can't force-reinstall its own locked venv, so `ops` — like
 `core` — is installed **editable**; its `.py` edits are then live the instant
 they're saved, and `ops update` needs only to record them. On this box, do
 this once (and after any `ops` **dependency or console-script** change, the
-lone case editable can't pick up) with the working `uv tool` command, not the
-pipx one `ops update` itself still uses internally (see the callout above):
+lone case editable can't pick up):
 
 ```bash
 uv tool install --force --editable ./ops --with-editable ./core
@@ -110,10 +105,10 @@ targeting the bare `archiver` name for a core re-inject/reinstall errors.
 Target `media-archiver`, or just point `uv tool install` at the `./archiver`
 directory (uv resolves the app name from the package itself).
 
-**Bootstrap / manual reinstall (works today).** `ops update` lives in the
-`ops` package but its own automated reinstall step is broken on this box (see
-above), so reinstall by hand with the same command CLAUDE.md documents for
-routine edits — repeat per package that changed:
+**Bootstrap / manual reinstall.** Also useful when you'd rather not wait for
+`ops update`'s change-detection, or need to force one package regardless of
+its fingerprint — the same command CLAUDE.md documents for routine edits,
+repeated per package that changed:
 
 ```bash
 uv tool install --force --editable ./ops        --with-editable ./core

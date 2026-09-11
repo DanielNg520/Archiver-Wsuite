@@ -2,15 +2,15 @@
 ops._selftest_update
 ────────────────────
 Proves the `ops update` change-detection + reinstall-command contract without
-touching pipx, the workers, or the real config dir:
+touching uv tool, the workers, or the real config dir:
   - source_fingerprint is content-based, stable, and CHANGES when a tracked
     source file changes (and NOT when an ignored build/cache file changes)
   - per-package fingerprints isolate WHICH package changed; changed_packages
     and update_plan reduce a change set to the minimum restart/reinstall work
   - looks_like_repo_root recognizes only a tree with all four package dirs
-  - the pipx reinstall steps target media-archiver (not 'archiver') for the
-    inject, pass --force, resolve package DIRS to absolute paths, and cover only
-    the packages that changed
+  - the uv tool reinstall steps pass --force --editable <pkg> --with-editable
+    core in one command, resolve both package DIRS to absolute paths, and
+    cover only the packages that changed
   - the graceful drains: dispatcher stop-flag round-trips; the recorder wait is
     a no-op when nothing is recording
 
@@ -105,22 +105,26 @@ def main() -> int:
                {"archiver", "recorder", "dispatcher"}),
            "--force → restart+reinstall every worker")
 
-        # ── reinstall_steps: only the named packages; inject iff archiver ─
-        ok(u.reinstall_steps(set()) == [], "empty set → no pipx steps")
-        ok(u.reinstall_steps({"core"}) == [], "core-only → no pipx steps")
-        ok(u.reinstall_steps({"recorder"}) == [["install", "--force", "recorder"]],
-           "recorder-only → one install, no inject")
-        steps = [u._pipx_argv(s, repo)
+        # ── reinstall_steps: only the named packages, each with core inlined ─
+        ok(u.reinstall_steps(set()) == [], "empty set → no uv tool steps")
+        ok(u.reinstall_steps({"core"}) == [], "core-only → no uv tool steps")
+        ok(u.reinstall_steps({"recorder"})
+           == [["install", "--force", "--editable", "recorder",
+                "--with-editable", "core"]],
+           "recorder-only → one install, core inlined")
+        steps = [u._uv_tool_argv(s, repo)
                  for s in u.reinstall_steps({"archiver", "dispatcher"})]
-        inject = next(s for s in steps if "inject" in s)
-        ok("media-archiver" in inject and "--force" in inject,
-           "inject targets media-archiver with --force")
-        ok(inject[-1] == str((repo / "core").resolve()),
-           "inject's package path is the absolute core/ dir")
-        installs = [s for s in steps if "install" in s]
-        ok(len(installs) == 2 and all(s[-1].startswith(str(repo)) for s in installs),
+        ok(all(s[:2] == ["uv", "tool"] for s in steps),
+           "each step is invoked as `uv tool ...`")
+        ok(all(str((repo / "core").resolve()) in s for s in steps),
+           "each install step's --with-editable target is the absolute core/ dir")
+        ok(all("--force" in s for s in steps),
+           "every install step passes --force")
+        pkg_dirs = [s[s.index("--editable") + 1] for s in steps]
+        ok(sorted(pkg_dirs) == sorted(str((repo / p).resolve())
+                                       for p in ("archiver", "dispatcher")),
            "two install steps (archiver, dispatcher), each an absolute dir")
-        ok(not any("recorder" in s[-1] for s in installs),
+        ok(not any("recorder" in s for s in steps),
            "an unchanged recorder is NOT reinstalled")
 
         # ── graceful drains ───────────────────────────────────────────────

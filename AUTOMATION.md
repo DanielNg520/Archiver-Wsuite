@@ -233,13 +233,11 @@ its policies at startup, so `ops restart dispatcher` after changing those.
 ops update            # from the repo root
 ```
 
-One command, in principle: fingerprints the source, drains the dispatcher
-**cleanly**, reinstalls the three worker apps, re-injects editable `core`,
-reloads every worker, and enters `ops watch`. **Currently broken on this
-box** — its reinstall step still shells out to `pipx`, which isn't installed
-here; use the manual `uv tool install --force --editable ... --with-editable
-./core` reinstall instead until it's fixed. Full detail (including the
-working manual command) is under "Updating the code" in
+One command: fingerprints the source, drains the dispatcher **cleanly**,
+reinstalls whichever worker apps changed via `uv tool install --force
+--editable <pkg> --with-editable ./core` (re-injecting editable `core` in
+the same command), reloads every worker, and enters `ops watch`. Full detail
+(including the manual reinstall command) is under "Updating the code" in
 [ops/RUNBOOK.md](ops/RUNBOOK.md).
 
 ---

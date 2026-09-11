@@ -3,8 +3,8 @@ ops.update
 ──────────
 The `ops update` machinery: detect that the repo's package source changed since
 the last install, drain the dispatcher CLEANLY (finish the in-flight upload,
-never chop it), reinstall the four pipx packages, then hand back to the caller
-to reload + watch.
+never chop it), reinstall the changed worker packages via `uv tool`, then hand
+back to the caller to reload + watch.
 
 Kept out of cli.py so the change-detection + reinstall steps are unit-testable
 in isolation (package_fingerprints / update_plan / reinstall_steps take plain
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -32,55 +31,21 @@ from core import paths as _paths
 from core.platform import paths as _osp
 from core.platform import process as _process
 
-# The pipx-managed packages, in the exact order they must be (re)installed:
-# the three worker apps, then core re-injected editable into the archiver (a
-# `pipx install --force` wipes an app's injected packages, so the inject MUST
-# come last). `core` is not a standalone app, it rides along as each app's
-# dependency + the editable inject. This mirrors the commands a human would run
-# by hand.
-#
-# `ops` itself is deliberately absent, and that is now CORRECT rather than a
-# gap: ops (and the core it imports) are installed EDITABLE, so an ops-side
-# change — a new dashboard field, a health probe — is live the moment the file
-# is saved, with nothing to reinstall. A running process cannot force-reinstall
-# its own venv anyway (Windows locks the loaded .pyd/.dll), so editable is the
-# only way ops changes could deploy without a fragile detached self-reinstall.
-# The one-time cost is a single editable install (see ops/RUNBOOK.md "Editable
-# ops"); after that `ops update` covers every package for every CODE change.
-# The lone residual case — an ops dependency or console-script change, which
-# editable can't pick up — still needs a manual `pipx install --force .\ops`
-# from the user's shell (a process can't do that to itself live).
-#
-# Two naming traps the hand-typed commands hit (see the user's failed inject):
-#   • the archiver's pipx APP/venv is `media-archiver` (its distribution name in
-#     pyproject), NOT `archiver` — so the inject must target `media-archiver`.
-#     The install step still points at the `./archiver` DIR; pipx derives the
-#     app name from the package, so installing the dir reinstalls media-archiver.
-#   • `pipx inject` without `--force` is a NO-OP when core is already injected
-#     (it warns "already seems to be injected" and changes nothing). `--force`
-#     makes the re-inject unconditional — required whenever the venv survived
-#     rather than being wiped, and harmless on a fresh one.
-ARCHIVER_APP = "media-archiver"
-
+# uv tool's single `install --force --editable <pkg> --with-editable core`
+# command installs the package and injects the editable core in one shot, so
+# there is no separate inject step (unlike the old pipx install + inject dance).
 # The worker packages, in the order they must be (re)installed. The dir name is
-# also the pipx-install target (pipx derives the app name from the package), and
-# it matches the fingerprint/package key — the one exception is that the
-# archiver's *app* is `media-archiver`, which only matters for the core inject.
+# also the uv-tool install target and matches the fingerprint/package key.
 _INSTALL_ORDER = ("archiver", "dispatcher", "recorder")
 
 
 def reinstall_steps(packages: "set[str] | frozenset[str]") -> list[list[str]]:
-    """The pipx steps to (re)install exactly `packages` (a subset of the worker
-    packages), in install order, with the core editable re-inject appended IFF
-    the archiver is among them (a `pipx install --force media-archiver` wipes its
-    injected packages, so the inject MUST come last — and is pointless when the
-    archiver wasn't reinstalled). An empty/None set yields no steps: a core-only
-    or ops-only change reinstalls nothing (both ride along editable)."""
-    steps = [["install", "--force", pkg]
-             for pkg in _INSTALL_ORDER if pkg in (packages or set())]
-    if "archiver" in (packages or set()):
-        steps.append(["inject", ARCHIVER_APP, "--force", "--editable", "core"])
-    return steps
+    """The uv tool steps to (re)install exactly `packages` (a subset of the
+    worker packages), in install order, each with the editable core injected
+    in the same command. An empty/None set yields no steps: a core-only or
+    ops-only change reinstalls nothing (both ride along editable)."""
+    return [["install", "--force", "--editable", pkg, "--with-editable", "core"]
+            for pkg in _INSTALL_ORDER if pkg in (packages or set())]
 
 # Source trees whose contents decide "did the code change?". core AND ops are
 # included even though neither is force-installed: an editable-injected core
@@ -259,19 +224,18 @@ def looks_like_repo_root(path: Path) -> bool:
                for pkg in ("core", "archiver", "recorder", "dispatcher"))
 
 
-def _pipx_argv(step: list[str], repo_root: Path) -> list[str]:
-    """Turn a reinstall_steps() entry into a full `python -m pipx …` argv with the
-    package path resolved against the repo root. `python` is taken from PATH:
-    `ops update` runs in the user's own shell (never a packaged session), so its
-    PATH `python` is the real interpreter that owns pipx — and CLAUDE.md's rule
-    is to spell it `python -m pipx`, never the bare pipx shim."""
-    python = shutil.which("python") or shutil.which("python3") or "python"
-    argv = [python, "-m", "pipx", *step]
-    # The trailing token of an install/inject step is a package DIR — make it an
-    # absolute path so the command is CWD-independent.
-    pkg_dir = repo_root / argv[-1]
-    if pkg_dir.is_dir():
-        argv[-1] = str(pkg_dir)
+def _uv_tool_argv(step: list[str], repo_root: Path) -> list[str]:
+    """Turn a reinstall_steps() entry into a full `uv tool …` argv with any
+    package directory tokens resolved against the repo root. `uv` is invoked
+    directly as an executable, not via `-m`."""
+    package_dirs = (*_INSTALL_ORDER, "core")
+    argv = ["uv", "tool"]
+    for token in step:
+        if token in package_dirs:
+            pkg_dir = repo_root / token
+            if pkg_dir.is_dir():
+                token = str(pkg_dir)
+        argv.append(token)
     return argv
 
 
@@ -297,8 +261,8 @@ def wait_processes_down(pids, timeout_s: float = 20.0,
 
 def run_reinstall(repo_root: Path, packages: "set[str] | frozenset[str]", *,
                   attempts: int = 3, retry_delay_s: float = 4.0) -> int:
-    """Run the pipx steps for `packages` in order, streaming their output. Stops
-    at the first hard failure (a later step assuming an earlier install is
+    """Run the uv tool steps for `packages` in order, streaming their output.
+    Stops at the first hard failure (a later step assuming an earlier install is
     pointless) and returns that step's exit code; 0 iff every step succeeded
     (and 0 for an empty set — nothing to reinstall).
 
@@ -308,7 +272,7 @@ def run_reinstall(repo_root: Path, packages: "set[str] | frozenset[str]", *,
     wait-and-retry turns a spurious abort into a clean install. A genuinely
     broken step just exhausts the attempts and returns its code as before."""
     for step in reinstall_steps(packages):
-        argv = _pipx_argv(step, repo_root)
+        argv = _uv_tool_argv(step, repo_root)
         print(f"\n$ {' '.join(argv)}", flush=True)
         rc = subprocess.run(argv).returncode
         tries = 1
@@ -320,7 +284,7 @@ def run_reinstall(repo_root: Path, packages: "set[str] | frozenset[str]", *,
             rc = subprocess.run(argv).returncode
             tries += 1
         if rc != 0:
-            print(f"pipx step failed (exit {rc}): {' '.join(step)}",
+            print(f"uv tool step failed (exit {rc}): {' '.join(step)}",
                   file=sys.stderr)
             return rc
     return 0

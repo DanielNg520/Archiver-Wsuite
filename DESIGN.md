@@ -105,7 +105,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | CLI: `start`, `status`, `stats`, `check-routes`, `banned-words`, `queue{list,retry,cancel}`, `config`, `burner{login,chats,status}` |
 
 ## ops/ops/
-`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` still shells out to `python -m pipx install`×3 + `inject media-archiver --force --editable core` — **stale**: this Linux deployment runs on `uv tool` venvs and `pipx` isn't installed on the box, so `ops update`'s reinstall step currently fails outright (confirmed 2026-09-11, not yet fixed — see AGENTS.md tech debt); imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS, Task Scheduler on Windows); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), Windows → `~/.archive/.config` (self-contained, when its `archiver-suite` dir exists) else legacy `%APPDATA%`, other POSIX/macOS → `$XDG_CONFIG_HOME` or `~/.config`.
+`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` shells out to `uv tool install --force --editable <pkg> --with-editable core`, one step per changed worker package (fixed 2026-09-11 — was `python -m pipx`, see AGENTS.md tech debt); imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS, Task Scheduler on Windows); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), Windows → `~/.archive/.config` (self-contained, when its `archiver-suite` dir exists) else legacy `%APPDATA%`, other POSIX/macOS → `$XDG_CONFIG_HOME` or `~/.config`.
 
 ## Seams (cross-process contracts; tests/test_seams.py, 271 checks, 35 seams)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
@@ -151,22 +151,18 @@ logrotate.
 ## Run / test (from a NEUTRAL cwd — repo root lets ./core shadow the install)
 Linux shell; `:` is the PYTHONPATH separator.
 
-**Known gap (confirmed 2026-09-11, not yet fixed):** since the port to `uv
-tool` venvs, no single installed venv has every dependency `tests/test_seams.py`
-needs (it touches archiver's `gallery_dl`, dispatcher's `telethon`, recorder's
-`playwright`, etc., in one process) — the `dispatcher` venv is missing
-`gallery_dl`, `media-archiver`'s venv is missing `telethon`, and the system
-`python3` has none of the suite's dependencies (not even `tomli_w`). There is
-currently no dev venv in this repo with the union of all five packages'
-dependencies installed. Until one exists, run selftests against whichever
-single package's own venv actually covers what that test imports (e.g. a
-recorder-only selftest against the `recorder` venv), and expect the full
-`tests/test_seams.py` battery to fail on an unrelated `ModuleNotFoundError`
-rather than a real regression unless you first build/point at such a venv.
+No single package's own `uv tool` venv has every dependency
+`tests/test_seams.py` needs (it touches archiver's `gallery_dl`, dispatcher's
+`telethon`, recorder's `playwright`, etc., in one process), and the system
+`python3` has none of the suite's dependencies (not even `tomli_w`). Fixed
+2026-09-11: run `python tools/setup_test_venv.py` once to build
+`.venv-test` (gitignored) with the union of all five packages' dependencies,
+then use its interpreter for the PYTHONPATH command below instead of a bare
+`python3`.
 
 ```bash
 export PYTHONPATH="core:archiver:recorder:dispatcher:ops"
-PY=~/.local/share/uv/tools/<package>/bin/python3   # pick the venv that covers what you're testing
+PY=.venv-test/bin/python3   # from tools/setup_test_venv.py; covers every package
 "$PY" tests/test_seams.py
 "$PY" core/core/_selftest_media_prep.py   # etc.
 # ops selftests are module-mode:
