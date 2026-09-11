@@ -1,5 +1,13 @@
 # Refactor plan — banned-user quarantine + two-root storage split
 
+> **HISTORICAL (confirmed shipped as of this doc's sanitization pass).** Both
+> refactors in this plan have shipped: Refactor 1 (quarantine helper,
+> account-gone signals, recorder ban subsystem, and manual-delete lifecycle)
+> and Refactor 2 (`routes_dir` two-root storage split and migration tooling).
+> Note that `CLAUDE.md` and `PROJECT_MAP.md` do not yet document these features
+> (a known follow-up gap, not addressed here). Kept as a historical record;
+> status, line anchors, and paths below reflect the pre-implementation state.
+
 **Status: PLAN — ready to implement.** Two independent refactors on top of the
 current interim storage layout. Decisions locked with the user are marked
 **[DECIDED]**. Anchors (`file:line`) were re-verified 2026-07-11 against `main`.
@@ -383,3 +391,4 @@ last); Phase 3 (recorder) is the largest new surface (~60% of Refactor 1); Phase
 4 (manual delete) is archiver-side and depends only on the deletion-roster +
 sweeper, so it can land right after Phase 2, independent of Phase 3. Every phase
 is independently mergeable with an executable gate.
+

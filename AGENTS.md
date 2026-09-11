@@ -50,6 +50,31 @@ does not touch `tests/test_seams.py`, which stays oversized — see
   subsystem) or a smarter automated approach that doesn't require deleting
   the original file in the same patch as creating its replacements.
 
+- [ ] **`CLAUDE.md`/`PROJECT_MAP.md` don't document shipped features.**
+  Neither file mentions `quarantine`, `routes_dir`, `manual_delete`, or
+  `ban_check` even though all are live (see 2026-09-11 doc pass below).
+  Needs a pass to bring both current.
+
+## Doc corrections (2026-09-11)
+
+- `REFACTOR_PLAN_bans_and_paths.md` was still headed "Status: PLAN — ready
+  to implement" though every phase of both refactors (quarantine,
+  account_gone, recorder ban subsystem, manual-delete lifecycle,
+  `routes_dir` split, `migrate_split_roots.py`) is already shipped and live
+  (verified by direct file inspection). Added a `HISTORICAL` callout
+  matching `WINDOWS_PORT.md`'s convention; body left unchanged.
+- `Tiktok_auto_refresh.md` proposed reinventing infra that already exists:
+  new DB helpers instead of `ItemStore.meta_get`/`meta_set` (already
+  designed for this — `core/core/schema.py`'s `metadata` table docstring
+  says so), a Firefox persistent-profile browser instead of
+  `platforms/tiktok_browser.py`'s existing ephemeral-Chromium pattern (which
+  also sidesteps the profile-lock problem the draft invented a workaround
+  for), and a nonexistent `StreamState.OFFLINE`/`get_active_stream_count()`
+  hook instead of the real `RecorderState.HANDOFF` transition in
+  `state.py`. Corrected via an external LLM dispatch (docs-worker role);
+  Claude wrote the task spec + verified the result, did not write the doc
+  text itself.
+
 <!-- triapi:plan run_id=20260905-060103-e92639 start -->
 ## TriAPI Plan (run 20260905-060103-e92639, appended 2026-09-05)
 
