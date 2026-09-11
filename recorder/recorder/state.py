@@ -33,18 +33,22 @@ from __future__ import annotations
 
 import logging
 import queue
+import random
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable
 
+from core import ItemStore
 from core import split_group_key
 from core.notify import queue_event
 from core.store import now_iso
 
+from . import cookie_refresh
 from . import ui
 from .capture import StreamCapture
 from .config import RecorderConfig
@@ -641,6 +645,30 @@ class StateMachine:
         self.state = RecorderState.HANDOFF
 
     def _scan_priority_list_once(self) -> None:
+        store = ItemStore.open(self.config.db_path)
+        try:
+            last_refresh_raw = store.meta_get("tiktok_last_cookie_refresh")
+            run_refresh = False
+            if not last_refresh_raw:
+                run_refresh = True
+            else:
+                parsed = datetime.fromisoformat(last_refresh_raw.replace("Z", "+00:00"))
+                hours_since = (datetime.now(timezone.utc) - parsed).total_seconds() / 3600.0
+                if hours_since > 48:
+                    run_refresh = True
+                elif hours_since > 24:
+                    run_refresh = random.random() < 0.30
+                elif hours_since > 12:
+                    run_refresh = random.random() < 0.10
+                else:
+                    run_refresh = False
+            if run_refresh:
+                did_refresh = cookie_refresh.simulate_human_browsing(self.config)
+                if did_refresh:
+                    store.meta_set("tiktok_last_cookie_refresh", now_iso())
+        finally:
+            store.close()
+
         # One immediate pass: someone may have gone live during the last
         # recording. If so, record them; else return to normal listening.
         for username in self.config.tiktok_users:
