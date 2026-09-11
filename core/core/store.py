@@ -490,7 +490,9 @@ class ItemStore:
                     f"""SELECT id FROM (
                             SELECT id, priority, discovered_at, {_CLUSTER_COLS}
                               FROM items WHERE status='pending'
-                        ) ORDER BY {_CLUSTER_ORDER} LIMIT 1"""
+                                AND (retry_after IS NULL OR retry_after <= ?)
+                        ) ORDER BY {_CLUSTER_ORDER} LIMIT 1""",
+                    (now_iso(),),
                 ).fetchone()
                 if row is None:
                     return None
@@ -575,7 +577,9 @@ class ItemStore:
                                        IFNULL(topic_id,-1) AS topic_disc,
                                        {_CLUSTER_COLS}
                                   FROM items WHERE status='pending'
-                             ) ORDER BY {_CLUSTER_ORDER} LIMIT 1"""
+                                    AND (retry_after IS NULL OR retry_after <= ?)
+                             ) ORDER BY {_CLUSTER_ORDER} LIMIT 1""",
+                        (now_iso(),),
                     ).fetchone()
                     if anchor is None:
                         return []
@@ -805,13 +809,22 @@ class ItemStore:
             log.warning("mark_deduplicated: id=%d not in 'sending' — no-op",
                         item_id)
 
-    def mark_failed(self, item_id: int, *, error: str, max_retries: int) -> str:
+    def mark_failed(self, item_id: int, *, error: str, max_retries: int,
+                    backoff_s: float | None = None) -> str:
         """Record a failed attempt. attempts was already incremented at
         claim, so attempts>=max_retries means we've used the budget →
         'failed' (terminal). Otherwise → 'pending' for another go.
         Returns the resulting status. Guarded on 'sending' (the only state a
         send outcome can legally arrive from) — a stray failure for an already
-        terminal/reset row is logged and ignored, never written through."""
+        terminal/reset row is logged and ignored, never written through.
+
+        backoff_s (2026-09-05 connection_fix.md fix): when given AND the row
+        is going back to 'pending', stamp retry_after backoff_s seconds into
+        the future so claim_next/claim_batch can't reclaim it immediately —
+        the fix for a stalled high-priority item monopolizing the drain
+        (see core.schema migration 5). Ignored on the terminal 'failed'
+        transition — a dead-forever row has no reason to carry a stale
+        future timestamp."""
         with self._immediate() as cur:
             r = cur.execute(
                 "SELECT attempts, status FROM items WHERE id=?", (item_id,),
@@ -822,10 +835,15 @@ class ItemStore:
             new_status = (Status.FAILED.value
                           if r["attempts"] >= max_retries
                           else Status.PENDING.value)
+            retry_after = None
+            if new_status == Status.PENDING.value and backoff_s:
+                retry_after = (datetime.now(timezone.utc)
+                              + timedelta(seconds=backoff_s)
+                              ).strftime("%Y-%m-%dT%H:%M:%SZ")
             n = self._guarded_set(
                 cur, item_id, to=new_status, allowed_from={"sending"},
-                set_sql=", last_error=?, claimed_at=NULL",
-                params=((error or "")[:_ERROR_CAP],),
+                set_sql=", last_error=?, claimed_at=NULL, retry_after=?",
+                params=((error or "")[:_ERROR_CAP], retry_after),
             )
             if n == 0:
                 log.warning("mark_failed: id=%d not in 'sending' (was %s) — no-op",

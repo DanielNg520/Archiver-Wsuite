@@ -64,7 +64,12 @@ def _internals_present(client: Any) -> bool:
     )
 
 
-async def _connect_sender(client: Any) -> MTProtoSender:
+async def _connect_sender(
+    client: Any,
+    *,
+    connect_timeout: float | None = None,
+    retries: int | None = None,
+) -> MTProtoSender:
     """A fresh MTProtoSender connected to the HOME data-centre, reusing the
     session's existing auth key.
 
@@ -79,8 +84,15 @@ async def _connect_sender(client: Any) -> MTProtoSender:
     # reconnect. On a drop we WANT the part-send to raise so the parallel path
     # fails fast and upload_file falls back to serial — and it removes the
     # reconnect-vs-disconnect race (see send.py __aenter__) for these senders too.
-    sender = MTProtoSender(client.session.auth_key, loggers=client._log,
-                           auto_reconnect=False)
+    sender_kwargs: dict[str, Any] = {
+        "loggers": client._log,
+        "auto_reconnect": False,
+    }
+    if connect_timeout is not None:
+        sender_kwargs["connect_timeout"] = connect_timeout
+    if retries is not None:
+        sender_kwargs["retries"] = retries
+    sender = MTProtoSender(client.session.auth_key, **sender_kwargs)
     await sender.connect(client._connection(
         dc.ip_address, dc.port, dc.id,
         loggers=client._log, proxy=client._proxy,
@@ -97,6 +109,9 @@ async def upload_file(
     part_size: int = PART_SIZE,
     file_name: str | None = None,
     progress_callback: ProgressCb | None = None,
+    connect_timeout: float | None = None,
+    retries: int | None = None,
+    stagger_s: float = 0.0,
 ) -> Any:
     """Upload ``path`` and return an ``InputFile``/``InputFileBig`` handle.
 
@@ -116,7 +131,10 @@ async def upload_file(
     try:
         return await _parallel_upload(
             client, path, size, connections, part_size,
-            file_name or path.name, progress_callback)
+            file_name or path.name, progress_callback,
+            connect_timeout=connect_timeout,
+            retries=retries,
+            stagger_s=stagger_s)
     except asyncio.CancelledError:
         raise
     except Exception as e:                                     # pragma: no cover
@@ -128,6 +146,10 @@ async def upload_file(
 async def _parallel_upload(
     client: Any, path: Path, size: int, connections: int, part_size: int,
     file_name: str, progress_callback: ProgressCb | None,
+    *,
+    connect_timeout: float | None = None,
+    retries: int | None = None,
+    stagger_s: float = 0.0,
 ) -> types.InputFileBig:
     file_id = helpers.generate_random_long()
     part_count = (size + part_size - 1) // part_size
@@ -168,9 +190,18 @@ async def _parallel_upload(
     async with AsyncExitStack() as stack:
         senders = []
         for _ in range(workers):
-            sender = await _connect_sender(client)
+            sender = await _connect_sender(
+                client,
+                connect_timeout=connect_timeout,
+                retries=retries,
+            )
             stack.push_async_callback(sender.disconnect)
             senders.append(sender)
+            # Stagger successive TCP handshakes so N connections do not SYN
+            # the data-centre in the same millisecond (reduces RST/timeout
+            # spikes on saturated DCs).
+            if stagger_s > 0:
+                await asyncio.sleep(stagger_s)
 
         tasks = [asyncio.create_task(produce())]
         tasks += [asyncio.create_task(consume(s)) for s in senders]

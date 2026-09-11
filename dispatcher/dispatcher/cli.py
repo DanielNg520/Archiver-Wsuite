@@ -121,6 +121,10 @@ async def _run_drain(config: DispatcherConfig) -> None:
         progress         = ProgressReporter(),
         sanitizer        = config.sanitizer,
         burner           = config.burner,
+        use_ipv6         = config.use_ipv6,
+        connect_timeout  = config.fast_upload_connect_timeout_s,
+        retries          = config.fast_upload_connect_retries,
+        connect_stagger_s = config.fast_upload_connect_stagger_s,
     ) as send_strategy:
         try:
             await drain_forever(
@@ -190,6 +194,10 @@ async def _run_check_routes(
         phone        = config.telegram.phone,
         session_name = config.telegram.session_name,
         burner       = config.burner,
+        use_ipv6     = config.use_ipv6,
+        connect_timeout = config.fast_upload_connect_timeout_s,
+        retries         = config.fast_upload_connect_retries,
+        connect_stagger_s = config.fast_upload_connect_stagger_s,
     ) as strat:
         for chat_id, topic_id in dests:
             # Same peer construction the sender uses, so a green check means the

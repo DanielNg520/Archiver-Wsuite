@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS metadata (
 # (not executescript) so the whole upgrade is ONE transaction that rolls back
 # cleanly on failure — including the user_version bump, which lives in the DB
 # header and participates in the transaction.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class SchemaVersionError(RuntimeError):
@@ -197,6 +197,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         # because a thread id is always a positive int and Telethon's reply_to
         # wants one — keeps the send-time call total.
         "ALTER TABLE items ADD COLUMN topic_id INTEGER",
+    ]),
+    (5, [
+        # Per-item stall backoff (2026-09-05 connection_fix.md fix): a NULL
+        # or past retry_after leaves the row immediately claimable; a future
+        # timestamp (set by mark_failed on a stall) hides it from
+        # claim_next/claim_batch until that time passes, so a stalled
+        # high-priority item can no longer be reclaimed within poll_interval_s
+        # of failing and monopolize the drain (root cause of the 2026-09-05
+        # ~5.3h queue-block incident).
+        "ALTER TABLE items ADD COLUMN retry_after TEXT",
     ]),
 ]
 

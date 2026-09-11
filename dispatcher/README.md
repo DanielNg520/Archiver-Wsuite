@@ -32,6 +32,7 @@ Optional Telegram routing overrides live in the same file. TikTok videos use
 `TELEGRAM_CHAT_ID_TIKTOK`; TikTok live recordings produced by the recorder
 use `TELEGRAM_CHAT_ID_TIKTOK_LIVE`, or
 `TELEGRAM_CHAT_ID_TIKTOK_LIVE_<USER>` for a single recorded account.
+Set `USE_IPV6=1` to prefer IPv6 when connecting to Telegram DCs (defaults to IPv4).
 
 First time you run `dispatcher start`, Telethon will prompt for the SMS
 auth code interactively and write a session file at

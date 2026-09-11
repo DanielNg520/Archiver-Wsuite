@@ -68,3 +68,4 @@ Autosplitter.zip
 #    MIKI section to `ops watch` on THIS machine only — never track it here ──
 miki_status.py
 watch-miki.bat
+.codegraph/

@@ -19,9 +19,25 @@ dense code map. This file is only the traps that bite automated sessions.
 
 ## Build / test
 
-- Packages: pipx venvs (`dispatcher`, `media-archiver`, `recorder`, `ops`) with
+- Packages: **`uv tool` venvs** (`dispatcher`, `media-archiver`, `recorder`, `ops`;
+  `pipx` in older notes below is stale — check with `uv tool list`) with
   `core` injected **editable** — `core` edits are live on worker restart; the
-  other four need `python -m pipx install --force ./<pkg>` after edits.
+  other four need a reinstall after edits:
+  `uv tool install --force --editable ./<pkg> --with-editable ./core`.
+  **`--with-editable ./core` is not optional** — a bare `uv tool install
+  --force --editable ./<pkg>` recreates the venv from scratch and DROPS the
+  separately-injected `core` dependency entirely (none of the four packages
+  declare `core` in their own `pyproject.toml`, so nothing else re-adds it).
+  The break is sneaky: `import core` doesn't fail outright afterward if your
+  shell's cwd happens to be the repo root (Python's `-c`/cwd-relative import
+  then picks up the outer `core/` folder as a *namespace* package — the same
+  trap noted below — instead of raising ModuleNotFoundError), so it can look
+  like it's working right up until a submodule import fails. Verify any
+  reinstall from a neutral cwd: `cd /tmp && <tool>/bin/python -c "import
+  core; print(core.__path__)"` should print
+  `.../Archiver-Suite/core/core`, not `.../Archiver-Suite/core`. (Hit for
+  real during the recorder-notify feature, 2026-08-05 — recovered by
+  reinstalling with the flag.)
 - Tests (`:` is the PYTHONPATH separator on Linux):
   `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1
   python tests/test_seams.py` (no pytest installed). Per-module `_selftest_*.py`

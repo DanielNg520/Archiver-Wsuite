@@ -202,6 +202,10 @@ class DispatcherConfig:
     # and re-uploads legitimately slow transfers from scratch.
     stall_base_timeout_s: float = 600.0
     stall_min_rate_kib_s: float = 64.0
+    # Stall backoff: when the watchdog fires, sleep this long before the
+    # recovery path retries — lets a transient link dropout settle without a
+    # tight retry storm. Tune via STALL_BACKOFF_S in ~/.config/dispatcher/.env.
+    stall_backoff_s:    float = 300.0
     # Parallel upload: number of concurrent MTProto connections used to push a
     # big file's parts (the "FastTelethon" fan-out). 1 restores Telethon's stock
     # single-connection serial upload. Default 8 = fast_upload.MAX_CONNECTIONS,
@@ -225,6 +229,28 @@ class DispatcherConfig:
     # converter's fallback tier is unchanged. Disable with FAST_ALBUM=0 to pin
     # the native serial path.
     fast_album: bool = True
+    use_ipv6: bool = False
+
+    # Per-connection connect deadline for the FastTelethon fan-out. The serial
+    # default (telethon's own ~10 s) is too tight under contention: with 8
+    # workers dialing at once on a stressed link, individual connects routinely
+    # drag past it and the whole upload aborts on the slowest handshake. A
+    # short ceiling still surfaces real outages fast; bump it only if you see
+    # "TimeoutError" in the fan-out logs on a known-good network. Tune via
+    # FAST_UPLOAD_CONNECT_TIMEOUT_S in ~/.config/dispatcher/.env.
+    fast_upload_connect_timeout_s: float = 8.0
+    # Per-connection connect retry count. Each worker that fails to handshake
+    # tries this many times before the fan-out gives up on that worker and
+    # moves to the next. The retries run BEFORE the per-worker stagger below
+    # kicks in for sibling workers, so a flappy first hop doesn't cascade.
+    # Tune via FAST_UPLOAD_CONNECT_RETRIES in ~/.config/dispatcher/.env.
+    fast_upload_connect_retries: int = 2
+    # Per-worker handshake stagger. Each FastTelethon worker waits this many
+    # seconds after the previous one starts dialing — spread the 8-way SYN
+    # storm so a cheap NAT/CP router doesn't drop the first few and force a
+    # slow retry. Tune via FAST_UPLOAD_CONNECT_STAGGER_S in
+    # ~/.config/dispatcher/.env.
+    fast_upload_connect_stagger_s: float = 0.1
     # Max total bytes in ONE album (claim_batch byte cap). A big album is a
     # single all-or-nothing send; keeping it small enough to finish stops one
     # multi-GB album from wedging the queue head on every mid-send interruption
@@ -261,10 +287,18 @@ class DispatcherConfig:
             failed_retention_days = env.opt_float("FAILED_RETENTION_DAYS", 7.0, min_value=0.0),
             stall_base_timeout_s  = env.opt_float("STALL_BASE_TIMEOUT_S", 600.0, min_value=1.0),
             stall_min_rate_kib_s  = env.opt_float("STALL_MIN_RATE_KIB_S", 64.0, min_value=1.0),
+            stall_backoff_s       = env.opt_float("STALL_BACKOFF_S", 300.0, min_value=0.0),
             upload_connections    = env.opt_int("UPLOAD_CONNECTIONS", 8, min_value=1),
             fast_album            = env.opt_bool("FAST_ALBUM", True),
             max_album_bytes       = env.opt_int("MAX_ALBUM_BYTES", MAX_ALBUM_BYTES,
                                                 min_value=1),
+            use_ipv6                      = env.opt_bool("USE_IPV6", False),
+            fast_upload_connect_timeout_s = env.opt_float(
+                "FAST_UPLOAD_CONNECT_TIMEOUT_S", 8.0, min_value=0.1),
+            fast_upload_connect_retries   = env.opt_int(
+                "FAST_UPLOAD_CONNECT_RETRIES", 2, min_value=0),
+            fast_upload_connect_stagger_s = env.opt_float(
+                "FAST_UPLOAD_CONNECT_STAGGER_S", 0.1, min_value=0.0),
         )
 
     def config_toml_path(self) -> Path:

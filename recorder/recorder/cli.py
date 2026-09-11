@@ -215,11 +215,29 @@ def cmd_record(args: argparse.Namespace) -> int:
     # Manual mode is for ad-hoc grabs when the service isn't running.
     pid_path = _pid_path(config)
     if _recorder_running(pid_path):
-        log.error("a recorder is already running (pid file %s). Manual record "
-                  "would conflict with its TikTok lock — `recorder stop` first, "
-                  "or add @%s to the list and let the service catch it.",
-                  pid_path, username)
-        return 1
+        log.info("a recorder is already running (pid file %s). Stopping it automatically to allow manual record...", pid_path)
+        ops_bin = _resolve_ops_bin()
+        if ops_bin:
+            try:
+                subprocess.run([ops_bin, "unload", "recorder"])
+            except OSError as e:
+                log.warning("could not run ops unload recorder: %s", e)
+        else:
+            try:
+                pid = int(pid_path.read_text().strip())
+                from . import _procgroup
+                _procgroup.terminate_pid(pid)
+            except Exception as e:
+                log.warning("could not terminate pid: %s", e)
+        
+        import time
+        for _ in range(100):
+            if not _recorder_running(pid_path):
+                break
+            time.sleep(0.1)
+        else:
+            log.error("recorder did not stop in time")
+            return 1
 
     from .capture import StreamCapture
     from .enqueue import EnqueueClient
@@ -250,6 +268,13 @@ def cmd_record(args: argparse.Namespace) -> int:
         # First signal → graceful stop; second → hard exit (see cmd_start).
         if machine._stop.is_set():
             log.warning("second signal — forcing exit", extra={"ev": "stop"})
+            # os._exit skips `finally`, so do the cleanup the exit is about to
+            # bypass RIGHT HERE. Manual record runs with the service unloaded
+            # (i.e. `disable --now` — off at boot too); without this, a double
+            # Ctrl-C strands the recorder disabled, silently and permanently.
+            pid_path.unlink(missing_ok=True)
+            if not args.no_reload:
+                _reload_recorder_service()
             os._exit(130)
         log.info("signal %s — requesting stop (Ctrl-C again to force)", signum,
                  extra={"ev": "stop"})
@@ -424,7 +449,7 @@ def _resolve_user(data: dict, raw: str) -> str:
     if val in known:
         return val
     for username, alias in _get_aliases(data).items():
-        if alias.lower() == val.lower():
+        if isinstance(alias, str) and alias.lower() == val.lower():
             return username
     return val
 

@@ -22,6 +22,39 @@ and let it run.
 
 ---
 
+## Shell shortcuts
+
+Short aliases/functions for the commands typed most often, defined in
+`~/.bashrc.d/archiver-suite.sh` (auto-loaded by `~/.bashrc` — available in any
+new shell) and mirrored in the Ops Center web dashboard's manual-command box
+(`opscenter/web.py:_SHORTHANDS`), so the same shorthand works whether you're
+at this machine's terminal or on your phone. Each just validates the arg
+count, then execs the real command below — no hidden behavior.
+
+| Shorthand | Runs |
+|---|---|
+| `record <user>` | `recorder record --user <user>` |
+| `add <user> [alias]` | `recorder config add --user <user> [--alias <alias>]` |
+| `manual-add <user> [alias]` | `recorder config manual-add --user <user> [--alias <alias>]` |
+| `archiver-add <platform> <user>` | `archiver config add --platform <platform> --user <user>` |
+| `archiver-remove <platform> <user>` | `archiver config remove --platform <platform> --user <user>` |
+| `unban <platform> <user>` | `archiver banned unban --platform <platform> --user <user>` |
+| `platform-add <platform>` | `archiver platform add <platform>` |
+| `platform-remove <platform>` | `archiver platform remove <platform>` |
+| `local-add <name>` | `archiver local add <name>` |
+| `local-remove <name>` | `archiver local remove <name>` |
+
+Also already present, older, box-wide (not archiver-specific — see
+`~/.bashrc.d/archiver-suite.sh`): `suite-health` (`ops health`),
+`suite-status` (`dispatcher status`), `suite-load`/`suite-unload`
+(`ops load`/`unload`), `suite-restart <name>` (`ops restart <name>`).
+
+Keep the two shorthand sets (shell functions here, `_SHORTHANDS` in Ops
+Center's `opscenter/web.py`) in lockstep when adding a new one — that's the
+whole point of having both.
+
+---
+
 ## Platforms (downloaded)
 
 ```bash
@@ -220,6 +253,47 @@ dispatcher config set delete_after_upload true --platform orphaned   # chat_id f
 dispatcher config set delete_after_upload_records true               # live recordings
 ```
 Restart the dispatcher after changing delete/batch policies.
+
+## Recording-finished notifications
+
+The recorder sends a plain-text Telegram alert the moment a live capture
+session genuinely ends (offline confirmed, stopped, or the reconnect budget
+tripped) — separate from the media itself, which still goes through the
+normal upload queue. Delivered to your own Saved Messages and to chat id
+`8507825237` (`dispatcher/dispatcher/drain.py:_NOTIFY_PEERS`), e.g.:
+
+```
+🔴 recording done: @someuser
+2026-08-05T19:21:19Z → 2026-08-05T19:52:03Z (30m44s)
+3 files · 1.2 GB · 1 reconnect(s)
+```
+
+**How it works** (new — 2026-08-05): `recorder/recorder/state.py`'s
+`_wait_for_recording_done` calls `core.notify.queue_event()` right after
+logging the "@user ended" line, which atomically writes one small JSON file
+per event under `<config_home>/archiver-suite/notify_outbox/`. The
+dispatcher's drain loop (`dispatcher/dispatcher/drain.py:
+deliver_pending_notifications`, called once per poll cycle) drains that
+outbox, sends each pending message to every configured peer via its
+existing Telethon client (`TelethonSendStrategy.send_text`), and deletes the
+file only once **every** peer received it — so the dispatcher stays the
+suite's one and only Telegram sender (per `CLAUDE.md`), rather than adding a
+second bot/client for alerts. A send failure (network blip, flood wait)
+just leaves the file in the outbox for the next poll cycle.
+
+Both the recorder and dispatcher packages must be reinstalled after pulling
+this change: `uv tool install --force --editable ./recorder --with-editable
+./core` and the same for `./dispatcher` — **always include `--with-editable
+./core`**, or the reinstall silently drops the separately-injected editable
+`core` dependency (a real incident during this feature's rollout: a bare
+`--force --editable ./recorder` broke `import core` entirely until
+re-injected with the flag above).
+
+To add another notify destination or change delivery logic, edit
+`_NOTIFY_PEERS` in `dispatcher/dispatcher/drain.py`. To queue a different
+kind of one-off alert from anywhere else in the suite, call
+`core.notify.queue_event(kind, text, **fields)` — no dispatcher changes
+needed, it drains any pending file regardless of `kind`.
 
 ## Recorder split mode (slice big recordings into ≤2 GiB parts)
 

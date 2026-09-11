@@ -159,6 +159,7 @@ class SendResult:
     flood_wait_s:         int | None = None
     image_process_failed: bool = False
     media_empty:          bool = False
+    stalled:              bool = False
 
 
 # ── Strategy ABC ──────────────────────────────────────────────────────────
@@ -219,10 +220,14 @@ class TelethonSendStrategy(SendStrategy):
         stall_base_timeout_s: float = 600.0,
         stall_min_rate_kib_s: float = 64.0,
         upload_connections: int = 8,   # fast_upload.MAX_CONNECTIONS (see config)
+        connect_timeout:    float = 8.0,
+        retries:           int   = 2,
+        connect_stagger_s: float = 0.1,
         fast_album: bool = True,        # parallel video-album path (see config)
         progress: ProgressReporter | None = None,
         sanitizer: Sanitizer | None = None,
         burner: BurnerCreds | None = None,
+        use_ipv6: bool = False,
     ):
         self._api_id           = api_id
         self._api_hash         = api_hash
@@ -246,9 +251,18 @@ class TelethonSendStrategy(SendStrategy):
         self._stall_base_timeout_s = stall_base_timeout_s
         self._stall_min_rate_kib_s = stall_min_rate_kib_s
         self._upload_connections = upload_connections
+        self._connect_timeout    = connect_timeout
+        self._retries            = retries
+        self._connect_stagger_s  = connect_stagger_s
         self._fast_album = fast_album
         self._progress = progress
         self._sanitizer = sanitizer or Sanitizer([])
+        # use_ipv6 (off by default): when True, Telethon's connection layer
+        # resolves the DC endpoint to an AAAA record and connects via IPv6.
+        # Only honored on the PRIMARY client built by _build_client; see the
+        # note there re. fast_upload's borrowed senders (they do NOT inherit
+        # this setting — their connection is built inside fast_upload).
+        self._use_ipv6 = use_ipv6
         self._client: TelegramClient | None = None
         # Monotonic timestamp of the last upload-progress tick, bumped by every
         # _progress_cb callback. The stall watchdog (_send_with_retries) trips on
@@ -401,6 +415,24 @@ class TelethonSendStrategy(SendStrategy):
             # background reconnect into a race with ours — with a single
             # authority there is no race. See dispatcher.keepalive.
             connection=KeepAliveConnectionTcpFull,
+            # use_ipv6 propagates the strategy-level toggle (default False) to
+            # the client. Verified re. fast_upload's borrowed senders:
+            # _connect_sender (dispatcher.fast_upload) builds its own
+            # MTProtoSender and passes its own connection kwargs (proxy,
+            # local_addr) directly to client._connection(...); it does NOT
+            # read self._use_ipv6 here and does NOT thread use_ipv6 through.
+            # The borrow path therefore IGNORES this toggle — its connections
+            # stay on whatever address family client._connection() resolves
+            # by default. Living with that: a) the borrow path is parallel
+            # fan-out for one user-chosen DC, and our default is IPv4, which is
+            # what the primary connection is using too, so the borrowed senders
+            # already match the primary's address family; b) when an operator
+            # sets use_ipv6=True, the primary goes IPv6 and the parallel
+            # uploads would fall back to IPv4, which still works (Telegram
+            # accepts both), it's just not the requested stack. Plumb it
+            # through fast_upload's _connect_sender only if that asymmetry
+            # ever causes a real problem.
+            use_ipv6=self._use_ipv6,
         )
 
     async def _connect_authorized(
@@ -510,6 +542,24 @@ class TelethonSendStrategy(SendStrategy):
         if msg is None:
             return False, f"chat OK ({name}) — topic {topic_id} NOT found"
         return True, f"{name} · topic {topic_id}"
+
+    async def send_text(self, peer: "int | str", text: str) -> bool:
+        """Deliver a plain-text admin alert (see core.notify) to `peer` —
+        "me" for Saved Messages, or a chat/user id — on the PRIMARY account,
+        never the burner, since this is an operator notification about the
+        suite's own state, not a routed upload. Returns True on success;
+        failures are logged and swallowed so a notification glitch can never
+        take the drain loop down."""
+        try:
+            await self._client.send_message(peer, text)
+            return True
+        except Exception as e:
+            log.warning("notify: send_text(%r) failed: %s", peer, e)
+            return False
+
+    async def send_text_to_self(self, text: str) -> bool:
+        """Convenience wrapper: send_text to Saved Messages."""
+        return await self.send_text("me", text)
 
     async def send(
         self,
@@ -1174,6 +1224,9 @@ class TelethonSendStrategy(SendStrategy):
         handle = await fast_upload.upload_file(
             self._sender, send_path, file_name=display,
             connections=self._upload_connections, progress_callback=progress_cb,
+            connect_timeout=self._connect_timeout,
+            retries=self._retries,
+            stagger_s=self._connect_stagger_s,
         )
         thumb_handle = (
             await self._sender.upload_file(thumb_path) if thumb_path else None
@@ -1208,6 +1261,7 @@ class TelethonSendStrategy(SendStrategy):
         enough to look like an eternal hang)."""
         attempts = 0
         last_error: str | None = None
+        stalled = False
         while attempts < self._max_retries:
             try:
                 await self._run_with_stall_watchdog(send_fn, payload_bytes)
@@ -1298,6 +1352,7 @@ class TelethonSendStrategy(SendStrategy):
                 # OSError arm — builtin TimeoutError IS an OSError subclass. The
                 # connection is presumed wedged; recycle it before the next try.
                 attempts += 1
+                stalled = True
                 last_error = (
                     f"stalled: no upload progress for "
                     f"{self._stall_base_timeout_s:.0f}s ({payload_bytes} bytes)"
@@ -1343,4 +1398,5 @@ class TelethonSendStrategy(SendStrategy):
         return SendResult(
             ok=False,
             error=last_error or "send failed (no exception captured)",
+            stalled=stalled,
         )

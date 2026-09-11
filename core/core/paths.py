@@ -72,3 +72,13 @@ def recorder_pid() -> Path:
     """Default recorder pid file. The recorder writes it under its configured
     state dir (default ~/.recorder); ops reads this default location."""
     return Path("~/.recorder/pid").expanduser()
+
+
+def notify_outbox_dir() -> Path:
+    """Directory holding pending one-off notifications (see core.notify) —
+    e.g. 'recorder finished a live capture' — for the dispatcher to deliver.
+    Shared (not per-app): the recorder writes here, the dispatcher polls it.
+    One small JSON file per event rather than a heartbeat-style single file,
+    since (unlike tiktok.lock/progress.json) these are a QUEUE of discrete
+    events, not a single current-state snapshot."""
+    return _osp.config_dir(_osp.SUITE) / "notify_outbox"

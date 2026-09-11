@@ -82,6 +82,11 @@ class Item:
     # Forum-topic destination (schema v4). Twin of chat_id: set only when the
     # destination is explicit (orphaned `.t<id>` folders); NULL → General topic.
     topic_id:        int | None = None
+    # Per-item stall backoff (schema v5, 2026-09-05 connection_fix.md fix).
+    # NULL/past → claimable now; a future ISO timestamp (set by
+    # ItemStore.mark_failed's backoff_s) hides the row from claim_next/
+    # claim_batch until it passes.
+    retry_after:     str | None = None
 
     @classmethod
     def from_row(cls, r: sqlite3.Row) -> "Item":

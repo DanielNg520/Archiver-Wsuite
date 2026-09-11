@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **Purpose** | Auto-download social media (X, IG, TikTok + TikTok-live capture), dedupe, and ship to Telegram channels. |
-| **Stack** | Python 3.13 · SQLite (WAL) · Telethon/MTProto · yt-dlp + gallery-dl · ffmpeg · pipx venvs + systemd --user |
+| **Stack** | Python 3.13 · SQLite (WAL) · Telethon/MTProto · yt-dlp + gallery-dl · ffmpeg · `uv tool` venvs + systemd --user |
 | **Shape** | 4 binaries (`archiver`, `recorder`, `dispatcher`, `ops`) + shared `core` lib; coordinate via ONE SQLite file (`<repo>/.config/archiver-suite/suite.db`), no sockets |
 | **Platform** | Linux (systemd --user); self-contained inside the checkout (config + DB in `<repo>/.config`); `core.platform.*` keeps launchd (macOS) + Task Scheduler (Windows) paths too |
 | **Root** | the checkout (e.g. `~/Documents/Coding/Archiver-Suite`) — config + DB self-contained under `<repo>/.config` |

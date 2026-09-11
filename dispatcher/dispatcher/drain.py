@@ -631,6 +631,7 @@ async def drain_forever(
                 statuses.add(store.mark_failed(
                     it.id, error=result.error or "unknown",
                     max_retries=config.max_retries,
+                    backoff_s=config.stall_backoff_s if result.stalled else None,
                 ))
             # A held-back dupe's twin did NOT deliver — requeue it untouched
             # (no attempt burned: it was never sent). Next claim re-evaluates;

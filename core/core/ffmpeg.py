@@ -21,17 +21,24 @@ import subprocess
 log = logging.getLogger(__name__)
 
 
-def run_ffmpeg(cmd: list[str], *, what: str, timeout: float) -> bool:
-    """Run an ffmpeg `cmd`, returning True on success (exit 0). On any failure
-    — ffmpeg missing, timeout, or non-zero exit — log a concise reason and
-    return False; never raise. `what` is a short label for the log line."""
+def run_ffmpeg_with_stderr(cmd: list[str], *, what: str, timeout: float) -> tuple[bool, str]:
+    """Run an ffmpeg `cmd`, returning (ok, stderr). On success (exit 0), returns
+    (True, stderr). On failure, logs a concise reason and returns (False, stderr/error)."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
         log.warning("ffmpeg: %s failed: %s", what, e)
-        return False
+        return False, str(e)
     if r.returncode != 0:
         log.warning("ffmpeg: %s rc=%d: %s",
                     what, r.returncode, (r.stderr or "").strip()[:300])
-        return False
-    return True
+        return False, r.stderr or ""
+    return True, r.stderr or ""
+
+
+def run_ffmpeg(cmd: list[str], *, what: str, timeout: float) -> bool:
+    """Run an ffmpeg `cmd`, returning True on success (exit 0). On any failure
+    — ffmpeg missing, timeout, or non-zero exit — log a concise reason and
+    return False; never raise. `what` is a short label for the log line."""
+    ok, _ = run_ffmpeg_with_stderr(cmd, what=what, timeout=timeout)
+    return ok

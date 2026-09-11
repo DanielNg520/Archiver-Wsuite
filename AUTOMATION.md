@@ -244,6 +244,20 @@ ops unload            # stops + disables all workers
 ops unload recorder   # stop just one while you edit its config
 ```
 
+> **`unload` also un-boots.** On Linux `ops load` is `systemctl --user enable
+> --now` and `ops unload` is `disable --now`, so unloading removes the worker
+> from the boot set too, not just the running set. `opscenter` shows this as
+> `boot✗`.
+>
+> A manual `recorder record --user X` runs with the service unloaded (it
+> refuses to start otherwise), and re-runs `ops load recorder` on exit to close
+> that gap — so the recorder self-restores its boot-enablement when the record
+> ends. Pass `--no-reload` to opt out. **Fixed 2026-07-29:** the second Ctrl-C
+> during a manual record calls `os._exit(130)`, which skips the `finally` that
+> did the reload — a double Ctrl-C used to strand the recorder disabled and
+> stopped, silently and permanently off at boot. The signal handler now does
+> that cleanup itself before the hard exit.
+
 There is no direct-send rollback path. If the dispatcher is unhealthy, stop the
 services, fix or re-authenticate the dispatcher, and let the durable `pending`
 rows drain when it is healthy. See [ops/RUNBOOK.md](ops/RUNBOOK.md).

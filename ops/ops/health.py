@@ -74,6 +74,10 @@ LABELS = {
     "archiver":   "com.duy.archiver",
 }
 
+# NOTE: Miki monitoring was decoupled out of this archiver dashboard into the
+# standalone "Ops Center" (~/Documents/Coding/Ops Center), which shows every
+# worker on the box as a peer. `ops health` here is archiver-suite only again.
+
 
 # ── data-refresh memoization (ops watch) ────────────────────────────────────
 # `ops watch` renders many frames per second for animation, but the DB counts /

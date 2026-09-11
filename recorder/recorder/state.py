@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Callable
 
 from core import split_group_key
+from core.notify import queue_event
+from core.store import now_iso
 
 from . import ui
 from .capture import StreamCapture
@@ -526,6 +528,12 @@ class StateMachine:
         handed to the uploader exactly once, at the end."""
         session_files: "dict[Path, None]" = {}     # insertion-ordered de-dup
         session_start = time.monotonic()
+        session_start_wall = now_iso()   # wall-clock pair for session_start's
+                                          # monotonic clock — logged/notified
+                                          # alongside elapsed so a human reading
+                                          # the log doesn't have to do math
+                                          # against "now" to find when a
+                                          # recording actually began.
         zero_byte_streak = 0
         reconnects = 0
 
@@ -588,6 +596,7 @@ class StateMachine:
         #    downloads during handoff + upload, then hand off the files once. ──
         self._release_lock_if_held()
         elapsed = time.monotonic() - session_start
+        session_end_wall = now_iso()
         files = list(session_files)
         user = self.current_user or "?"
         # A broadcast that dropped and reconnected leaves >1 segment file. Stamp
@@ -601,14 +610,28 @@ class StateMachine:
         if files:
             total = sum(_safe_size(f) for f in files)
             extra_seg = "" if reconnects == 0 else f" · {reconnects} reconnect(s)"
-            log.info("@%s ended — %s · %d file%s · %s%s",
-                     user, ui.human_duration(elapsed), len(files),
+            log.info("@%s ended — %s → %s (%s) · %d file%s · %s%s",
+                     user, session_start_wall, session_end_wall,
+                     ui.human_duration(elapsed), len(files),
                      "" if len(files) == 1 else "s", ui.human_size(total),
                      extra_seg, extra={"ev": "rec_end"})
+            notify_text = (f"\U0001f534 recording done: @{user}\n"
+                           f"{session_start_wall} → {session_end_wall} "
+                           f"({ui.human_duration(elapsed)})\n"
+                           f"{len(files)} file{'' if len(files) == 1 else 's'} "
+                           f"· {ui.human_size(total)}{extra_seg}")
         else:
             # rc=-2 dead-stream guard (no bytes ever arrived).
-            log.info("@%s ended — %s · no data (dead stream)",
-                     user, ui.human_duration(elapsed), extra={"ev": "rec_end"})
+            log.info("@%s ended — %s → %s (%s) · no data (dead stream)",
+                     user, session_start_wall, session_end_wall,
+                     ui.human_duration(elapsed), extra={"ev": "rec_end"})
+            notify_text = (f"\U0001f534 recording ended: @{user}\n"
+                           f"{session_start_wall} → {session_end_wall} "
+                           f"({ui.human_duration(elapsed)}) · no data (dead stream)")
+        queue_event("recorder_done", notify_text, user=user,
+                    started_at=session_start_wall, ended_at=session_end_wall,
+                    elapsed_s=elapsed, file_count=len(files),
+                    reconnects=reconnects)
         for f in files:
             self._upload_q.put(_Job(username=self.current_user or "",
                                     file_path=f, group_key=session_gk))

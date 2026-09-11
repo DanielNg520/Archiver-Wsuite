@@ -254,8 +254,21 @@ def _run_ffmpeg(cmd: list[str], what: str) -> bool:
     return ffmpeg.run_ffmpeg(cmd, what=what, timeout=_CONVERT_TIMEOUT_S)
 
 
+def _run_ffmpeg_remux(cmd: list[str], what: str) -> bool:
+    ok, stderr = ffmpeg.run_ffmpeg_with_stderr(cmd, what=what, timeout=_CONVERT_TIMEOUT_S)
+    if not ok:
+        return False
+    # If the remux succeeded but the timestamps were severely broken (typical for
+    # reconnected live streams), the resulting MP4 will be unwatchable on Telegram.
+    # Reject it so it falls back to a re-encode, which rebuilds timestamps.
+    if "Non-monotonous DTS" in stderr or "timestamp discontinuity" in stderr:
+        log.warning("media_prep: %s produced discontinuous timestamps — rejecting for re-encode", what)
+        return False
+    return True
+
+
 def _remux_cmd(src: Path, dst: Path) -> list[str]:
-    return ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+    return ["ffmpeg", "-y", "-v", "warning", "-i", str(src),
             "-map", "0:V:0", "-map", "0:a:0?",
             "-c", "copy", "-movflags", "+faststart", str(dst)]
 
@@ -327,7 +340,7 @@ def _convert(src: Path, p: _Probe) -> Path | None:
     # durations from decoded frames. (-c copy ignores -fflags +genpts, so the
     # re-encode is the only path that actually fixes such a source.)
     if _codecs_copyable(p):
-        if (_run_ffmpeg(_remux_cmd(src, dst), what=f"remux {src.name}")
+        if (_run_ffmpeg_remux(_remux_cmd(src, dst), what=f"remux {src.name}")
                 and _accept(p, dst, "remux", src.name)):
             log.info("media_prep: remux %s → %s (%.2f GB)", src.name, dst.name,
                      dst.stat().st_size / 1e9)
