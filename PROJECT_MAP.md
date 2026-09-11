@@ -13,7 +13,7 @@
 | **Shape** | 4 binaries (`archiver`, `recorder`, `dispatcher`, `ops`) + shared `core` lib; coordinate via ONE SQLite file (`<repo>/.config/archiver-suite/suite.db`), no sockets |
 | **Platform** | Linux (systemd --user); self-contained inside the checkout (config + DB in `<repo>/.config`); `core.platform.*` keeps launchd (macOS) + Task Scheduler (Windows) paths too |
 | **Root** | the checkout (e.g. `~/Documents/Coding/Archiver-Suite`) — config + DB self-contained under `<repo>/.config` |
-| **Output** | `~/.archive` (media/records; interim unified root — see `REFACTOR_PLAN_bans_and_paths.md`) |
+| **Output** | `~/.archive` (media/records; `ROUTES_DIR` can split chat_id-folder routing onto a separate volume — see README.md's "Two-root split") |
 | **Status** | Active |
 | **Priorities** | integrity > self-healing > seam robustness > efficiency |
 
@@ -22,7 +22,10 @@
 Producers (archiver downloads, recorder captures live, or you drop files in a
 chat_id folder) write media to disk plus a `pending` DB row. The dispatcher
 claims rows and uploads them to Telegram. All coordination is through
-`suite.db` — no IPC.
+`suite.db` — no IPC. Banned/gone accounts get a reversible on-disk quarantine
+(`core.quarantine`); a user-requested `archiver delete` is a separate,
+terminal, deferred-trash path (`core.manual_delete`) — see DESIGN.md's core
+module table for both.
 
 ## Components (one line each)
 

@@ -50,10 +50,51 @@ does not touch `tests/test_seams.py`, which stays oversized — see
   subsystem) or a smarter automated approach that doesn't require deleting
   the original file in the same patch as creating its replacements.
 
-- [ ] **`CLAUDE.md`/`PROJECT_MAP.md` don't document shipped features.**
-  Neither file mentions `quarantine`, `routes_dir`, `manual_delete`, or
-  `ban_check` even though all are live (see 2026-09-11 doc pass below).
-  Needs a pass to bring both current.
+- [x] **`PROJECT_MAP.md` didn't document shipped features.** Fixed in the
+  2026-09-11 doc sanitization pass below — `core.quarantine`/`core.manual_delete`
+  now get a one-line mention, `ROUTES_DIR`'s stale "interim" wording is gone.
+  `CLAUDE.md` deliberately left alone: its own stated scope is "only the traps
+  that bite automated sessions," not a feature list — a `quarantine`/`ban_check`
+  entry there would be scope creep against its own header, not a fix.
+
+- [ ] **`ops/ops/update.py` still shells out to `pipx`; this deployment has none
+  installed.** Confirmed 2026-09-11: `python3 -m pipx` raises `ModuleNotFoundError`
+  on this box, and `uv tool list` shows all four worker packages are actually
+  `uv tool`-managed. `ops update`'s reinstall step (`reinstall_steps`/`_pipx_argv`
+  in `ops/ops/update.py`) will fail outright the moment it's invoked. Not a docs
+  problem — this is a real code bug, callouts added to README.md/AUTOMATION.md/
+  ops/RUNBOOK.md/DESIGN.md point at the manual `uv tool install --force --editable
+  ./<pkg> --with-editable ./core` workaround in the meantime. Needs a real fix
+  (swap the `pipx` argv-building in `update.py` for the equivalent `uv tool`
+  invocation) — per this repo's supervisor/TriAPI convention, that should go
+  through TriAPI's dispatch, not a hand-edit, given the size of the blast radius
+  (it's the one-command production redeploy path).
+
+- [ ] **No single dev venv can run `tests/test_seams.py` on this box.** Confirmed
+  2026-09-11: the `dispatcher` uv-tool venv lacks `gallery_dl`, the `media-archiver`
+  venv lacks `telethon`, and the system `python3` lacks everything (not even
+  `tomli_w`). Since the pipx→uv tool port, nobody built a combined dev
+  environment with the union of all five packages' dependencies. DESIGN.md's
+  Run/test section now documents this as a known gap instead of a working
+  recipe. Needs either a `uv sync`-based workspace venv or an explicit
+  "install every package's deps into one throwaway venv for testing" recipe.
+
+- [ ] **`core/core/manual_delete.py`'s `_default_trash` docstring says "Recycle
+  Bin"** — a Windows-era leftover; `send2trash` actually targets the
+  freedesktop trash on Linux. Found during the 2026-09-11 doc pass, not fixed
+  (in-code docstring, out of scope for a docs-only pass; low severity — the
+  behavior is correct, only the comment is stale).
+
+- [ ] **`recorder/recorder/cookie_refresh.py` (2026-09-11 feature) has two minor
+  gaps, found in the same day's audit, not yet fixed:** `_refresh_async`'s
+  `Path(cookies_file).write_text(...)` isn't atomic — a crash mid-write could
+  truncate the live TikTok cookie file (this repo already has a temp-file +
+  `os.replace` convention for exactly this, see `recorder/recorder/cli.py`'s
+  config-TOML writer). And `_playwright_to_netscape` never re-adds the
+  `#HttpOnly_` line prefix that `tiktok_browser._netscape_to_playwright` reads
+  on the way in, so `sid_tt`/`sessionid` silently lose their HttpOnly marking
+  on every refresh cycle. Both low-severity, not blocking; queued as follow-up
+  TriAPI tasks if wanted, not hand-fixed.
 
 ## Doc corrections (2026-09-11)
 

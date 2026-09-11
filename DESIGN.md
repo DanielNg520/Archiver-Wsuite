@@ -21,14 +21,14 @@ archiver (download+reconcile) ─┐                   ┌─ recorder (TikTok l
 ```
 
 **Rules:** producers (archiver, recorder) + dispatcher all import `core`, never each
-other. ops imports no *worker* (core is fine). Installs are pipx venvs with an
+other. ops imports no *worker* (core is fine). Installs are `uv tool` venvs with an
 **editable** `core` (a frozen non-editable core crashes on schema bump).
 
 ## core/core/ — the shared spine
 
 | module | purpose | key symbols |
 |---|---|---|
-| `schema.py` | DDL + connection factory; WAL+busy_timeout; `SCHEMA_VERSION=4`, keyed migrations via `user_version` | `connect`, `db_path`, `DEFAULT_DB_PATH`, `SchemaVersionError` |
+| `schema.py` | DDL + connection factory; WAL+busy_timeout; `SCHEMA_VERSION=5`, keyed migrations via `user_version` | `connect`, `db_path`, `DEFAULT_DB_PATH`, `SchemaVersionError` |
 | `models.py` | Item dataclass + status state machine | `Item`, `Status{PENDING,SENDING,SENT,FAILED}`, `TERMINAL` |
 | `store.py` / `stores.py` | concrete `ItemStore` + role views (`ProducerStore`/`QueueStore`/`AdminStore`); `claim_batch` (homogeneous album claim; bucket is **source-aware** via `album_bucket` — orphaned rows group mixed `media` vs `document`, and a document group is held while a same-subfolder media sibling is still pending = media-before-documents), `add_pending`, `reset_stuck_sending`, dedup queries | `ItemStore`, `claim_batch`, `sent_twin`, `mark_*` |
 | `ingest.py` | THE enqueue primitive: stabilize→hash→dedup-collapse→insert (every producer); `recover_oversize_failed` — self-healing backstop for FilePartsInvalid-quarantined rows (split → requeue parts → retire row; run by the archiver's ingest sweep, 1 split/pass) | `register_file`, `recover_oversize_failed`, `IngestResult`, `IngestOutcome` |
@@ -47,6 +47,8 @@ other. ops imports no *worker* (core is fine). Installs are pipx venvs with an
 | **`env.py`** | env parsing; req=fail-loud, opt*=warn+default (self-healing tunables) | `req`, `opt`, `opt_int/float/bool`, `MissingEnvVar` |
 | `instance_lock.py` | generic singleton flock; `_already_running_error` hook | `InstanceLock`, `InstanceAlreadyRunning` |
 | `deletion.py` | safebrake guard on every delete path | `DeletionGuard` |
+| `quarantine.py` | reversible on-disk quarantine for banned/suspended/gone users: moves `{output_dir}/{platform}/{username}/` → `.../.deleted/{username}/` (dot-prefix so every folder-scan consumer skips it — no per-consumer ban lookup needed); repoints queued rows under the moved path; `restore_user` is the exact inverse (used by `unban`) | `quarantine_user`, `restore_user`, `LOCKED_SKIPPED` |
+| `manual_delete.py` | deferred-trash sweeper behind `archiver delete` — the MANUAL, terminal deletion path, distinct from `quarantine.py`'s reversible auto-ban move. Three-stage lifecycle driven by one PolicyStore roster entry: request (mark + drop from active list, no files touched) → trash (once every DB row is `sent`, folder sent to the OS trash via `send2trash`, `trashed_at` stamped; any pending/sending/failed row defers the sweep) → row GC (`RETENTION_DAYS` after `trashed_at`, DB rows purged) | `process_pending_deletions`, `DeletionSweepReport` |
 | `policy_store.py`/`policies.py` | config.toml scoped resolution (user>platform>default) | `PolicyStore`, `DeletePolicy`,`BatchPolicy`,`DedupPolicy`,`AutoIngestPolicy`,`DownloadPolicy`,`SortPolicy`,`FailedRetryPolicy`,`ProtectionPolicy`,`PriorityPolicy` |
 | `scan_order.py` | per-cycle user walk order: staleness-first (oldest `checkpoints.last_run_utc` first) + jitter; `due_for_reinjection` (min-of count/time trigger for priority re-scan); `auto_priority` (rank regular posters by distinct post-days). Pure; store supplies `last_runs_for_platform`/`active_days_since`, orchestrator `_priority_users`/`_auto_regulars_cached` apply caps + 2-week cache | `order_users`, `due_for_reinjection`, `auto_priority` |
 | `sanitize.py` | banned-word strip (names+captions) | `Sanitizer`, `ReloadingSanitizer` |
@@ -79,6 +81,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | `platforms/base.py` | `LivePlatform` Protocol (structural) |
 | `platforms/tiktok.py` | TikTokLive lib (sync↔async bridge per call); `_extract_pull_url` picks **highest-possible quality** (origin→uhd→hd→sd→ld via `live_core_sdk_data` levels, else name-rank; **FLV breaks ties**); age-restricted → `tiktok_browser` fallback |
 | `platforms/tiktok_browser.py` | age-restricted (18+) fallback: headless Chromium (Playwright) drives the live page so TikTok's JS signs the pull URL; sniffs room-info JSON → same highest-quality selector (falls back to default-quality media-URL sniff); **self-healing browser install** (auto `playwright install chromium` on a stale/missing build, once per process) |
+| `cookie_refresh.py` | `simulate_human_browsing(config)`: keeps the TikTok session cookie file alive between lives by driving a headless, non-persistent Chromium through a few scroll-and-pause cycles, then writing rotated cookies back to `tiktok_cookies_file`; reuses `tiktok_browser`'s launch/cookie-parse helpers. Triggered from `state.py`'s `_scan_priority_list_once` on a probability curve keyed off `core.ItemStore`'s `tiktok_last_cookie_refresh` metadata (forced past 48h, tapering off, never under 12h) — not a literal `RecorderState.HANDOFF` hook, since that transition itself does nothing but set `self.state` |
 | `enqueue.py` | `register_file` at `priority=5` (before archiver's 10), min-batch exempt |
 | `startup_sweep.py` | reconcile disk↔queue once at start (sent→del, pending/sending→leave, failed→re-arm, new→ingest, drop empty dirs via `core.prune_empty_dirs` — `#`-prefixed hashtag buckets spared) |
 | `lock.py` | `TikTokLock` writes pid-stamped heartbeat (via core.heartbeat + core.paths) |
@@ -102,7 +105,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | CLI: `start`, `status`, `stats`, `check-routes`, `banned-words`, `queue{list,retry,cancel}`, `config`, `burner{login,chats,status}` |
 
 ## ops/ops/
-`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` runs `python -m pipx` install×3 + `inject media-archiver --force --editable core` — **archiver app is `media-archiver`**, inject needs `--force`; imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS, Task Scheduler on Windows); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), Windows → `~/.archive/.config` (self-contained, when its `archiver-suite` dir exists) else legacy `%APPDATA%`, other POSIX/macOS → `$XDG_CONFIG_HOME` or `~/.config`.
+`health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` still shells out to `python -m pipx install`×3 + `inject media-archiver --force --editable core` — **stale**: this Linux deployment runs on `uv tool` venvs and `pipx` isn't installed on the box, so `ops update`'s reinstall step currently fails outright (confirmed 2026-09-11, not yet fixed — see AGENTS.md tech debt); imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS, Task Scheduler on Windows); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), Windows → `~/.archive/.config` (self-contained, when its `archiver-suite` dir exists) else legacy `%APPDATA%`, other POSIX/macOS → `$XDG_CONFIG_HOME` or `~/.config`.
 
 ## Seams (cross-process contracts; tests/test_seams.py, 271 checks, 35 seams)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
@@ -147,10 +150,23 @@ logrotate.
 
 ## Run / test (from a NEUTRAL cwd — repo root lets ./core shadow the install)
 Linux shell; `:` is the PYTHONPATH separator.
+
+**Known gap (confirmed 2026-09-11, not yet fixed):** since the port to `uv
+tool` venvs, no single installed venv has every dependency `tests/test_seams.py`
+needs (it touches archiver's `gallery_dl`, dispatcher's `telethon`, recorder's
+`playwright`, etc., in one process) — the `dispatcher` venv is missing
+`gallery_dl`, `media-archiver`'s venv is missing `telethon`, and the system
+`python3` has none of the suite's dependencies (not even `tomli_w`). There is
+currently no dev venv in this repo with the union of all five packages'
+dependencies installed. Until one exists, run selftests against whichever
+single package's own venv actually covers what that test imports (e.g. a
+recorder-only selftest against the `recorder` venv), and expect the full
+`tests/test_seams.py` battery to fail on an unrelated `ModuleNotFoundError`
+rather than a real regression unless you first build/point at such a venv.
+
 ```bash
 export PYTHONPATH="core:archiver:recorder:dispatcher:ops"
-PY=~/.local/pipx/venvs/dispatcher/bin/python   # only venv with all of core+dispatcher+telethon
-# seam suite + any selftest:
+PY=~/.local/share/uv/tools/<package>/bin/python3   # pick the venv that covers what you're testing
 "$PY" tests/test_seams.py
 "$PY" core/core/_selftest_media_prep.py   # etc.
 # ops selftests are module-mode:
@@ -160,14 +176,14 @@ PYTHONPATH="ops:core" "$PY" -m ops._selftest_logrotate
 Full battery: core{_account_gone,_drain_eta,_fixes,_manual_delete,_media_prep,
 _quarantine,_register_media,_safebrake,_scan_order,_termui}, archiver{_ban_quarantine,_routes_dir},
 dispatcher{_client_for,_config,_fast_upload,_keepalive},
-recorder{_ban_escalation,_capture,_reconnect,_skip_safetynet,_ui,_watch,platforms/_tiktok_browser},
-ops/{_logrotate,_update}(-m), tests/test_seams. (25 selftests + seam suite.)
+recorder{_ban_escalation,_capture,_cookie_refresh,_reconnect,_skip_safetynet,_ui,_watch,platforms/_tiktok_browser},
+ops/{_logrotate,_update}(-m), tests/test_seams, tests/test_dispatcher_stall_backoff. (26 selftests + seam suite.)
 
 ## Gotchas
 - **Editable installs import the working tree** → a worker restart loads whatever
   branch is checked out. (all four run under systemd --user once `ops load`ed.)
-- No single pipx venv has every package; use `media-archiver` venv OR `PYTHONPATH`
-  over the dispatcher venv for cross-worker tests.
+- No single `uv tool` venv has every package's dependencies; see the Run/test
+  known-gap note above.
 - ops soft-imports core (try/except + sys.path fallback to repo); deps=[].
 - `recorder_pid` default only; a custom STATE_DIR makes ops blind to the pid.
 - `hachoir` must be in the **dispatcher** venv (declared dep). If album videos

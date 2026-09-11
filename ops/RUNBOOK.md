@@ -74,12 +74,19 @@ What it does, in order (package-aware — every case does the **minimum**):
 3. **Unload only the affected workers**, then **wait for their processes to
    exit** + a short settle, so the reinstall never overwrites a venv a worker is
    still importing from (a half-updated venv mid-import).
-4. **Reinstall** only the changed worker packages (each pipx step retried a few
+4. **Reinstall** only the changed worker packages (each step retried a few
    times to ride out a transient exe lock): `pipx install --force ./archiver`
    (the app is **`media-archiver`**) / `./dispatcher` / `./recorder`, then
    `pipx inject media-archiver --force --editable ./core` **iff** the archiver
    was reinstalled. `ops` and `core` are **never** force-reinstalled here — both
    are editable (see below), so they ride along live. (See the naming traps.)
+
+   > **This step is currently broken on this box (confirmed 2026-09-11):**
+   > `ops/ops/update.py` still shells out to `python -m pipx`, but this
+   > deployment runs on `uv tool` venvs and `pipx` isn't installed at all —
+   > `ops update` fails outright at this step. Not yet fixed; see AGENTS.md
+   > tech debt. Use the manual reinstall command in the Bootstrap section
+   > below instead until it is.
 5. On success it records the new per-package fingerprint, **reloads the
    restarted workers**, and enters `ops watch`. On a reinstall failure it clears
    the flag, reloads with the *previously* installed code, leaves the
@@ -88,32 +95,35 @@ What it does, in order (package-aware — every case does the **minimum**):
 **Editable `ops` (required for `ops update` to cover ops-side changes).** A
 running process can't force-reinstall its own locked venv, so `ops` — like
 `core` — is installed **editable**; its `.py` edits are then live the instant
-they're saved, and `ops update` needs only to record them. Do this once (and
-after any `ops` **dependency or console-script** change, the lone case editable
-can't pick up):
+they're saved, and `ops update` needs only to record them. On this box, do
+this once (and after any `ops` **dependency or console-script** change, the
+lone case editable can't pick up) with the working `uv tool` command, not the
+pipx one `ops update` itself still uses internally (see the callout above):
 
 ```bash
-python -m pipx install --force --editable ./ops
-python -m pipx inject ops --force --editable ./core
+uv tool install --force --editable ./ops --with-editable ./core
 ```
 
-**Two naming traps** (why the hand-typed inject fails):
-- The archiver's pipx app/venv is `media-archiver` (its `pyproject` name), not
-  `archiver` — `pipx inject archiver …` errors "nonexistent Virtual
-  Environment". Target `media-archiver`.
-- `pipx inject` without `--force` is a **no-op** when `core` is already injected
-  ("already seems to be injected"). `ops update` always passes `--force`.
+**A naming trap that survives the pipx→uv migration:** the archiver's
+app/venv is named `media-archiver` (its `pyproject` name), not `archiver` —
+targeting the bare `archiver` name for a core re-inject/reinstall errors.
+Target `media-archiver`, or just point `uv tool install` at the `./archiver`
+directory (uv resolves the app name from the package itself).
 
-**Bootstrap.** `ops update` lives in the `ops` package, so to get the command
-itself the first time (and after any edit to `ops`/`dispatcher` sources — `core`
-edits are editable and live on restart), reinstall those by hand once:
+**Bootstrap / manual reinstall (works today).** `ops update` lives in the
+`ops` package but its own automated reinstall step is broken on this box (see
+above), so reinstall by hand with the same command CLAUDE.md documents for
+routine edits — repeat per package that changed:
 
 ```bash
-python -m pipx install --force ./ops
-python -m pipx inject ops --force --editable ./core
-python -m pipx install --force ./dispatcher
-python -m pipx inject media-archiver --force --editable ./core
+uv tool install --force --editable ./ops        --with-editable ./core
+uv tool install --force --editable ./dispatcher --with-editable ./core
+uv tool install --force --editable ./recorder    --with-editable ./core
+uv tool install --force --editable ./archiver    --with-editable ./core   # app: media-archiver
 ```
+
+Then reload whichever service(s) changed (`ops restart <service>`, or
+`ops unload && ops load` for all of them).
 
 > If a package's absolute path changed, also run `ops uninstall && ops install`
 > to regenerate the systemd unit definitions (they embed absolute paths).
@@ -336,8 +346,8 @@ ffmpeg -v error -i IN.mp4 -c copy -f segment -segment_format mp4 `
 On Linux the suite is self-contained **inside the checkout**: every per-app
 config dir (plus the DB, sessions, cookies, logs, and locks) lives under
 `<repo>/.config/<app>`, resolved by `core.platform.paths._config_home` from the
-editable-injected `core`'s own `__file__` — so it is correct in every pipx venv
-and moves with the checkout. There is nothing to migrate and no home-directory
+editable-injected `core`'s own `__file__` — so it is correct in every `uv tool`
+venv and moves with the checkout. There is nothing to migrate and no home-directory
 state to clean up: delete the checkout and the suite is gone.
 
 `ARCHIVER_CONFIG_HOME` overrides the root on any OS (point it elsewhere to keep

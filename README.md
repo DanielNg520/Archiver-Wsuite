@@ -77,42 +77,40 @@ separate processes — not from giving them disjoint code.
 | [archiver/README.md](archiver/README.md) | archiver CLI, env vars, platforms |
 | [dispatcher/README.md](dispatcher/README.md) | dispatcher CLI, env vars, burner account, queue smoke test |
 | [recorder/README.md](recorder/README.md) | recorder config, split mode, cookies, quality/fallback behavior |
-| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (self-contained `.config`, `python -m pipx`, test invocation) |
+| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (self-contained `.config`, `uv tool` reinstalls, test invocation) |
 
 Historical plan docs (kept as period records, paths may be outdated):
 [CONVERSION_PLAN.md](CONVERSION_PLAN.md) / [WINDOWS_PORT.md](WINDOWS_PORT.md)
 (the completed 2026-07 Windows port) and
-[REFACTOR_PLAN_bans_and_paths.md](REFACTOR_PLAN_bans_and_paths.md) (pending:
-ban quarantine + two-root storage split).
+[REFACTOR_PLAN_bans_and_paths.md](REFACTOR_PLAN_bans_and_paths.md) (ban
+quarantine + two-root storage split — both shipped; the plan doc is kept only
+as a historical record, not a pending TODO).
 
 ---
 
 ## Install (Linux)
 
-The suite installs as **pipx apps with the shared `core` injected editable** —
-so day-to-day you just type `dispatcher status`, `ops health`, etc. No
-`PYTHONPATH`, no `python -m`.
+The suite installs as **`uv tool` venvs with the shared `core` injected
+editable** — so day-to-day you just type `dispatcher status`, `ops health`,
+etc. No `PYTHONPATH`, no `python -m`. (Older notes/scripts in this repo may
+still say `pipx` — that convention is retired on this port; `pipx` isn't even
+installed on this box. Always check what's actually there with
+`uv tool list`.)
 
 ```bash
-# 1. Install each app as its own pipx venv, then inject the shared core
-#    library editable (apps don't depend on core directly). pipx puts
-#    dispatcher/recorder/archiver/ops on PATH via ~/.local/bin.
-#    Always `python -m pipx` (never bare `pipx`) — stale shims shadow the exe
-#    in some shells (see CLAUDE.md).
-python -m pipx install ./dispatcher --python 3.13
-python -m pipx install ./recorder   --python 3.13
-python -m pipx install ./archiver   --python 3.13
-python -m pipx install ./ops        --python 3.13
-
-python -m pipx inject --editable dispatcher     ./core
-python -m pipx inject --editable recorder       ./core
-python -m pipx inject --editable media-archiver ./core   # archiver's package name
-python -m pipx inject --editable ops            ./core
+# 1. Install each app as its own uv-managed venv, with the shared core
+#    library injected editable in the SAME step (apps don't depend on core
+#    directly). uv puts dispatcher/recorder/archiver/ops on PATH via
+#    ~/.local/bin.
+uv tool install --editable ./dispatcher --with-editable ./core
+uv tool install --editable ./recorder   --with-editable ./core
+uv tool install --editable ./archiver   --with-editable ./core   # app name is media-archiver
+uv tool install --editable ./ops        --with-editable ./core
 
 # 2. Recorder's headless-browser download (age-restricted lives). OPTIONAL:
 #    the recorder self-heals a missing/stale Chromium on first use (auto-runs
 #    this once), but pre-running it avoids a one-time inline delay mid-stream.
-~/.local/pipx/venvs/recorder/bin/python -m playwright install chromium
+~/.local/share/uv/tools/recorder/bin/python -m playwright install chromium
 ```
 
 Install order does not matter — `core` creates the schema idempotently
@@ -120,16 +118,27 @@ Install order does not matter — `core` creates the schema idempotently
 process connects. There is nothing to run by hand.
 
 `hachoir` (Telethon's video-metadata backend) is a **declared dispatcher
-dependency**, so a clean `python -m pipx install ./dispatcher` pulls it in. Without it,
-album videos upload as 1×1 static images and the dispatcher refuses to start
-(`python -m pipx inject dispatcher hachoir` to repair an old venv).
+dependency**, so a clean `uv tool install ./dispatcher` pulls it in. Without
+it, album videos upload as 1×1 static images and the dispatcher refuses to
+start.
 
 **First run requires interactive Telegram auth once** (systemd can't
 answer the SMS prompt) — see [AUTOMATION.md](AUTOMATION.md) step 1.
 
-**After editing code:** `python -m pipx reinstall <package>` (`dispatcher`, `recorder`,
-`media-archiver`, `ops`). Editing `core` needs nothing — it's injected editable,
-so changes are live in every app immediately.
+**After editing code:** `uv tool install --force --editable ./<package>
+--with-editable ./core` (`dispatcher`, `recorder`, `archiver`, `ops`) — the
+`--with-editable ./core` is **not optional**: a bare `--force --editable
+./<pkg>` recreates the venv from scratch and drops the injected `core`
+dependency entirely (see CLAUDE.md's environment traps). Editing `core`
+itself needs nothing beyond a worker restart — it's injected editable, so
+changes are live immediately.
+
+> **Known gap (2026-09-11):** `ops update`'s automated reinstall still shells
+> out to `pipx` internally (`ops/ops/update.py`), which is not installed on
+> this box — running `ops update` today fails outright. Until that's fixed,
+> reinstall manually with the `uv tool install --force --editable ...
+> --with-editable ./core` command above for whichever packages changed, then
+> `ops restart <service>` (or `ops unload && ops load`).
 
 Requirements on this box (already satisfied): Python 3.13; `ffmpeg`/`ffprobe`,
 `yt-dlp`, `gallery-dl` on PATH; a Firefox profile for cookie auto-refresh.
@@ -147,7 +156,7 @@ To run unattended (auto-start at login, restart on crash) register the
 systemd --user services once — see [AUTOMATION.md](AUTOMATION.md):
 
 ```bash
-ops install         # write the systemd unit files (resolves the pipx bins)
+ops install         # write the systemd unit files (resolves the CLI bins on PATH)
 ops load            # enable --now all workers
 ```
 
@@ -280,8 +289,10 @@ ops install       register the service definitions
 ops load          start + enable all workers
 ops unload        stop all workers
 ops restart <s>   restart one service (dispatcher|recorder|archiver)
-ops update        after a code change: drain the dispatcher cleanly, pipx-
-                  reinstall the four packages, reload every worker, then watch
+ops update        after a code change: drain the dispatcher cleanly,
+                  reinstall the four packages, reload every worker, then
+                  watch — currently broken on this box (see the note above,
+                  reinstall manually with `uv tool install` until fixed)
 ```
 
 `ops update` is the one-command redeploy. It fingerprints the source (a no-op
@@ -290,6 +301,7 @@ cooperative stop-flag so the dispatcher finishes its in-flight upload before
 exiting (never chopped mid-album), then reinstalls
 `media-archiver`/`dispatcher`/`recorder` and re-injects editable `core`, reloads,
 and drops into `watch`. Run it from the repo root (or `--repo <path>`).
+**Currently broken on this box** — see the known-gap note under Install.
 
 Also ships [ops/RUNBOOK.md](ops/RUNBOOK.md) (failure recovery).
 

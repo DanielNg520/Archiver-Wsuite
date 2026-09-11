@@ -14,10 +14,11 @@ dispatcher's own CLI reference, burner-account guide, and queue smoke test.
 `hachoir` is a declared dependency and installs automatically — it is Telethon's
 video-metadata backend. Without it, native album sends emit a degenerate 1×1/0s
 video attribute and Telegram renders every album video as a static image, so the
-dispatcher **refuses to start** if it's missing (`python -m pipx inject
-dispatcher hachoir` to repair an old venv). After dispatcher source edits,
-`python -m pipx reinstall dispatcher` to pick them up; `core` edits are live immediately
-(injected editable).
+dispatcher **refuses to start** if it's missing (`uv tool install --force
+--editable ./dispatcher --with-editable ./core` to repair an old venv — the
+`--with-editable ./core` is not optional, see CLAUDE.md). After dispatcher
+source edits, the same command picks them up; `core` edits are live
+immediately (injected editable).
 
 ## First-run setup
 

@@ -24,14 +24,16 @@ and RestartOnFailure is handled natively by systemd. stdout/err are redirected t
 `~/.local/log/<tag>.{out,err}.log`.
 
 RestartOnFailure interval is 30 seconds;
-`ops install` regenerates every definition with this machine's absolute pipx
-paths, so they always match where the CLIs actually live.
+`ops install` regenerates every definition with this machine's absolute CLI
+paths (resolved via `shutil.which`, PATH-agnostic to how they were installed —
+`uv tool`'s `~/.local/bin` on this box), so they always match where the CLIs
+actually live.
 
 ---
 
 ## Prerequisites (all must be true before `ops load`)
 
-Run from anywhere (the CLIs are on PATH via pipx). Every check must pass.
+Run from anywhere (the CLIs are on PATH via `uv tool`). Every check must pass.
 
 ```bash
 # 1. All four resolve on PATH
@@ -231,9 +233,14 @@ its policies at startup, so `ops restart dispatcher` after changing those.
 ops update            # from the repo root
 ```
 
-One command: fingerprints the source, drains the dispatcher **cleanly**, `pipx install --force`s the three worker
-apps, re-injects editable `core`, reloads every worker, and enters
-`ops watch`. Full detail is under "Updating the code" in [ops/RUNBOOK.md](ops/RUNBOOK.md).
+One command, in principle: fingerprints the source, drains the dispatcher
+**cleanly**, reinstalls the three worker apps, re-injects editable `core`,
+reloads every worker, and enters `ops watch`. **Currently broken on this
+box** — its reinstall step still shells out to `pipx`, which isn't installed
+here; use the manual `uv tool install --force --editable ... --with-editable
+./core` reinstall instead until it's fixed. Full detail (including the
+working manual command) is under "Updating the code" in
+[ops/RUNBOOK.md](ops/RUNBOOK.md).
 
 ---
 
