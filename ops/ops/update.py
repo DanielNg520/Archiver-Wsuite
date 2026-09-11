@@ -74,7 +74,7 @@ def fingerprint_path() -> Path:
 
 
 # Worker packages: the ones whose code the OS-managed services actually run, so
-# a change to any of them needs a pipx reinstall + a worker restart. `core`
+# a change to any of them needs a uv tool reinstall + a worker restart. `core`
 # rides along editable, but a core edit still needs the workers RESTARTED to
 # load it; `ops` is editable and imported by nothing the services run, so an
 # ops-only change needs neither reinstall nor restart — it is live at once.
@@ -153,7 +153,7 @@ def changed_packages(current: dict[str, str],
 
 def needs_worker_reinstall(changed: set[str]) -> bool:
     """True iff a package the services actually run changed — the only case that
-    warrants the pipx reinstall + dispatcher drain."""
+    warrants the uv tool reinstall + dispatcher drain."""
     return any(p in _WORKER_PKGS for p in changed)
 
 
