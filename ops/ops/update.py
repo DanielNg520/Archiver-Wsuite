@@ -224,6 +224,15 @@ def looks_like_repo_root(path: Path) -> bool:
                for pkg in ("core", "archiver", "recorder", "dispatcher"))
 
 
+def default_repo_root() -> Path:
+    """The suite repo root when the caller passes no explicit `--repo`. `ops`
+    is always installed editable (see ops/RUNBOOK.md), so THIS file's own
+    `__file__` still points at the real checkout regardless of the caller's
+    cwd — the same trick ops.health already uses for its core-import fallback.
+    Lets `ops update` run from any directory, like every other ops command."""
+    return Path(__file__).resolve().parents[2]
+
+
 def _uv_tool_argv(step: list[str], repo_root: Path) -> list[str]:
     """Turn a reinstall_steps() entry into a full `uv tool …` argv with any
     package directory tokens resolved against the repo root. `uv` is invoked

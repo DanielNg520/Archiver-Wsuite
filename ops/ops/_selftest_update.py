@@ -152,6 +152,12 @@ def main() -> int:
         finally:
             os.environ.pop("ARCHIVER_CONFIG_HOME", None)
 
+    # ── default_repo_root: real environment, not the temp fixture ──────
+    # ops is always installed editable, so this must resolve to the actual
+    # checkout regardless of cwd — the whole point of the fix.
+    ok(u.looks_like_repo_root(u.default_repo_root()),
+       "default_repo_root() resolves to a real suite repo root")
+
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

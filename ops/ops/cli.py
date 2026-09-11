@@ -17,8 +17,9 @@ ops.cli
 install/load/unload/restart are thin wrappers over the OS service manager
 (launchd on macOS, Task Scheduler on Windows) via core.platform.service, so you
 don't have to remember its verbs. Definitions are GENERATED for THIS machine's
-home + pipx bin dir, not shipped as static files, so the absolute paths always
-match where the CLIs actually live.
+home + local bin dir (wherever PATH/uv tool puts the service CLIs), not shipped
+as static files, so the absolute paths always match where the CLIs actually
+live.
 """
 
 from __future__ import annotations
@@ -109,7 +110,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _resolve_bin(cmd: str) -> str | None:
-    """Absolute path to a service CLI. Prefer PATH (pipx puts it there), fall
+    """Absolute path to a service CLI. Prefer PATH (uv tool puts it there), fall
     back to ~/.local/bin/<cmd>. The service manager needs an absolute path — it
     does not source your shell, so a bare name would never resolve."""
     found = shutil.which(cmd)
@@ -143,7 +144,8 @@ def cmd_install(_args: argparse.Namespace) -> int:
         program = _resolve_bin(cmd)
         if program is None:
             print(f"{name}: '{cmd}' not found on PATH or in ~/.local/bin — "
-                  f"install it first (pipx install ./{cmd}), then re-run. skipped")
+                  f"install it first (uv tool install --force --editable "
+                  f"./{cmd} --with-editable ./core), then re-run. skipped")
             rc = 1
             continue
         try:
@@ -277,13 +279,15 @@ def cmd_update(args: argparse.Namespace) -> int:
       • a worker changed     → reinstall + restart just that worker.
       • `--force`            → reinstall + restart everything.
 
-    Run it from the repo root (or pass --repo). A no-op when nothing changed
+    Runs from any directory, like every other ops command — it locates the
+    repo via its own installed (editable) location, not the caller's cwd.
+    Pass --repo to target a different checkout. A no-op when nothing changed
     since the last successful update, unless --force."""
-    repo = Path(args.repo).resolve() if args.repo else Path.cwd().resolve()
+    repo = Path(args.repo).resolve() if args.repo else _update.default_repo_root()
     if not _update.looks_like_repo_root(repo):
         print(f"update: {repo} is not the suite repo root (need core/ archiver/ "
               f"recorder/ dispatcher/, each with a pyproject.toml). "
-              f"cd there or pass --repo.", file=sys.stderr)
+              f"pass --repo to point at the real checkout.", file=sys.stderr)
         return 2
 
     current = _update.package_fingerprints(repo)
@@ -392,7 +396,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="on a codebase change: drain the dispatcher cleanly, "
              "uv-tool-reinstall the changed packages, reload + watch")
     up.add_argument("--repo", default=None,
-                    help="suite repo root (default: current directory)")
+                    help="suite repo root (default: wherever this installed "
+                         "ops package actually lives)")
     up.add_argument("--force", action="store_true",
                     help="reinstall even if no source change is detected")
     up.add_argument("--stop-timeout", dest="stop_timeout", type=float,
