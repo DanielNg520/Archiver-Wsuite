@@ -50,35 +50,6 @@ does not touch `tests/test_seams.py`, which stays oversized — see
   subsystem) or a smarter automated approach that doesn't require deleting
   the original file in the same patch as creating its replacements.
 
-- [x] **`PROJECT_MAP.md` didn't document shipped features.** Fixed in the
-  2026-09-11 doc sanitization pass below — `core.quarantine`/`core.manual_delete`
-  now get a one-line mention, `ROUTES_DIR`'s stale "interim" wording is gone.
-  `CLAUDE.md` deliberately left alone: its own stated scope is "only the traps
-  that bite automated sessions," not a feature list — a `quarantine`/`ban_check`
-  entry there would be scope creep against its own header, not a fix.
-
-- [x] **`ops/ops/update.py` shelled out to `pipx`; this deployment has none
-  installed.** Fixed 2026-09-11 via TriAPI dispatch (DeepSeek drafted,
-  Claude-audited and applied): `reinstall_steps` now emits one
-  `install --force --editable <pkg> --with-editable core` step per changed
-  worker package (no separate inject step — `ARCHIVER_APP`/the pipx
-  install+inject two-step is gone); `_pipx_argv` is renamed `_uv_tool_argv`
-  and resolves every package-directory token (not just the trailing one) to
-  an absolute path; `run_reinstall` builds `uv tool …` argv instead of
-  `python -m pipx …`. `ops/ops/_selftest_update.py` updated to match;
-  29/29 checks pass (`PYTHONPATH="core:ops" ~/.local/share/uv/tools/ops/bin/python3
-  -m ops._selftest_update` — the `ops` uv-tool venv has core injected, unlike
-  the bare system python).
-
-- [x] **No single dev venv could run `tests/test_seams.py` on this box.** Fixed
-  2026-09-11 via TriAPI dispatch: new `tools/setup_test_venv.py` creates
-  `.venv-test` (gitignored) and `uv pip install -e`'s all five packages into
-  it in one call, giving the union of their dependencies. Verified end to
-  end: `python tools/setup_test_venv.py` then
-  `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1
-  .venv-test/bin/python3 tests/test_seams.py` → **ALL PASS (285 checks)**,
-  the first time this suite has run end-to-end since the pipx→uv tool port.
-
 - [ ] **`core/core/manual_delete.py`'s `_default_trash` docstring says "Recycle
   Bin"** — a Windows-era leftover; `send2trash` actually targets the
   freedesktop trash on Linux. Found during the 2026-09-11 doc pass, not fixed
