@@ -73,7 +73,12 @@ def main() -> int:
                                      routes_dir=str(routes)),
         db=db,
         deletion_guard=DeletionGuard(store),
+        _routes_warned=False,
     )
+    # Bind the real _routes_dir_ready onto the shim (unbound-call style, same
+    # as _maybe_ingest_orphaned below) so the routes-unmounted guard it added
+    # sees this shim's own config instead of raising AttributeError.
+    shim._routes_dir_ready = lambda: Archiver._routes_dir_ready(shim)
     Archiver._maybe_ingest_orphaned(shim, known_platform_names={"x"})
 
     rows = db.list_items(status="pending", limit=10)
@@ -91,6 +96,19 @@ def main() -> int:
     chats = {r.chat_id for r in db.list_items(limit=50)}
     check("-1009999999999" not in chats,
           "a chat_id folder left under output_dir is ignored after the split")
+
+    # ── an unmounted (missing) separate ROUTES_DIR skips the scan, once ─────
+    (routes / "-1002222222222").mkdir()
+    (routes / "-1002222222222" / "new.mp4").write_bytes(b"z" * 64)
+    shim.config.routes_dir = str(routes / "not-actually-mounted")
+    check(Archiver._routes_dir_ready(shim) is False,
+          "_routes_dir_ready() is False when the separate ROUTES_DIR is absent")
+    Archiver._maybe_ingest_orphaned(shim, known_platform_names={"x"})
+    chats = {r.chat_id for r in db.list_items(limit=50)}
+    check("-1002222222222" not in chats,
+          "an unmounted ROUTES_DIR is never walked — nothing new is enqueued")
+    check(shim._routes_warned is True,
+          "the one-warning-per-run flag is set after the skip")
 
     db.close()
     print(f"\nALL PASS ({_checks} checks)")

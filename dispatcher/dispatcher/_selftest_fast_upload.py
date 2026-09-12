@@ -82,7 +82,7 @@ def _patch_senders(fail_on: int | None = None) -> list[_FakeSender]:
     returning the list they're collected into for assertions."""
     created: list[_FakeSender] = []
 
-    async def _fake_connect(_client):
+    async def _fake_connect(_client, *, connect_timeout=None, retries=None):
         s = _FakeSender(fail_on=fail_on)
         created.append(s)
         return s
