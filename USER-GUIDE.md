@@ -26,10 +26,8 @@ and let it run.
 
 Short aliases/functions for the commands typed most often, defined in
 `~/.bashrc.d/archiver-suite.sh` (auto-loaded by `~/.bashrc` — available in any
-new shell) and mirrored in the Ops Center web dashboard's manual-command box
-(`opscenter/web.py:_SHORTHANDS`), so the same shorthand works whether you're
-at this machine's terminal or on your phone. Each just validates the arg
-count, then execs the real command below — no hidden behavior.
+new shell). Each just validates the arg count, then execs the real command
+below — no hidden behavior.
 
 | Shorthand | Runs |
 |---|---|
@@ -48,10 +46,6 @@ Also already present, older, box-wide (not archiver-specific — see
 `~/.bashrc.d/archiver-suite.sh`): `suite-health` (`ops health`),
 `suite-status` (`dispatcher status`), `suite-load`/`suite-unload`
 (`ops load`/`unload`), `suite-restart <name>` (`ops restart <name>`).
-
-Keep the two shorthand sets (shell functions here, `_SHORTHANDS` in Ops
-Center's `opscenter/web.py`) in lockstep when adding a new one — that's the
-whole point of having both.
 
 ---
 
