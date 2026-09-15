@@ -237,6 +237,8 @@ def cmd_record(args: argparse.Namespace) -> int:
             time.sleep(0.1)
         else:
             log.error("recorder did not stop in time")
+            if not args.no_reload:
+                _reload_recorder_service()
             return 1
 
     from .capture import StreamCapture
