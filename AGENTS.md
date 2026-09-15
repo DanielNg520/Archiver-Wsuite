@@ -2,6 +2,25 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
+## recorder daemon reload fixes (2026-09-15)
+
+Two bugs in `recorder/recorder/cli.py`'s `cmd_record` / `recorder/recorder/cli.py`'s
+CLI-arg construction, found while investigating an unrelated recorder outage:
+
+1. `cmd_record`'s stop-timeout path (`log.error("recorder did not stop in time")`)
+   returned early without calling `_reload_recorder_service()`, unlike every other
+   exit from the function — one failed auto-stop left the recorder service
+   permanently disabled with no automatic recovery. Fixed: reload before that
+   `return 1`, same as the other exit paths.
+2. Callers invoking one-shot `recorder record --user <handle>` with `--no-reload`
+   leave the persistent watch-loop service down after the recording finishes —
+   that flag is for a caller that intends to manage the reload itself; a caller
+   that doesn't should omit it so the default (reload-on-finish) applies.
+
+Recovery if the service is ever found down with a stale `tiktok.lock`:
+`ops restart recorder`, then if the lock is still held, check the pid inside it
+is dead and `rm` it (see `ops/RUNBOOK.md`'s "Recorder is stuck" section).
+
 ## dispatcher connection/stall fixes (2026-09-05, see connection_fix.md)
 
 `dispatcher/dispatcher/config.py`'s `DispatcherConfig` gained five fields:
