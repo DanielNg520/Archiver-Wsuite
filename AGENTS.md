@@ -55,6 +55,48 @@ Regression coverage: `tests/test_dispatcher_stall_backoff.py` (new file;
 does not touch `tests/test_seams.py`, which stays oversized — see
 `connection_fix.md`'s Resolution section and "Known tech debt" below).
 
+## dispatcher: backoff_s gated too narrowly on `result.stalled` (2026-09-17)
+
+**Process note:** this one-line `drain.py` change was hand-edited directly by
+the assistant session rather than dispatched through TriAPI's rebuild pipeline
+(the normal rule per `~/.claude/CLAUDE.md`). This is a documented exception,
+not a violation: the user was asked explicitly ("How do you want to unstick
+the queue right now?") and answered "fix it at root cause by hand if needed"
+in the same conversation, which is the CLAUDE.md-carved-out
+sign-off-in-the-moment case. A TriAPI task (`b41afde0`, see below) was
+separately filed for the regression-test half of this work, which does go
+through the normal pipeline.
+
+The 2026-09-05 fix above only applied `backoff_s` when `SendResult.stalled`
+was `True` (stall-watchdog `TimeoutError` path). `dispatcher/dispatcher/drain.py`'s
+whole-batch-failure `else:` branch (~line 621, `mark_failed(...)` call) had
+`backoff_s=config.stall_backoff_s if result.stalled else None` — so an ordinary
+`ConnectionError`/`OSError` failure (the "network err attempt N/4" path in
+`send.py`'s `_send_with_retries`, which never sets `stalled=True`) went back to
+`status='pending'` with `retry_after=None`, immediately reclaimable. Because
+`claim_batch` anchors on the earliest-anchored (platform, username) cluster, a
+poisoned album with a persistent connection issue won every `claim_batch` call
+ahead of the rest of the queue, forever — observed starving 300+ pending items
+for ~12h (one tiktok user's 2-item album, 2026-09-16 20:24 → 2026-09-17 08:20),
+tripping the circuit breaker every ~2h without ever losing its head-of-queue
+spot. Fixed: that branch now always passes `backoff_s=config.stall_backoff_s`
+regardless of `result.stalled` — the whole branch is already the SYSTEMIC
+bucket (network/stall/unknown; see its own comment), so the backoff should
+apply uniformly. Deployed live via `systemctl --user restart
+com.duy.dispatcher.service` (both `dispatcher` and `core` are editable-installed
+into this repo checkout, so no `uv tool install --force` reinstall was needed).
+285/285 `tests/test_seams.py` seams still pass.
+
+Regression coverage: TriAPI task `b41afde0` queued to add a seam test asserting
+`retry_after` gets set on a plain (non-stalled) systemic failure — not yet
+landed as of this writing; check `tests/test_seams.py` for a seam referencing
+this fix before assuming it's covered.
+
+`windows/dispatcher/dispatcher/drain.py` (the unexercised Windows mirror) still
+has the OLD signature — its `mark_failed(...)` call doesn't pass `backoff_s` at
+all (predates even the 2026-09-05 fix). Not backported here; flagged as
+existing parity drift, see "Known tech debt" below.
+
 ## Known tech debt
 
 - [ ] **`tests/test_seams.py` is oversized** (156,987 chars). Splitting it
@@ -74,6 +116,28 @@ does not touch `tests/test_seams.py`, which stays oversized — see
   freedesktop trash on Linux. Found during the 2026-09-11 doc pass, not fixed
   (in-code docstring, out of scope for a docs-only pass; low severity — the
   behavior is correct, only the comment is stale).
+
+- [ ] **`windows/dispatcher/dispatcher/drain.py` is missing the whole
+  `retry_after`/`backoff_s` stall-backoff mechanism** from the 2026-09-05 fix
+  (and thus also missed the 2026-09-17 follow-up above) — its `mark_failed(...)`
+  call in the whole-batch-failure branch has no `backoff_s` kwarg at all. The
+  Windows tree is parity-only and not exercised on this machine (Linux/systemd
+  is the deployment target — see the repo README), so this was left as-is
+  rather than backporting the feature; would need the matching `config.py`
+  field, `core/core/store.py` changes, and `SendResult.stalled` plumbing too if
+  ever picked up.
+
+- [ ] **`CLAUDE.md`'s config-root path is stale for the current logging setup.**
+  It says all per-app state including logs lives under `<repo>/.config/<app>`;
+  in practice the live dispatcher/archiver/recorder services' actual DB/config
+  root is `/home/dyne/.archive/.config/<app>` (per the systemd units' own
+  `--config-home`/env), and their `StandardOutput`/`StandardError` log files
+  are redirected to `/home/dyne/.local/log/<app>.{out,err}.log` — NOT under
+  `.config/archiver-suite/logs/`, which is a stale copy frozen since the
+  2026-07-28 Windows→Linux migration (its `dispatcher.out.log` etc. haven't
+  been written to since). Found 2026-09-17 while diagnosing a dispatcher
+  starvation bug; check `cat /home/dyne/.config/systemd/user/com.duy.<app>.service`
+  for the actual paths before trusting either doc.
 
 - [ ] **`recorder/recorder/cookie_refresh.py` (2026-09-11 feature) has two minor
   gaps, found in the same day's audit, not yet fixed:** `_refresh_async`'s

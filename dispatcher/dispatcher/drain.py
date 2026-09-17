@@ -625,13 +625,23 @@ async def drain_forever(
             # SYSTEMIC bucket (network/stall/unknown), so it advances the circuit
             # breaker; an item-specific outcome (media_empty above, missing file,
             # unroutable) never reaches here and so never trips it.
+            #
+            # backoff_s applies to the WHOLE bucket, not just result.stalled:
+            # a plain ConnectionError/OSError (ordinary reconnect failure, no
+            # stall watchdog involved) went back to 'pending' with no
+            # retry_after, so it stayed the earliest-anchored row and
+            # re-won every claim_batch immediately — monopolizing the drain
+            # exactly like the stalled case the backoff was built for
+            # (observed 2026-09-16/17: one dead album starved 300+ pending
+            # items for 12h, tripping the circuit breaker every ~2h without
+            # ever falling behind newer items in claim order).
             consecutive_fails += 1
             statuses: set[str] = set()
             for it in present:
                 statuses.add(store.mark_failed(
                     it.id, error=result.error or "unknown",
                     max_retries=config.max_retries,
-                    backoff_s=config.stall_backoff_s if result.stalled else None,
+                    backoff_s=config.stall_backoff_s,
                 ))
             # A held-back dupe's twin did NOT deliver — requeue it untouched
             # (no attempt burned: it was never sent). Next claim re-evaluates;
