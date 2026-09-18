@@ -2,6 +2,51 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
+## Session carryover (2026-09-17, resume here)
+
+Pipeline health-pass after the two hand-fixes below. **All three services
+running and nominal** (`ops health`) as of this writing -- dispatcher
+draining (258 pending, 0 failed, ~71 sent/24h), recorder mid-recording,
+archiver scanning. Nothing left broken; items below are follow-ups, not
+blockers.
+
+1. **Playwright `chromium_headless_shell` was manually installed**
+   (`~/.cache/ms-playwright/chromium_headless_shell-1243/`, machine-local,
+   NOT in this repo) after Playwright's own installer kept timing out
+   (30s Node HTTP timeout) against a CDN `curl` fetched in 15s with no
+   issue. Fixes the age-restricted-TikTok headless-browser fallback that
+   was bench-cooldown-looping on `@weejiwooji`. **Not yet confirmed
+   against a real live age-restricted stream** (none occurred since the
+   fix) -- watch for the next one. Per-machine state (gitignored
+   `~/.cache`), not Hivemind-synced; if another machine hits the same
+   Playwright-CDN-timeout, it needs the same manual pull.
+2. **`archiver backfill` was run** (existing tool, not a code change) for
+   the 84 `content_hash IS NULL` rows `ops health` flagged. Result: all 84
+   are `status='sent'` with their source file already deleted
+   post-upload -- hash is permanently unfillable, not a bug. The
+   `ops health` warning line is a false-positive nag for this case;
+   low-priority follow-up would be excluding already-`sent` rows from
+   that warning in `ops/ops/health.py`.
+3. **`suite.db`'s `circuit` table has ~44 junk rows** (of 47 total) from
+   the 2026-07-28 Windows→Linux DB-unification migration
+   (`core/core/migrate.py`'s `circuit`-copy loop, ~line 184: reads the old
+   `archiver.db`'s `circuit` table by column name into the new schema,
+   but the old table apparently had a different column layout, so
+   `platform` came through `NULL`/mismatched on many rows -- e.g. rows
+   with `platform=NULL, consecutive_fails='archiver', last_error='Sean.vc'`,
+   or a content-hash string sitting in the `platform` column).
+   `PRAGMA integrity_check` is clean; **confirmed harmless** -- every
+   current read of `circuit` (`core/core/store.py`'s `bump_circuit_fail`/
+   `trip_circuit`/`circuit_state`) is a parameterized `WHERE platform=?`
+   lookup for a real platform name, never an unfiltered `SELECT *`, so
+   the junk rows are never touched. Low-priority cleanup candidate
+   (`DELETE FROM circuit WHERE platform NOT IN
+   ('instagram','x','tiktok')` after a backup), not urgent.
+4. Verified NOT a bug: recorder's frequent (~7-20min) systemd stop/start
+   pairs are the existing one-shot `recorder record` reload-on-finish
+   behavior (2026-09-15 fix, section below), not a crash loop --
+   `journalctl` shows clean Stop/Start pairs, no failure exits.
+
 ## recorder: stall-guard rc=-3 never reached terminal check (2026-09-17)
 
 **Process note:** hand-edited directly, not dispatched through TriAPI,
