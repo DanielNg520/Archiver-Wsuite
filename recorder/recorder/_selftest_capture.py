@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +53,52 @@ def check(cond: bool, label: str) -> None:
 # pid-liveness via core.platform.process: `os.kill(pid, 0)` is POSIX-only —
 # on Windows it TerminateProcess-es (or errors) instead of merely probing.
 _pid_alive = _process.pid_alive
+
+
+def test_stall_guard_terminates_on_no_growth(tmp: Path) -> None:
+    print("\n── stall guard terminates when recorded bytes stop growing ──")
+    tmp.mkdir(parents=True, exist_ok=True)
+    childfile = tmp / "seg_0.mp4"
+    pidfile = tmp / "childpid"
+    # Writer stays alive (like a stalled-but-still-connected ffmpeg) after its
+    # one write — if it exited, the parent below would exit right after it and
+    # is_running() would go False before the stall window could ever fire.
+    writer_py = tmp / "writer.py"
+    writer_py.write_text(
+        "import sys, time\n"
+        "with open(sys.argv[1], 'a') as f:\n"
+        "    f.write('x\\n')\n"
+        "while True:\n"
+        "    time.sleep(1)\n"
+    )
+    parent_py = tmp / "parent.py"
+    parent_py.write_text(
+        "import pathlib, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+        "pathlib.Path(sys.argv[3]).write_text(str(child.pid))\n"
+        "child.wait()\n"
+    )
+    cap = StreamCapture(str(tmp), None, start_timeout_s=0, stall_timeout_s=0.5)
+    cap._run_dir = tmp
+    cap._started_at = time.time()
+    proc = subprocess.Popen(
+        [sys.executable, str(parent_py), str(writer_py),
+         str(childfile), str(pidfile)],
+        **_procgroup.popen_kwargs())
+    cap._proc = proc
+    deadline = time.time() + 10
+    while time.time() < deadline and not pidfile.exists():
+        time.sleep(0.1)
+    time.sleep(0.3)
+    child_pid = int(pidfile.read_text().strip())
+    check(_pid_alive(child_pid), "writer child is running before stall guard")
+
+    rc = cap.wait(threading.Event())
+
+    check(rc == -3, "stall guard returns -3 when recorded bytes stop growing")
+    time.sleep(0.4)
+    check(not _pid_alive(child_pid),
+          "writer child terminated by stall guard")
 
 
 def test_terminate_kills_whole_group(tmp: Path) -> None:
@@ -319,6 +366,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         test_terminate_kills_whole_group(root / "grp")
+        test_stall_guard_terminates_on_no_growth(root / "stall")
         test_remux_missing_or_empty_source(root / "rx")
 
         # tiny monkeypatch helper scoped to one test

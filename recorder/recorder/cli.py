@@ -162,7 +162,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         log.warning("startup sweep skipped after error: %s", e)
 
     platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
-    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file)
+    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
     enqueue_client = EnqueueClient(
         config.db_path, split_threshold_bytes=config.split_threshold_bytes)
     lock = TikTokLock(config.lock_path, os.getpid())
@@ -251,7 +251,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     pid_path.write_text(str(os.getpid()))
 
     platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
-    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file)
+    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
     enqueue_client = EnqueueClient(
         config.db_path, split_threshold_bytes=config.split_threshold_bytes)
     lock = TikTokLock(config.lock_path, os.getpid())

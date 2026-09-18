@@ -77,7 +77,8 @@ log = logging.getLogger(__name__)
 
 class StreamCapture:
     def __init__(self, output_dir: str, cookies_file: str | None,
-                 start_timeout_s: float = 120.0):
+                 start_timeout_s: float = 120.0,
+                 stall_timeout_s: float = 300.0):
         self.output_dir = Path(output_dir).expanduser()
         self.cookies_file = cookies_file
         # Dead-stream guard: terminate yt-dlp if it produces ZERO bytes
@@ -85,6 +86,10 @@ class StreamCapture:
         # recording to lose, so this can never drop captured data; set to 0
         # to disable.
         self.start_timeout_s = start_timeout_s
+        # Stall guard: terminate yt-dlp if the byte count stops growing for
+        # this many consecutive seconds after at least one byte has arrived.
+        # Set to 0 to disable.
+        self.stall_timeout_s = stall_timeout_s
         self._proc: subprocess.Popen | None = None
         self._run_dir: Path | None = None
         self._started_at: float = 0.0
@@ -224,6 +229,8 @@ class StreamCapture:
         within ~2s rather than hanging on an uninterruptible wait()."""
         if self._proc is None:
             return -1
+        last_bytes = 0
+        last_grew_at = self._started_at
         while self.is_running():
             if stop_event.wait(timeout=2.0):
                 log.debug("capture: stop requested — terminating yt-dlp")
@@ -245,6 +252,24 @@ class StreamCapture:
                 self._terminate()
                 self._close_log()
                 return -2
+            # Stall guard: once data has started flowing, bail if the byte
+            # count stops growing for the configured window. Independent of
+            # the dead-stream guard above — this only ever applies once
+            # recorded bytes > 0, the dead-stream guard only while they are
+            # still exactly 0.
+            if self.stall_timeout_s > 0:
+                current_bytes = self._recorded_bytes()
+                if current_bytes > 0:
+                    if current_bytes != last_bytes:
+                        last_bytes = current_bytes
+                        last_grew_at = time.time()
+                    elif time.time() - last_grew_at > self.stall_timeout_s:
+                        log.warning("capture: byte count flat for %.0fs — "
+                                    "assuming stalled stream, terminating "
+                                    "yt-dlp", self.stall_timeout_s)
+                        self._terminate()
+                        self._close_log()
+                        return -3
         rc = self._proc.returncode
         log.debug("capture: yt-dlp exited rc=%d", rc)
         self._close_log()

@@ -66,6 +66,7 @@ class RecorderConfig:
     reconnect_backoff_base_s: float = 2.0   # backoff = base·2^streak, capped 30s
     max_zero_byte_reconnects: int   = 3     # consecutive no-data reconnects → stop
     max_session_minutes:      float = 0.0   # 0 = no cap on total session length
+    stall_timeout_s:          float = 300.0
     # ── Split mode (see register_media / archiver.reconcile) ──────────────────
     # When on, every recording over `split_chunk_gib` is cut into <=that-size
     # parts at enqueue, instead of only splitting above the ~3.9 GiB upload
@@ -138,6 +139,7 @@ class RecorderConfig:
             reconnect_backoff_base_s = float(rec.get("reconnect_backoff_base_s", 2.0)),
             max_zero_byte_reconnects = int(rec.get("max_zero_byte_reconnects", 3)),
             max_session_minutes      = float(rec.get("max_session_minutes", 0.0)),
+            stall_timeout_s          = float(rec.get("stall_timeout_s", 300.0)),
             split_at_chunk_size      = bool(rec.get("split_at_chunk_size", False)),
             split_chunk_gib          = _safe_float(rec.get("split_chunk_gib", 2.0), 2.0),
         )
