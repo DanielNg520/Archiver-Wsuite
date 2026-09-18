@@ -10,6 +10,29 @@ draining (258 pending, 0 failed, ~71 sent/24h), recorder mid-recording,
 archiver scanning. Nothing left broken; items below are follow-ups, not
 blockers.
 
+**Next actions, in order (read the numbered detail below each first):**
+1. Run `ops health` first thing -- confirm the three services are still
+   nominal and the dispatcher queue is still draining (was ~258 pending,
+   ETA ~3h at session end) before touching anything else.
+2. Watch for the next age-restricted TikTok live (any user, not just
+   `@weejiwooji`) and confirm the recorder actually records it -- this is
+   the one unverified fix from today (item 1 below). Check
+   `~/.local/log/recorder.out.log` for a `headless-browser fallback`
+   line followed by a successful record, not another `BrowserType.launch`
+   error.
+3. Then work the "Repo audit backlog" section further down this file,
+   top-down by priority (High -> Medium -> Low) -- untouched since it was
+   filed, still the main queued work. Follow the TriAPI dispatch rule
+   (`~/.claude/CLAUDE.md`) for anything that's an actual code change.
+4. Two smaller follow-ups from today, either can be picked up any time
+   (both already filed under "Known tech debt" below): the missing
+   `state.py` reconnect-loop regression test, and verifying the
+   dispatcher's now-unconditional `backoff_s` doesn't over-penalize
+   ordinary transient failures (TriAPI task `b41afde0`).
+5. Items 2 (`content_hash` backfill) and 3 (`circuit` table junk rows)
+   below are closed out / confirmed-harmless -- no action needed, kept
+   here only as a record of what was checked and why it's not a bug.
+
 1. **Playwright `chromium_headless_shell` was manually installed**
    (`~/.cache/ms-playwright/chromium_headless_shell-1243/`, machine-local,
    NOT in this repo) after Playwright's own installer kept timing out
