@@ -559,6 +559,11 @@ class StateMachine:
                 break
             if rc == -2:                               # dead stream (zero bytes)
                 break
+            if rc == -3:                               # stalled (byte count flat)
+                log.warning("@%s recording stalled (byte count flat) — "
+                            "finalizing instead of reconnecting",
+                            self.current_user)
+                break
             if not self.config.reconnect_enabled:
                 break
             if not self._confirm_still_live(self.current_user):

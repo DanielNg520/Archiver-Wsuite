@@ -2,6 +2,25 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
+## recorder: stall-guard rc=-3 never reached terminal check (2026-09-17)
+
+**Process note:** hand-edited directly, not dispatched through TriAPI,
+per user sign-off in the moment (same carve-out as the dispatcher
+`backoff_s` fix below) -- caught live and broken on `origin/main`.
+
+Code-review audit of the 2026-09-17 stall-guard commit found
+`recorder/recorder/state.py`'s `_wait_for_recording_done()` only treated
+`rc == -1`/`-2` as terminal; the new `rc == -3` (stall guard tripped) fell
+through to `_confirm_still_live()`, which reports `True` for the same
+idle-but-live room, so it just reconnected -- and `zero_byte_streak`
+resets every cycle since the stalled segment had bytes > 0, so no other
+guard caught it either. Net effect: the stall guard chopped the runaway
+session into repeating ~5-8min stall-then-reconnect cycles instead of
+ending it -- the exact unbounded-session bug it was written to fix.
+Fixed: `rc == -3` now breaks the reconnect loop like `-2` does.
+285/285 seams + 22/22 recorder selftest checks still pass (neither
+exercises this reconnect-loop path either way -- still a coverage gap).
+
 ## Repo audit backlog (2026-09-17, not started)
 
 Full repo audit after the recorder stall-guard fix below. Merged in from
@@ -193,6 +212,22 @@ all (predates even the 2026-09-05 fix). Not backported here; flagged as
 existing parity drift, see "Known tech debt" below.
 
 ## Known tech debt
+
+- [ ] **No regression test exercises `state.py`'s reconnect loop with
+  `StreamCapture.wait()`'s exit codes.** The rc=-3 terminal-check bug above
+  shipped past both `test_seams.py` and the recorder selftest because both
+  only check `wait()`'s return value in isolation, never
+  `_wait_for_recording_done()`'s handling of it. Needs a test driving the
+  loop with a fake capture returning -1/-2/-3 and asserting each is
+  terminal.
+
+- [ ] **`dispatcher/dispatcher/drain.py`'s unconditional `backoff_s`
+  (2026-09-17 fix) may over-penalize ordinary transient failures** — every
+  whole-batch failure now gets the full `stall_backoff_s` (300s default),
+  not just the previously-targeted poisoned/stalled case. Intentional per
+  the added comment, but TriAPI task `b41afde0` (dedicated regression test)
+  hasn't landed, so the queue-throughput cost on one-off `ConnectionError`s
+  is unverified.
 
 - [ ] **`windows/recorder/recorder/capture.py`/`config.py`/`cli.py` are missing
   the 2026-09-17 stall guard** (`stall_timeout_s` on `StreamCapture`, the
