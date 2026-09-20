@@ -131,17 +131,35 @@ def job_state(name: str) -> str | None:
     return _service.job_state(LABELS[name])
 
 
+def _recorder_pidfile_pid() -> int | None:
+    """The recorder's pidfile (core.paths.recorder_pid) is the single shared
+    slot both `recorder start` (daemon) and `recorder record --user X`
+    (manual one-shot) write their own pid into, whichever currently owns it —
+    read it directly instead of scanning the process table by argv.
+
+    This matters because `recorder record` calls `ops unload recorder` on
+    ITSELF as a self-cleanup step, before it has written its own pid to this
+    file (see recorder.cli.cmd_record) — at that exact moment an argv scan
+    for "recorder ... record" can match the CALLING process (it's alive in
+    the table with that argv too), not just a genuine leftover orphan, and
+    SIGTERM it before it ever installs its own signal handler. The pidfile
+    has no such race: it still names the PREVIOUS owner until the new
+    process explicitly claims it. (Caught live 2026-09-19: a real `/record`
+    command killed itself this way — see AGENTS.md.)"""
+    try:
+        pid = int(_paths.recorder_pid().read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return pid if _process.pid_alive(pid) else None
+
+
 def _argv_pid(name: str) -> int | None:
     """Find a worker in the process table by its argv, independent of the
-    service manager. The recorder also has a one-shot manual mode (`recorder
-    record --user X`, e.g. run by hand or by an external bot) that is never a
-    service-manager action — check both its persistent-daemon and
-    manual-record argv so a foreground manual recording is still found
-    instead of reading as "not running"."""
+    service manager. Not used for the recorder — see _recorder_pidfile_pid."""
+    if name == "recorder":
+        return _recorder_pidfile_pid()
     if name == "archiver":
         return _process.find_worker_pid(name, "loop")
-    if name == "recorder":
-        return _process.find_worker_pid_any(name, ("start", "record"))
     return _process.find_worker_pid(name, "start")
 
 

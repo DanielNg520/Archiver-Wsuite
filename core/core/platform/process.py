@@ -386,16 +386,3 @@ else:                                                 # ── POSIX backend ─
                 if Path(token).name == command and argv[index + 1] == action:
                     return pid
         return None
-
-
-def find_worker_pid_any(command: str, actions: "tuple[str, ...]") -> "int | None":
-    """Like find_worker_pid, but the worker may be running under any one of
-    several subcommands — e.g. the recorder's persistent `start` daemon vs its
-    one-shot manual `record --user X` — so a caller that needs to find EITHER
-    isn't limited to matching just the one action `find_worker_pid` was called
-    with. Tries each in order, returns the first hit."""
-    for action in actions:
-        pid = find_worker_pid(command, action)
-        if pid is not None:
-            return pid
-    return None

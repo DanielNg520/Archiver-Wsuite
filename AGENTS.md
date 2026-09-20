@@ -91,12 +91,41 @@ data lost. `_should_reload()` auto-reloaded the daemon (`ops load recorder`)
 as designed since no suppress-flag was set (only `ops unload` sets one).
 Then reinstalled `recorder` and `ops` (`--editable --with-editable ./core`
 each, `core` verified still editable from `/tmp` for both), `ops restart
-recorder` -- came back up service-owned, idle, healthy. Did not additionally
-force-fire a live `ops unload recorder` against the freshly-restarted service
-just to re-test the kill path (would risk interrupting a real recording for a
-scenario already covered by the unit-level check above) -- the fix is live
-and unit-verified; the next real orphan will be the first true end-to-end
-firing.
+recorder` -- came back up service-owned, idle, healthy.
+
+**That "next real orphan" arrived within the hour and exposed a genuine
+self-inflicted regression in the fix above (2026-09-19, same session).**
+A real `/record longdesaint88890703` command failed: `recorder record`'s own
+existing self-cleanup step (it detects a running recorder via the pidfile and
+shells out to `ops unload recorder` on itself before taking over) triggered
+the new foreground-kill code, which then SIGTERM'd the `longdesaint`
+invocation ITSELF (`exit -15`) -- confirmed via a background health/log
+watcher running at the time, not guessed after the fact. Root cause:
+`ops/ops/health.py`'s `_argv_pid` scanned the process table for ANY process
+matching `recorder ... record`/`... start` argv, with no way to tell a
+genuine leftover orphan apart from the very process that just asked `ops
+unload` to clean up on its behalf -- at scan time the new process is already
+alive in the table with matching argv, before it has installed its own
+signal handler, so it can be the (only) match. Fixed: replaced the argv scan
+for the recorder specifically with `_recorder_pidfile_pid()`, reading
+`core.paths.recorder_pid()` directly -- that file still names the PREVIOUS
+owner at the exact moment `cmd_record` calls `ops unload` on itself (it only
+overwrites the file with its own pid afterward, once the old owner is
+confirmed gone), so the race can't happen. Removed the now-unused
+`find_worker_pid_any` from `core/core/platform/process.py` (dead code once
+nothing needed the multi-action argv scan). Verified with a targeted
+simulation: a fake "old owner" pid in the pidfile + a separate live process
+with matching argv but NOT yet in the pidfile -- confirmed the lookup finds
+only the pidfile's owner, never the live-but-unclaimed process. 285/285 seams
++ 24/24 ops selftest still pass. Reinstalled `ops` (core verified editable),
+`ops load recorder` to restore the daemon (had been left disabled by the
+incident) -- confirmed healthy again.
+
+**Lesson for next time:** a "kill anything that looks orphaned" mechanism
+triggered from INSIDE the same tool that's about to become the new owner is
+inherently racy against argv/process-table matching; prefer a durable,
+explicitly-owned marker (the pidfile) that the new owner hasn't claimed yet,
+over re-deriving "who's the owner" from a live process snapshot.
 
 **Known gap, not fixed:** `windows/` mirror of `ops`/`core.platform.process`
 was not touched (same parity-drift pattern as other entries below;
