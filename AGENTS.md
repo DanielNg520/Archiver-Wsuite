@@ -71,22 +71,32 @@ Two more findings from the same review, evaluated and left as-is:
   "Known tech debt" below for a future pass.
 
 Verified: 285/285 `tests/test_seams.py` seams + 24/24 `ops/ops/_selftest_health.py`
-+ 22/22 recorder selftest checks still pass after the review fixes. Manually
-verified `find_worker_pid`/`find_worker_pid_any` against a real spawned
++ 22/22 recorder selftest checks pass after the review fixes. Manually
+verified `find_worker_pid`/`find_worker_pid_any` against a spawned
 `recorder record --user X`-shaped process (found by `record` action where the
 old `start`-only lookup missed it), and the suppress-reload flag's
-set/consume/re-arm cycle in isolation. Did not exercise `cmd_unload`
-end-to-end against the live systemd `com.duy.recorder` unit (would have
-disrupted the real running service without being asked to restart it) --
-reviewed by code reading + the isolated checks above instead.
+set/consume/re-arm cycle in isolation.
 Hand-fixed directly (small, well-understood, hasn't gone through TriAPI yet --
-flag if the user wants it dispatched properly). **Not yet deployed**: `ops`,
-`core`, and `recorder` are all editable-installed, so the fix is live on next
-invocation with no reinstall needed for `ops`/`core` -- `recorder`'s running
-daemon (if any) still has the OLD `cmd_record` in its already-imported
-module cache only if it's mid-process-lifetime, which doesn't apply here
-since `cmd_record` is invoked fresh per manual record; no restart needed.
-Not confirmed yet against a real live orphaned process end-to-end.
+flag if the user wants it dispatched properly). Committed as `a49cc06`.
+
+**Deployed + confirmed against the real orphan (2026-09-19, same session).**
+Found `pid 1215443` LIVE while checking `ops health`: a `recorder record
+--user ingyongcuong` process, foreground-owned, mid-recording, systemd task
+disabled -- the exact bug, not a simulation. Took it down with `recorder
+stop` (its own existing SIGTERM path, not yet the new `ops unload` fix --
+that binary wasn't reinstalled yet) rather than a hard kill, to let the
+in-flight capture finalize: exited clean in 2s, `items` table confirms
+`ingyongcuong_1789871896.mp4` (390MB) enqueued and already `sending` -- no
+data lost. `_should_reload()` auto-reloaded the daemon (`ops load recorder`)
+as designed since no suppress-flag was set (only `ops unload` sets one).
+Then reinstalled `recorder` and `ops` (`--editable --with-editable ./core`
+each, `core` verified still editable from `/tmp` for both), `ops restart
+recorder` -- came back up service-owned, idle, healthy. Did not additionally
+force-fire a live `ops unload recorder` against the freshly-restarted service
+just to re-test the kill path (would risk interrupting a real recording for a
+scenario already covered by the unit-level check above) -- the fix is live
+and unit-verified; the next real orphan will be the first true end-to-end
+firing.
 
 **Known gap, not fixed:** `windows/` mirror of `ops`/`core.platform.process`
 was not touched (same parity-drift pattern as other entries below;
