@@ -32,6 +32,7 @@ LOCK PLACEMENT (deviates from the guide's literal code):
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import random
 import subprocess
@@ -60,6 +61,12 @@ from .unstartable import UnstartableTracker
 log = logging.getLogger(__name__)
 
 _VIDEO_SUFFIXES = frozenset({".mp4", ".ts", ".mkv", ".webm", ".flv", ".m4v"})
+
+# A rapid reconnect storm (e.g. a brief CDN 500) can produce a remuxed
+# segment that's just a fraction of a second — no real content, sometimes a
+# single black/loading frame — before the new connection's first keyframe
+# lands. Below this size it's not worth enqueuing as a "recording".
+_MIN_SEGMENT_BYTES = int(os.environ.get("RECORDER_MIN_SEGMENT_BYTES", "1000000"))
 
 # After this many CONSECUTIVE failures to START a capture for a user, bench them
 # so the poll loop stops hot-spinning on a stream we currently can't open
@@ -728,6 +735,18 @@ class StateMachine:
                       "not enqueued", job.file_path.name, extra={"ev": "lost"})
             return False
         try:
+            # Check before remuxing: the remux is a -c copy container-only
+            # rewrite (no re-encode), so the pre-remux size already gives the
+            # same verdict — no point spawning ffmpeg just to discard the
+            # result. Saves a subprocess per stub during a reconnect storm.
+            pre_size = _safe_size(job.file_path)
+            if pre_size < _MIN_SEGMENT_BYTES:
+                log.warning("recorder: discarding %s (%d bytes < %d) — "
+                            "likely a reconnect stub, not a real recording",
+                            job.file_path.name, pre_size, _MIN_SEGMENT_BYTES,
+                            extra={"ev": "discarded_stub"})
+                job.file_path.unlink(missing_ok=True)
+                return False
             upload_path = _remux_for_telegram(job.file_path)
             alias = self.config.tiktok_aliases.get(job.username)
             caption = recorder_caption(job.username, alias, upload_path.stem)

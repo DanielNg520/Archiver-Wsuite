@@ -131,6 +131,20 @@ def job_state(name: str) -> str | None:
     return _service.job_state(LABELS[name])
 
 
+def _argv_pid(name: str) -> int | None:
+    """Find a worker in the process table by its argv, independent of the
+    service manager. The recorder also has a one-shot manual mode (`recorder
+    record --user X`, e.g. run by hand or by an external bot) that is never a
+    service-manager action — check both its persistent-daemon and
+    manual-record argv so a foreground manual recording is still found
+    instead of reading as "not running"."""
+    if name == "archiver":
+        return _process.find_worker_pid(name, "loop")
+    if name == "recorder":
+        return _process.find_worker_pid_any(name, ("start", "record"))
+    return _process.find_worker_pid(name, "start")
+
+
 def worker_pid(name: str) -> tuple[int | None, str]:
     """Return a worker PID and whether the service manager or a shell owns it.
     On Windows the service manager exposes no PID, so ownership is decided by
@@ -139,11 +153,24 @@ def worker_pid(name: str) -> tuple[int | None, str]:
     managed = _service.running_pid(LABELS[name])
     if managed is not None:
         return managed, "service"
-    action = "loop" if name == "archiver" else "start"
-    pid = _process.find_worker_pid(name, action)
+    pid = _argv_pid(name)
     if pid is not None and job_state(name) == "running":
         return pid, "service"
     return pid, "foreground"
+
+
+def foreground_pid(name: str) -> int | None:
+    """Like worker_pid, but for callers that need a PID they can safely kill
+    right now — e.g. `ops unload`, right after it has just disabled the
+    service itself. Skips `job_state`'s 15s memo entirely (a value cached
+    moments before an unload can still read "running" immediately after, see
+    the 2026-09-19 orphaned-recorder-process fix in AGENTS.md) and instead
+    re-checks `_service.running_pid` live: if the service manager genuinely
+    isn't running this worker right now, any argv-matched pid found is by
+    definition not the service's own."""
+    if _service.running_pid(LABELS[name]) is not None:
+        return None
+    return _argv_pid(name)
 
 
 def proc_stats(pid: int) -> str | None:

@@ -2,73 +2,157 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
-## Session carryover (2026-09-17, resume here)
+## `ops unload` couldn't kill a manually-triggered `recorder record` (2026-09-19)
 
-Pipeline health-pass after the two hand-fixes below. **All three services
-running and nominal** (`ops health`) as of this writing -- dispatcher
-draining (258 pending, 0 failed, ~71 sent/24h), recorder mid-recording,
-archiver scanning. Nothing left broken; items below are follow-ups, not
-blockers.
+User reported: a Telegram `/record` command (handled by an external bot, not
+in this repo -- `dispatcher/` has no inbound command listener, so whatever
+sends `recorder record --user X` is outside this codebase) left an orphaned
+recorder process that `ops unload` could not stop.
 
-**Next actions, in order (read the numbered detail below each first):**
-1. Run `ops health` first thing -- confirm the three services are still
-   nominal and the dispatcher queue is still draining (was ~258 pending,
-   ETA ~3h at session end) before touching anything else.
-2. Watch for the next age-restricted TikTok live (any user, not just
-   `@weejiwooji`) and confirm the recorder actually records it -- this is
-   the one unverified fix from today (item 1 below). Check
-   `~/.local/log/recorder.out.log` for a `headless-browser fallback`
-   line followed by a successful record, not another `BrowserType.launch`
-   error.
-3. Then work the "Repo audit backlog" section further down this file,
-   top-down by priority (High -> Medium -> Low) -- untouched since it was
-   filed, still the main queued work. Follow the TriAPI dispatch rule
-   (`~/.claude/CLAUDE.md`) for anything that's an actual code change.
-4. Two smaller follow-ups from today, either can be picked up any time
-   (both already filed under "Known tech debt" below): the missing
-   `state.py` reconnect-loop regression test, and verifying the
-   dispatcher's now-unconditional `backoff_s` doesn't over-penalize
-   ordinary transient failures (TriAPI task `b41afde0`).
-5. Items 2 (`content_hash` backfill) and 3 (`circuit` table junk rows)
-   below are closed out / confirmed-harmless -- no action needed, kept
-   here only as a record of what was checked and why it's not a bug.
+Root cause: `ops unload`'s `cmd_unload` (`ops/ops/cli.py`) only ever called
+`core.platform.service.unload` -- pure service-manager action (`systemctl
+--user disable --now recorder.service` on Linux). A manual `recorder record
+--user X` run (`recorder/recorder/cli.py:202` `cmd_record`) is never in that
+unit's cgroup, so disabling the unit finds nothing to kill. Compounding it:
+`ops/ops/health.py`'s `worker_pid()` (used everywhere ops looks for a
+foreground/unmanaged worker pid) hardcoded `action="start"` when scanning the
+process table, so it couldn't even *see* a `record`-argv process to report,
+let alone kill it -- `ops health`/`ops watch` would show the recorder as "not
+running" while one was live.
 
-1. **Playwright `chromium_headless_shell` was manually installed**
+Fixed:
+- `core/core/platform/process.py` gained `find_worker_pid_any(command,
+  actions)`, trying each action in turn (both the Windows and POSIX
+  `find_worker_pid` implementations already existed; this is a thin wrapper
+  over either, no branch-specific rewrite needed).
+- `ops/ops/health.py`'s `worker_pid()` now checks `("start", "record")` for
+  the recorder specifically (other workers unchanged -- they have no
+  manual-invocation subcommand).
+- `ops/ops/cli.py`'s `cmd_unload` now also calls `core.platform.procgroup
+  .terminate_pid` (the same primitive `recorder stop` already uses) on any
+  pid `worker_pid` reports as `"foreground"`-owned, after the service-level
+  unload -- so a manually-run process is SIGTERM'd directly instead of
+  silently surviving.
+
+**`/code-review high` caught two real bugs in the first cut, both fixed
+same session before commit:**
+
+1. `cmd_unload`'s SIGTERM relied on `worker_pid()`'s `owner` tag, which reads
+   `job_state()` -- memoized 15s (`@_memo(min_ttl=15.0)`). A value cached
+   moments before `_service.unload()` runs (e.g. by `ops update`'s earlier
+   `_drain_worker` call in the same process) could still read `"running"`
+   right after, misclassifying a real orphan as service-owned and silently
+   skipping the kill -- defeating the fix in exactly the automated-update
+   path it needs to work in. Fixed: added `health.foreground_pid(name)`,
+   a cache-free variant that re-checks `_service.running_pid` LIVE instead of
+   trusting the memo; `cmd_unload` now uses it instead of `worker_pid`.
+2. Killing the orphan wasn't enough -- `recorder record`'s own exit path
+   (`recorder/recorder/cli.py`'s `cmd_record`) reloads the service
+   (`_reload_recorder_service()`, i.e. `ops load recorder`) by default when
+   it finishes, on the assumption that an ordinary manual recording should
+   hand the daemon back. That fired on this SIGTERM too, silently re-enabling
+   the very service `ops unload` was asked to stop. Fixed: `ops unload`
+   now touches a one-shot flag (`core.paths.recorder_suppress_reload_flag`,
+   `core/core/paths.py`) right before the SIGTERM; `cmd_record`'s new
+   `_should_reload()` helper checks + consumes it in both its normal
+   `finally:` exit and the double-Ctrl-C hard-exit path, skipping the reload
+   exactly once. Same mechanism/pattern as the dispatcher's existing
+   `dispatcher_stop_flag`.
+
+Two more findings from the same review, evaluated and left as-is:
+- `core/core/platform/process.py`'s new `find_worker_pid_any` re-runs a full
+  `ps` scan per action tried (no memo on the POSIX `find_worker_pid`, unlike
+  the Windows backend) -- minor overhead on an already-infrequent path
+  (`ops health`/`watch`/`unload`), not fixed.
+- `recorder/recorder/state.py`'s pre-existing (not from this session)
+  `_MIN_SEGMENT_BYTES` stub-discard guard also deletes a genuine short-but-real
+  recording under 1MB, not just reconnect stubs -- real gap, but predates this
+  session's work and is out of scope for the orphaned-process fix; left in
+  "Known tech debt" below for a future pass.
+
+Verified: 285/285 `tests/test_seams.py` seams + 24/24 `ops/ops/_selftest_health.py`
++ 22/22 recorder selftest checks still pass after the review fixes. Manually
+verified `find_worker_pid`/`find_worker_pid_any` against a real spawned
+`recorder record --user X`-shaped process (found by `record` action where the
+old `start`-only lookup missed it), and the suppress-reload flag's
+set/consume/re-arm cycle in isolation. Did not exercise `cmd_unload`
+end-to-end against the live systemd `com.duy.recorder` unit (would have
+disrupted the real running service without being asked to restart it) --
+reviewed by code reading + the isolated checks above instead.
+Hand-fixed directly (small, well-understood, hasn't gone through TriAPI yet --
+flag if the user wants it dispatched properly). **Not yet deployed**: `ops`,
+`core`, and `recorder` are all editable-installed, so the fix is live on next
+invocation with no reinstall needed for `ops`/`core` -- `recorder`'s running
+daemon (if any) still has the OLD `cmd_record` in its already-imported
+module cache only if it's mid-process-lifetime, which doesn't apply here
+since `cmd_record` is invoked fresh per manual record; no restart needed.
+Not confirmed yet against a real live orphaned process end-to-end.
+
+**Known gap, not fixed:** `windows/` mirror of `ops`/`core.platform.process`
+was not touched (same parity-drift pattern as other entries below;
+unexercised on this machine).
+
+## Session carryover (2026-09-19, resume here)
+
+User reported "5am recording is all black" + "newer recording not
+uploaded." Both diagnosed and the first fixed; the second is a live
+external condition, not code.
+
+1. **Fixed + audited: recorder queued sub-second reconnect stubs as if
+   they were real recordings.** `@thinh_kobe20` hit a TikTok CDN HTTP 500
+   at 06:15, causing 3 reconnects in 18s; the two reconnect-boundary
+   segments (106KB, 3.4MB -- confirmed via DB `file_size_bytes`, files
+   already deleted post-send so couldn't visually confirm, but sizes are
+   consistent with near-zero content) got enqueued and uploaded as full
+   "recordings" -- this is what looked black. `recorder/recorder/state.py`
+   had no size guard anywhere between capture and DB insert (`_enqueue_job`
+   -> `enqueue.py` -> `core.ingest.register_file`; the only existing
+   floor is `core/core/stability.py`'s `MIN_FILE_BYTES = 100`, meant for
+   corruption not junk clips). Fixed: `_enqueue_job` (`state.py:724`) now
+   checks the file against `_MIN_SEGMENT_BYTES` (env
+   `RECORDER_MIN_SEGMENT_BYTES`, default 1MB) **before** remuxing, and
+   discards+unlinks (never enqueues, never spawns ffmpeg) anything
+   smaller, logging `discarded_stub`. /code-review flagged the first cut
+   for checking post-remux (wasting an ffmpeg subprocess per stub during
+   the exact reconnect-storm case this targets, since `-c copy` remux
+   can't change a stub's verdict) -- moved the check pre-remux, re-tested,
+   redeployed. Scoped to the recorder package only -- `core.register_file`
+   untouched since archiver/orphaned also call it and shouldn't inherit a
+   recorder-only heuristic. 285/285 seams + 22/22 recorder selftest checks
+   pass both times. Hand-fixed directly (small, well-understood, user
+   signed off in the moment) rather than through TriAPI. Deployed twice:
+   `uv tool install --force --editable ./recorder --with-editable ./core`
+   (verified `core` stayed editable from a neutral cwd each time) +
+   `ops restart recorder` (idle both times, confirmed running clean
+   afterward).
+2. **Resolved by restart, not a code bug: dispatcher was stuck uploading
+   `thinh_kobe20_1789821350.mp4` (315MB) since ~10:02, blocking
+   `19970609bun`'s 468MB file (queued 07:39) behind it for ~7h.**
+   `claim_batch` anchors oldest-cluster-first, so the stuck item held the
+   queue head. Root cause was NOT the backoff logic (that 2026-09-17 fix
+   is working) -- it was a real Telegram connectivity problem: general
+   internet was fine (0% loss to 1.1.1.1/8.8.8.8), TCP connected fine to
+   all 3 Telegram DC IPs on :443, but sustained transfers
+   (`SaveBigFilePartRequest`) kept failing (`IncompleteReadError: 0 bytes
+   read`, connect `TimeoutError`s) -- traceroute showed the path to
+   Telegram's Amsterdam DC with 220ms+ latency and several
+   silently-dropping hops, consistent with congestion/packet loss on
+   that international route. `ops restart dispatcher` forced fresh
+   connections; the stuck file sent cleanly within ~4 min post-restart
+   and the queue resumed draining normally (`19970609bun` no longer
+   blocked). If this recurs, restart is the known unstick.
+3. **Playwright `chromium_headless_shell` was manually installed**
    (`~/.cache/ms-playwright/chromium_headless_shell-1243/`, machine-local,
-   NOT in this repo) after Playwright's own installer kept timing out
-   (30s Node HTTP timeout) against a CDN `curl` fetched in 15s with no
-   issue. Fixes the age-restricted-TikTok headless-browser fallback that
-   was bench-cooldown-looping on `@weejiwooji`. **Not yet confirmed
-   against a real live age-restricted stream** (none occurred since the
-   fix) -- watch for the next one. Per-machine state (gitignored
-   `~/.cache`), not Hivemind-synced; if another machine hits the same
-   Playwright-CDN-timeout, it needs the same manual pull.
-2. **`archiver backfill` was run** (existing tool, not a code change) for
-   the 84 `content_hash IS NULL` rows `ops health` flagged. Result: all 84
-   are `status='sent'` with their source file already deleted
-   post-upload -- hash is permanently unfillable, not a bug. The
-   `ops health` warning line is a false-positive nag for this case;
-   low-priority follow-up would be excluding already-`sent` rows from
-   that warning in `ops/ops/health.py`.
-3. **`suite.db`'s `circuit` table has ~44 junk rows** (of 47 total) from
-   the 2026-07-28 Windows→Linux DB-unification migration
-   (`core/core/migrate.py`'s `circuit`-copy loop, ~line 184: reads the old
-   `archiver.db`'s `circuit` table by column name into the new schema,
-   but the old table apparently had a different column layout, so
-   `platform` came through `NULL`/mismatched on many rows -- e.g. rows
-   with `platform=NULL, consecutive_fails='archiver', last_error='Sean.vc'`,
-   or a content-hash string sitting in the `platform` column).
-   `PRAGMA integrity_check` is clean; **confirmed harmless** -- every
-   current read of `circuit` (`core/core/store.py`'s `bump_circuit_fail`/
-   `trip_circuit`/`circuit_state`) is a parameterized `WHERE platform=?`
-   lookup for a real platform name, never an unfiltered `SELECT *`, so
-   the junk rows are never touched. Low-priority cleanup candidate
-   (`DELETE FROM circuit WHERE platform NOT IN
-   ('instagram','x','tiktok')` after a backup), not urgent.
-4. Verified NOT a bug: recorder's frequent (~7-20min) systemd stop/start
-   pairs are the existing one-shot `recorder record` reload-on-finish
-   behavior (2026-09-15 fix, section below), not a crash loop --
-   `journalctl` shows clean Stop/Start pairs, no failure exits.
+   NOT in this repo). Fixes the age-restricted-TikTok headless-browser
+   fallback that was bench-cooldown-looping on `@weejiwooji`. **Still not
+   confirmed against a real live age-restricted stream** -- watch for the
+   next one, check `recorder.out.log` for `headless-browser fallback`
+   followed by a successful record.
+4. Closed out, no action needed: `content_hash` backfill (84 `sent` rows
+   with source already deleted, hash permanently unfillable, not a bug)
+   and `circuit` table junk rows from the 2026-07-28 migration (harmless,
+   never read unfiltered) -- both confirmed 2026-09-17, kept only as a
+   record of what was checked.
 
 ## recorder: stall-guard rc=-3 never reached terminal check (2026-09-17)
 
@@ -127,6 +211,52 @@ Low:
   gitignored clutter -- safe to `rm -rf` any time.
 - No `shell=True` usage, no hardcoded secrets, no stray
   TODO/FIXME/XXX/HACK markers found repo-wide.
+
+**2026-09-19 codebase-wide gap audit** (not a diff review -- separate
+from the per-PR "Repo audit backlog" items above): re-checked
+`core/core/hashing.py`/`dedup.py` (dedup funnel is properly indexed, no
+N+1 risk at 154K+ rows), `dispatcher/dispatcher/fast_upload.py` (parallel
+path has solid cleanup + exercised serial fallback -- this is what saved
+the stuck-upload incident earlier today from data loss), `delete.py`'s
+`maybe_delete` (re-reads status before unlink, no gap), and `store.py`'s
+circuit-breaker methods (matches today's observed 60s-pause-after-8-fails
+behavior exactly) -- all confirmed clean, no new findings. Full grep sweep
+for silent `except:`/`except Exception: pass` and `shell=True` across all
+5 packages found nothing beyond the orchestrator.py swallow already
+listed above. Did not re-survey `cli.py`/`send.py` line-by-line (already
+flagged for size/coverage above; out of budget for one pass).
+
+## ops/health + recorder/watch.py fixes (2026-09-19)
+
+Both High/Low findings from the codebase-wide gap audit above, fixed same
+session, user signed off in the moment (hand-fixed, not TriAPI-dispatched,
+same carve-out as the other hand fixes today).
+
+1. **`ops/ops/health.py` had zero test coverage.** Added
+   `ops/ops/_selftest_health.py` (24 checks) covering `_humanize_eta`
+   (bucket boundaries), `_same_volume` (same-device, identical-path, and
+   both-vanished-equal/different-string fallback cases), `_disk_fields`
+   (real path vs unstat-able path), and `drain_eta_fields`/`queue_health`
+   (built on a real `ItemStore`-created temp DB with `health.SUITE_DB`
+   monkeypatched at it, same convention as
+   `core/core/_selftest_drain_eta.py` -- no sqlite mocking; `@_memo()`'s
+   `_DATA_TTL` defaults to 0.0 so no caching to work around). Caught one
+   API surprise while writing it: `_memo`'s wrapper only accepts
+   positional args, so `drain_eta_fields(window_minutes=60)` raises
+   `TypeError` -- call it positionally (`drain_eta_fields(60)`); not fixed
+   (out of scope, `ops health`'s own call site already does this
+   correctly), just a landmine for future callers.
+2. **`recorder/recorder/watch.py`'s `_VIDEO_SUFFIXES` was a hand-copied
+   duplicate of `state.py`'s constant.** Replaced the duplicate literal
+   with `from .state import _VIDEO_SUFFIXES`; confirmed no import cycle
+   (`state.py` doesn't import `watch.py`).
+
+285/285 seams still pass, both selftests pass. Deployed: `ops` reinstalled
+(`uv tool install --force --editable ./ops --with-editable ./core`, `core`
+verified still editable from a neutral cwd) -- no restart needed, `ops` is
+a CLI invoked fresh each call, not a systemd service. `recorder`
+reinstalled the same way + `ops restart recorder` (was idle, confirmed
+running clean afterward).
 
 ## recorder: stall guard for multi-hour zero-progress sessions (2026-09-17)
 

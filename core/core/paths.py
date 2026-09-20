@@ -68,6 +68,16 @@ def dispatcher_stop_flag() -> Path:
     return locks_dir() / "dispatcher.stop"
 
 
+def recorder_suppress_reload_flag() -> Path:
+    """Written by `ops unload recorder` right before it SIGTERMs an orphaned
+    manual `recorder record` process, so that process's own exit-time
+    auto-reload (see recorder.cli._reload_recorder_service, meant to restore
+    the daemon after an ordinary manual recording finishes) does not silently
+    undo the unload that just killed it. `cmd_record` removes the flag itself
+    once it has honored it — one-shot, never meant to persist across runs."""
+    return locks_dir() / "recorder.no_reload"
+
+
 def recorder_pid() -> Path:
     """Default recorder pid file. The recorder writes it under its configured
     state dir (default ~/.recorder); ops reads this default location."""

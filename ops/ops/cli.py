@@ -30,7 +30,9 @@ import sys
 import time
 from pathlib import Path
 
+from core import paths as _paths
 from core import termui as _termui
+from core.platform import procgroup as _procgroup
 from core.platform import service as _service
 from core.platform.service import JobSpec
 
@@ -213,13 +215,39 @@ def cmd_load(args: argparse.Namespace) -> int:
 
 
 def cmd_unload(args: argparse.Namespace) -> int:
+    """Stop + disable each selected job's service-manager entry. This alone
+    never touches a manually-run worker (e.g. `recorder record --user X`
+    invoked by hand or by an external bot, outside `ops load`) — such a
+    process isn't in the service's unit/cgroup, so systemctl/launchctl has
+    nothing to find. So after unloading, also SIGTERM any pid still found by
+    argv that the service manager confirms (live, not cached — see
+    health.foreground_pid) it does NOT own — the same procgroup.terminate_pid
+    `recorder stop` already uses — so an orphaned manual run doesn't survive
+    `ops unload`."""
     rc = 0
     for name, label in _selected_jobs(args):
-        if not _service.definition_exists(label):
+        if _service.definition_exists(label):
+            ok, msg = _service.unload(label)
+            print(f"{name}: {msg}" if ok else f"{name}: unload failed — {msg}")
+            rc = rc or (0 if ok else 1)
+        if name not in LABELS:
             continue
-        ok, msg = _service.unload(label)
-        print(f"{name}: {msg}" if ok else f"{name}: unload failed — {msg}")
-        rc = rc or (0 if ok else 1)
+        pid = _health.foreground_pid(name)
+        if pid is not None:
+            if name == "recorder":
+                # A manual `recorder record` process reloads the service on
+                # its own exit by default (restoring the daemon after an
+                # ordinary recording) — suppress that just for this kill, or
+                # it would silently undo the unload we're doing right now.
+                flag = _paths.recorder_suppress_reload_flag()
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.touch()
+            if _procgroup.terminate_pid(pid):
+                print(f"{name}: also stopped a manually-run process (pid {pid}, "
+                      f"not owned by the service)")
+            else:
+                print(f"{name}: manually-run process (pid {pid}) could not be "
+                      f"signalled — already gone?")
     return rc
 
 

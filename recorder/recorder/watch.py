@@ -27,9 +27,7 @@ from core import heartbeat
 
 from . import ui
 from .config import RecorderConfig
-
-# Recording containers yt-dlp may leave on disk (matches state._VIDEO_SUFFIXES).
-_VIDEO_SUFFIXES = frozenset({".mp4", ".ts", ".mkv", ".webm", ".flv", ".m4v"})
+from .state import _VIDEO_SUFFIXES
 # A file counts as "being recorded now" if touched within this window.
 _ACTIVE_WINDOW_S = 20.0
 

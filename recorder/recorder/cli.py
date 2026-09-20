@@ -241,59 +241,73 @@ def cmd_record(args: argparse.Namespace) -> int:
                 _reload_recorder_service()
             return 1
 
+    from core import InstanceLock
+    from core import paths as _paths
     from .capture import StreamCapture
     from .enqueue import EnqueueClient
     from .lock import TikTokLock
     from .platforms.tiktok import TikTokLivePlatform
     from .state import StateMachine
 
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    pid_path.write_text(str(os.getpid()))
+    def _should_reload() -> bool:
+        # `ops unload recorder` SIGTERMs an orphaned manual record and, in the
+        # same breath, drops this flag so our own reload-on-exit (below)
+        # doesn't silently undo the unload it was just asked to do. One-shot:
+        # consume it here so a later ordinary exit reloads normally again.
+        suppress = _paths.recorder_suppress_reload_flag()
+        if suppress.exists():
+            suppress.unlink(missing_ok=True)
+            return False
+        return not args.no_reload
 
-    platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
-    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
-    enqueue_client = EnqueueClient(
-        config.db_path, split_threshold_bytes=config.split_threshold_bytes)
-    lock = TikTokLock(config.lock_path, os.getpid())
+    with InstanceLock("recorder"):
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()))
 
-    def _enqueue(platform_name, username, file_path, caption,
-                 group_key=None, alias=None):
-        enqueue_client.enqueue(
-            platform=platform_name, username=username,
-            file_path=file_path, caption=caption, group_key=group_key,
-            alias=alias,
-        )
+        platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
+        capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
+        enqueue_client = EnqueueClient(
+            config.db_path, split_threshold_bytes=config.split_threshold_bytes)
+        lock = TikTokLock(config.lock_path, os.getpid())
 
-    machine = StateMachine(config, platform, capture, _enqueue, lock)
+        def _enqueue(platform_name, username, file_path, caption,
+                     group_key=None, alias=None):
+            enqueue_client.enqueue(
+                platform=platform_name, username=username,
+                file_path=file_path, caption=caption, group_key=group_key,
+                alias=alias,
+            )
 
-    def _on_signal(signum, _frame):
-        # First signal → graceful stop; second → hard exit (see cmd_start).
-        if machine._stop.is_set():
-            log.warning("second signal — forcing exit", extra={"ev": "stop"})
-            # os._exit skips `finally`, so do the cleanup the exit is about to
-            # bypass RIGHT HERE. Manual record runs with the service unloaded
-            # (i.e. `disable --now` — off at boot too); without this, a double
-            # Ctrl-C strands the recorder disabled, silently and permanently.
+        machine = StateMachine(config, platform, capture, _enqueue, lock)
+
+        def _on_signal(signum, _frame):
+            # First signal → graceful stop; second → hard exit (see cmd_start).
+            if machine._stop.is_set():
+                log.warning("second signal — forcing exit", extra={"ev": "stop"})
+                # os._exit skips `finally`, so do the cleanup the exit is about to
+                # bypass RIGHT HERE. Manual record runs with the service unloaded
+                # (i.e. `disable --now` — off at boot too); without this, a double
+                # Ctrl-C strands the recorder disabled, silently and permanently.
+                pid_path.unlink(missing_ok=True)
+                if _should_reload():
+                    _reload_recorder_service()
+                os._exit(130)
+            log.info("signal %s — requesting stop (Ctrl-C again to force)", signum,
+                     extra={"ev": "stop"})
+            machine.request_stop()
+
+        _signals.install_sync(_on_signal)
+
+        try:
+            recorded = machine.record_once(username)
+        finally:
             pid_path.unlink(missing_ok=True)
-            if not args.no_reload:
+            if _should_reload():
                 _reload_recorder_service()
-            os._exit(130)
-        log.info("signal %s — requesting stop (Ctrl-C again to force)", signum,
-                 extra={"ev": "stop"})
-        machine.request_stop()
-
-    _signals.install_sync(_on_signal)
-
-    try:
-        recorded = machine.record_once(username)
-    finally:
-        pid_path.unlink(missing_ok=True)
-        if not args.no_reload:
-            _reload_recorder_service()
-    if recorded:
-        return 0
-    print(f"@{username} is not live — nothing recorded")
-    return 3
+        if recorded:
+            return 0
+        print(f"@{username} is not live — nothing recorded")
+        return 3
 
 
 # ── stop ──────────────────────────────────────────────────────────────────
