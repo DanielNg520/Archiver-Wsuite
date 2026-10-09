@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-(none open)
+F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `_gather_group`: ignored `retry_after`, so drain backoff never applied since ed35808 (verified). Fix applied uncommitted, see Carryover.
 
 ## Commands
 
@@ -99,4 +99,7 @@ Last audit: 2026-10-09 (through 7fa0ac5; docs only, no code changes since a0c31f
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
-- Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test, then check TriAPI task `b41afde0`.
+- IN PROGRESS F2: store fix + 3 unit tests applied (TriAPI `tasks/drain_retry_after` t8b/t9), uncommitted; Seam 11b now fails (1 send, expects 3).
+- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test (TriAPI t10 kept failing); then 296+ seams, commit, `ops restart dispatcher`.
+- F2 supersedes TriAPI task `b41afde0` (mark it complete once Seam 11c lands).
+- Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
