@@ -12,7 +12,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Selftests: `PYTHONPATH=core:recorder PYTHONUTF8=1 .venv-test/bin/python3 -m recorder._selftest_<name>`; same pattern per package.
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
-- Code changes go through TriAPI `rebuild/` dispatch; `apply_dispatch.py` rewrites CRLF to LF, re-CRLF the file before commit.
+- Code changes go through TriAPI `rebuild/` dispatch.
 
 ## Live deployment (this machine, Fedora)
 
