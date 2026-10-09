@@ -4,11 +4,11 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `_gather_group`: ignored `retry_after`, so drain backoff never applied since ed35808 (verified). Fix on branch `f2-retry-after`, see Carryover.
+None open.
 
 ## Commands
 
-- Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (296 checks).
+- Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (303 checks).
 - Selftests: `PYTHONPATH=core:recorder PYTHONUTF8=1 .venv-test/bin/python3 -m recorder._selftest_<name>`; same pattern per package.
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
@@ -54,6 +54,10 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 - Archiver needs `curl-cffi>=0.16.0` (libcurl 8.21.0): 0.14.0's libcurl 8.15.0 UAF (CVE-2026-10536) SIGABRTed `archiver loop` ~100 times in `curl_easy_reset`.
 - Check a crash's curl_cffi: `eu-unstrip -n --core=<core>`; 0.14.0 build-id `88b47b15…`, 0.16.3 `f92375e0…`. Floor applies only after a reinstall.
 
+- Drain tests needing an immediate reclaim after a failed send must set `stall_backoff_s=0` (default 300s backoff); see Seams 11b, 15.
+- Same-user recorder rows go up as one album per claim even with `BatchPolicy.SIZE_KEY` 1.
+- Archiver groups under min batch (10) wait up to 168h (`BatchPolicy.DEFAULT_WAIT_H`); hours without sends with pending rows is normal.
+
 ## Known tech debt
 
 - [ ] No test drives `state._wait_for_recording_done` with fake rc -1/-2/-3 to assert each is terminal.
@@ -77,7 +81,7 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 
 ## Ask owner
 
-- Ask owner: land F2's Seam 11b/11c via (1) two tiny anchored dispatches [recommended], (2) approved hand edit, or (3) agy? (2026-10-09)
+- Ask owner: "long outdated, needs a lot of update" — which part: docs, `windows/` mirror, deps, or code? (2026-10-09)
 
 ## Index
 
@@ -102,8 +106,6 @@ Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
-- IN PROGRESS F2: store fix + 3 unit tests on pushed branch `f2-retry-after` (TriAPI `tasks/drain_retry_after` t8b/t9); Seam 11b fails there (1 send, expects 3).
-- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test; apply with TriAPI `--check` (plain-assert seams print no pytest counts, `--test` rolls back); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
-- F2 follow-up proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
-- F2 supersedes TriAPI task `b41afde0` (mark it complete once Seam 11c lands).
+- 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
+- Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
