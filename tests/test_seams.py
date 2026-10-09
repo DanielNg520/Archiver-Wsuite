@@ -1023,7 +1023,8 @@ def test_circuit_breaker_seam(tmp: Path) -> None:
         cfg = DispatcherConfig(
             telegram=None, default_chat_id="-100123", db_path=db_path,
             policy_store=ps, poll_interval_s=0.01, max_retries=4,
-            inter_album_sleep=0.0, stuck_claim_min=10, failed_retention_days=0)
+            inter_album_sleep=0.0, stuck_claim_min=10, failed_retention_days=0,
+            stall_backoff_s=0)  # no backoff: breaker needs back-to-back reclaims
         store = ItemStore.open(db_path)
         fake = _AlwaysFailSend()
         stop = asyncio.Event()
@@ -1049,6 +1050,60 @@ def test_circuit_breaker_seam(tmp: Path) -> None:
         drain_mod._CIRCUIT_COOLDOWN_S = orig_cd
         try: store.close()
         except Exception: pass
+
+
+def test_drain_backoff_seam(tmp: Path) -> None:
+    section("Seam 11c: dispatcher drain backs off failed rows instead of reclaiming them")
+    import dispatcher.drain as drain_mod
+    from core import (ItemStore, PolicyStore, DeletePolicy, RecorderDeletePolicy,
+                      BatchPolicy, DeletionGuard)
+    from core.hashing import full_hash
+    from dispatcher.config import DispatcherConfig
+    from dispatcher.tg_router import TelegramRouter
+
+    db = _fresh_db()
+    db_path = _db_file(db)
+    store = None
+    try:
+        ps = PolicyStore(); ps.set(BatchPolicy.SIZE_KEY, 1)
+        paths = []
+        for i in range(2):
+            f = _write_media(tmp / "rec" / "u" / f"u_{i}.mp4", bytes([i]) * 50)
+            paths.append(str(f))
+            db.add_item(source="recorder", platform="tiktok", username="u",
+                        identifier=f"rec_{i}", file_path=str(f), priority=5,
+                        content_hash=full_hash(f))
+        db.close()
+        cfg = DispatcherConfig(
+            telegram=None, default_chat_id="-100123", db_path=db_path,
+            policy_store=ps, poll_interval_s=0.01, max_retries=4,
+            inter_album_sleep=0.0, stuck_claim_min=10, failed_retention_days=0)
+        store = ItemStore.open(db_path)
+        fake = _AlwaysFailSend()
+        stop = asyncio.Event()
+
+        async def _run():
+            task = asyncio.create_task(drain_mod.drain_forever(
+                cfg, store, fake, TelegramRouter(default_chat_id="-100123"),
+                DeletePolicy(ps), RecorderDeletePolicy(ps), BatchPolicy(ps),
+                DeletionGuard(ps), stop_event=stop))
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if fake.calls >= 1:
+                    break
+            await asyncio.sleep(0.3)   # any wrongful reclaim would happen here
+            stop.set(); await task
+
+        asyncio.run(_run())
+        ok(fake.calls == 1, f"album sent once, never reclaimed: {fake.calls} calls")
+        for path in paths:
+            row = store.get(store.id_of(path))
+            ok(row.status == 'pending', f"row {path} pending after failure")
+            ok(row.attempts == 1, f"row {path} claimed once")
+            ok(row.retry_after is not None, f"row {path} has backoff stamp")
+    finally:
+        if store is not None:
+            store.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1192,6 +1247,7 @@ def test_in_batch_dedup_integrity_seam(tmp: Path) -> None:
             telegram=None, default_chat_id="-100123", db_path=db_path,
             policy_store=ps, poll_interval_s=0.01, max_retries=5,
             inter_album_sleep=0.0, stuck_claim_min=10, failed_retention_days=0,
+            stall_backoff_s=0,  # no backoff: test needs an immediate retry
         )
         store = ItemStore.open(db_path)
         # At each failure instant the twin has NOT delivered — both files must
@@ -3321,6 +3377,7 @@ def main() -> int:
         test_full_drain_seam(tmp / "s10")
         test_media_empty_quarantine_seam(tmp / "s11")
         test_circuit_breaker_seam(tmp / "s11b")
+        test_drain_backoff_seam(tmp / "s11c")
         _reset_config()
         test_in_batch_dedup_integrity_seam(tmp / "s15")
         test_lock_cwd_independence_seam(tmp / "s16")
