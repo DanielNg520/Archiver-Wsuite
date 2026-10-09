@@ -89,13 +89,14 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-09 (F1 re-verification, through a0c31f1; docs only, no code changes).
+Last audit: 2026-10-09 (through 7fa0ac5; docs only, no code changes since a0c31f1).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
 - During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
 - Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
+- Trial status 2026-10-09 evening: zero `using fallback` lines, no `~/.recorder/<user>/` dirs yet (no live since unmount); no coredumps today.
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
-- Next: Known tech debt, top down.
+- Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test, then check TriAPI task `b41afde0`.
