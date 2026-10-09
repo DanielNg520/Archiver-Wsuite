@@ -88,4 +88,9 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 Last audit: 2026-10-09 (recorder fallback, watch dual-root, docs sanitation).
 - 2026-10-09: recorder storage fallback shipped and deployed (`ops restart recorder`, both sweeps logged); 285 seams + all recorder selftests pass.
 - 2026-10-09: historical docs deleted, `connection_fix.md` code-comment refs reworded via TriAPI; 285 seams + stall-backoff tests pass.
-- Next: pick from Known tech debt.
+- 2026-10-09: eject test passed: StoragEDGE unmounted, live-config capture start went to `~/.recorder/<user>/`; services stayed nominal.
+- OPEN: StoragEDGE left UNMOUNTED; `udisksctl mount -b /dev/sdc2` needs polkit (owner runs it or clicks it in the file manager). Check `findmnt /run/media/dyne/StoragEDGE` first.
+- While unmounted: recordings land in `~/.recorder/<user>/`; `ROUTES_DIR` route folders unreachable. Data on the drive untouched (832M records, 3.0G routes).
+- Unverified: the running service's own fallback on a real live; grep `using fallback` in `~/.local/log/recorder.out.log`.
+- After remount: fallback recordings stay in `~/.recorder`; uploads delete them, startup sweep requeues leftovers. No move-back needed.
+- Next: systemic `recording_roots(config)` proposal (Recorder storage fallback section), then Known tech debt.
