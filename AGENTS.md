@@ -53,6 +53,28 @@ coincidence. **Pending user sign-off** (dependency change) to bump
 `curl-cffi` past `archiver/pyproject.toml`'s `<0.15` pin -- latest is 0.16.0,
 bundled libcurl version unconfirmed, needs checking after the bump.
 
+## Moved back off SanDisk USB, onto StoragEDGE (2026-10-09)
+
+Config/infra only, no code changes. Temporary: an SD card reader is on order
+to become StoragEDGE's **permanent** connection (replacing whatever link
+caused the 2026-10-08 disconnect storm); this reverts the stopgap USB move
+below until it arrives.
+
+- Stopped all 3 workers (`ops unload`), moved all 27 route folders (3.0GB)
+  `ULTRAFIT/.routes` -> `StoragEDGE/.routes` (plain `mv`, not
+  `migrate_split_roots.py` -- that tool only migrates OUT of `OUTPUT_DIR`;
+  routes already lived outside it). `.records` was already empty on
+  ULTRAFIT (recorder had nothing in-flight) -- nothing to move there.
+  Checked `suite.db` first: 0 rows reference ULTRAFIT paths (route ingests
+  are leave-no-trace, same as 2026-10-08), so no DB rewrite needed either way.
+- `ROUTES_DIR` -> `/run/media/dyne/StoragEDGE/.routes`,
+  `recorder.output_dir` -> `/run/media/dyne/StoragEDGE/.records` (both
+  reverted to their pre-2026-10-08 values). Workers reloaded, `ops health`
+  nominal, `ROUTES_DIR` disk gauge confirms StoragEDGE (99GB free).
+- Unmounted `/dev/sdb1` (ULTRAFIT) via `udisksctl unmount`; `power-off`
+  failed on a polkit auth prompt (no controlling tty) but is cosmetic --
+  confirmed unmounted via `lsblk`, safe to unplug.
+
 ## Storage reshuffle: recorder + routes -> SanDisk USB (2026-10-08)
 
 Config/infra only, no code changes.
