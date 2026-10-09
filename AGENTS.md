@@ -2,6 +2,39 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
+## Storage reshuffle: recorder + routes -> SanDisk USB (2026-10-08)
+
+Config/infra only, no code changes.
+
+- `recorder.output_dir` -> `/run/media/dyne/ULTRAFIT/.records` (SanDisk USB,
+  15GB). Config loads once at `recorder start`; restart required to apply.
+  **Capacity risk:** 15GB is tight for live capture, shared with routes below.
+- `ROUTES_DIR` -> same USB, off `StoragEDGE` (120GB ext. drive). `StoragEDGE`
+  I/O errors root-caused to a mass USB disconnect/reconnect storm
+  (`journalctl -k`, ~20:10-20:26) re-enumerating it `/dev/sda2` -> `/dev/sdc2`
+  while the mount stayed pinned to the dead node -- not failing media.
+  27/27 route folders (3.0GB) moved via `tools/migrate_split_roots.py
+  --apply` (existing tool, reused as-is); 0 DB rows needed rewriting (route
+  ingests are leave-no-trace). DB backed up to
+  `suite.db.pre-split-20261008-212707`. `.env` updated.
+- Found + killed 2 orphaned `ffmpeg` captures (`@dajeonghaja`, `@ijeffect1`)
+  writing into inodes deleted by the same disconnect; each user's prior
+  finalized chunk was already queued safely, only the in-flight segment lost.
+
+Verified: `ops health` all nominal post-restart. No code changed, seams not
+re-run.
+
+**Known tech debt:** `archiver.err.log` has native `double free`/`malloc`
+corruption traces at 19:49 today, predates this incident, not root-caused;
+archiver has restarted clean since, not blocking.
+
+**Burner TikTok account (reported banned):** cookies still pass a basic
+`tiktok.com` login check (feed, Upload button, no ban notice) -- ban scope
+unconfirmed beyond that. Firefox login under the same `FIREFOX_PROFILE`
+would get picked up by archiver's existing age-based cookie refresh
+(`cookie_refresh_days=3`) and silently replace the shared `tiktok.txt`
+recorder also reads -- not done, flagged for the user to decide.
+
 ## `ops unload` couldn't kill a manually-triggered `recorder record` (2026-09-19)
 
 User reported: a Telegram `/record` command (handled by an external bot, not
