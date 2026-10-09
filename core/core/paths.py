@@ -15,6 +15,9 @@ What lives here (writer → reader):
   • recorder_pid        recorder.cli  →  ops.health   (DEFAULT; the recorder may
                         relocate its state dir, which only it and ops-via-default
                         can know — so this is the agreed default, not a guarantee)
+  • recording_roots     recorder (capture fallback, startup sweep, recorder
+                        watch, ban/unban quarantine) + archiver.reconcile
+                        (recordings reconcile) — ops does not use this
 
 Functions (not constants) so the value reflects $HOME at call time and stays
 consistent with core.schema.db_path()'s style. The DB path itself stays in
@@ -78,10 +81,27 @@ def recorder_suppress_reload_flag() -> Path:
     return locks_dir() / "recorder.no_reload"
 
 
+def recorder_state_dir() -> Path:
+    """The recorder's DEFAULT state dir, ~/.recorder expanded."""
+    return Path("~/.recorder").expanduser()
+
+
+def recording_roots(output_dir: str | Path, state_dir: str | Path) -> tuple[Path, ...]:
+    """Recorder's recording roots in scan order: primary output_dir first,
+    then the state_dir fallback, both ~-expanded. Callers must tolerate a
+    missing/unreadable root."""
+    roots: list[Path] = []
+    for raw in (output_dir, state_dir):
+        expanded = Path(raw).expanduser()
+        if expanded not in roots:
+            roots.append(expanded)
+    return tuple(roots)
+
+
 def recorder_pid() -> Path:
     """Default recorder pid file. The recorder writes it under its configured
     state dir (default ~/.recorder); ops reads this default location."""
-    return Path("~/.recorder/pid").expanduser()
+    return recorder_state_dir() / "pid"
 
 
 def notify_outbox_dir() -> Path:

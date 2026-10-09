@@ -467,6 +467,7 @@ class StateMachine:
             from core import (
                 ItemStore, PolicyStore, quarantine_user, LOCKED_SKIPPED,
             )
+            from core.paths import recording_roots
             from .config import CONFIG_TOML
             reason = (f"unstartable for "
                       f"{self._unstartable.cycles(username)} cooldowns and "
@@ -480,9 +481,17 @@ class StateMachine:
             # kept explicit. A short-lived ItemStore repoints the user's
             # queued rows onto .deleted/ so pending uploads still deliver.
             db = ItemStore.open(self.config.db_path)
+            moved_destinations = []
+            deferred = False
             try:
-                moved = quarantine_user(self.config.output_dir, "", username,
-                                        lock_platform="tiktok", db=db)
+                for root in recording_roots(self.config.output_dir,
+                                            self.config.state_dir):
+                    moved = quarantine_user(root, "", username,
+                                            lock_platform="tiktok", db=db)
+                    if moved is LOCKED_SKIPPED:
+                        deferred = True
+                    elif moved:
+                        moved_destinations.append(str(moved))
             finally:
                 db.close()
             self._unstartable.clear(username)
@@ -490,8 +499,8 @@ class StateMachine:
             self._skipped.pop(username, None)
             log.warning("recorder: @%s BANNED — %s; folder: %s. Reverse with "
                         "`recorder banned unban --user %s`", username, reason,
-                        "deferred (live recording)" if moved is LOCKED_SKIPPED
-                        else (moved or "none"), username,
+                        "deferred (live recording)" if deferred
+                        else (", ".join(moved_destinations) or "none"), username,
                         extra={"ev": "banned"})
         except Exception as e:
             log.error("recorder: auto-ban check for @%s failed: %s — user "

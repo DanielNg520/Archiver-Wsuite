@@ -42,6 +42,7 @@ import tomli_w
 from core import ItemStore
 from core import cli as core_cli
 from core import heartbeat
+from core.paths import recording_roots
 from core.platform import procgroup as _procgroup
 from core.platform import signals as _signals
 
@@ -154,19 +155,13 @@ def cmd_start(args: argparse.Namespace) -> int:
     # delete already-uploaded leftovers, prune empty folders. Best-effort — a
     # failed sweep must never stop the recorder from coming up.
     from .startup_sweep import sweep
-    try:
-        report = sweep(config.output_dir, config.db_path,
-                       split_threshold_bytes=config.split_threshold_bytes)
-        log.info("startup sweep — %s", report, extra={"ev": "sweep"})
-    except Exception as e:
-        log.warning("startup sweep skipped after error: %s", e)
-
-    try:
-        fallback_report = sweep(config.state_dir, config.db_path,
-                                split_threshold_bytes=config.split_threshold_bytes)
-        log.info("fallback startup sweep — %s", fallback_report, extra={"ev": "sweep"})
-    except Exception as e:
-        log.warning("fallback startup sweep skipped after error: %s", e)
+    for root in recording_roots(config.output_dir, config.state_dir):
+        try:
+            report = sweep(root, config.db_path,
+                           split_threshold_bytes=config.split_threshold_bytes)
+            log.info("startup sweep — %s: %s", root, report, extra={"ev": "sweep"})
+        except Exception as e:
+            log.warning("startup sweep skipped after error for %s: %s", root, e)
 
     platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
     capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s, fallback_dir=config.state_dir)
@@ -646,13 +641,16 @@ def cmd_banned(args: argparse.Namespace) -> int:
         # Recordings live directly under output_dir (no platform segment);
         # repoint any still-queued rows back to the restored location.
         db = ItemStore.open(config.db_path)
+        restored_any = False
         try:
-            restored = restore_user(config.output_dir, "", username, db=db)
+            for root in recording_roots(config.output_dir, config.state_dir):
+                restored = restore_user(root, "", username, db=db)
+                if restored is not None:
+                    log.info("Restored quarantined folder → %s", restored)
+                    restored_any = True
         finally:
             db.close()
-        if restored is not None:
-            log.info("Restored quarantined folder → %s", restored)
-        else:
+        if not restored_any:
             log.info("No quarantined folder to restore (none was moved, or a "
                      "live folder already exists).")
         if args.re_add:

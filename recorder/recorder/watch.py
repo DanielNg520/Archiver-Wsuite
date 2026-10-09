@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core import heartbeat
+from core.paths import recording_roots
 
 from . import ui
 from .config import RecorderConfig
@@ -80,8 +81,7 @@ def _active_recording(config: RecorderConfig) -> Active | None:
     """The newest video file under output_dir or the state_dir fallback touched
     within the active window — i.e. the stream being written right now. Its
     parent dir is the username."""
-    roots = [Path(config.output_dir).expanduser(),
-             Path(config.state_dir).expanduser()]
+    roots = list(recording_roots(config.output_dir, config.state_dir))
     cutoff = time.time() - _ACTIVE_WINDOW_S
     newest: tuple[float, Path] | None = None
     for root in roots:

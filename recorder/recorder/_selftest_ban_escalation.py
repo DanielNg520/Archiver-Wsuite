@@ -42,6 +42,7 @@ def check(cond: bool, label: str) -> None:
 def _shim(tmp: Path, tracker: UnstartableTracker) -> types.SimpleNamespace:
     cfg = types.SimpleNamespace(tiktok_cookies_file=None,
                                 output_dir=str(tmp / "records"),
+                                state_dir=str(tmp / "fallback"),
                                 db_path=str(tmp / "suite.db"))
     return types.SimpleNamespace(config=cfg, _unstartable=tracker,
                                  _banned=set(), _skipped={})
@@ -141,6 +142,9 @@ def main() -> int:
                 file_path=str(tmp / "records" / "goner" / "old_live.mp4"))
     db.close()
 
+    (tmp / "fallback" / "goner").mkdir(parents=True, exist_ok=True)
+    (tmp / "fallback" / "goner" / "old_live.mp4").write_bytes(b"12345")
+
     calls.clear()
     ban_check.profile_check = _stub(ProfileStatus.GONE)
     shim._skipped["goner"] = 99.0
@@ -151,6 +155,9 @@ def main() -> int:
     check((tmp / "records" / ".deleted" / "goner" / "old_live.mp4").exists()
           and not (tmp / "records" / "goner").exists(),
           "recordings folder quarantined into .records-style .deleted/")
+    check((tmp / "fallback" / ".deleted" / "goner" / "old_live.mp4").exists()
+          and not (tmp / "fallback" / "goner").exists(),
+          "fallback recordings folder quarantined into .deleted/")
     db = ItemStore.open(str(tmp / "suite.db"))
     row = db.list_items(limit=5)[0]
     check(row.file_path == str(tmp / "records" / ".deleted" / "goner"

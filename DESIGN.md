@@ -43,7 +43,7 @@ other. ops imports no *worker* (core is fine). Installs are `uv tool` venvs with
 | **`ffprobe.py`** | shared ffprobe: subprocess+json+timeout | `probe_json` |
 | **`ffmpeg.py`** | shared ffmpeg runner (bool, never raises) | `run_ffmpeg` |
 | **`heartbeat.py`** | cross-proc status files: atomic write + liveness/staleness read + **`pid_alive`** (the one liveness primitive) | `write_atomic`, `read_live`, `clear`, `pid_alive` |
-| **`paths.py`** | single source for cross-proc artifact paths | `tiktok_lock`, `dispatcher_progress`, `archiver_loop`, `recorder_pid`, `locks_dir`, `dispatcher_stop_flag` |
+| **`paths.py`** | single source for cross-proc artifact paths | `tiktok_lock`, `dispatcher_progress`, `archiver_loop`, `recorder_pid`, `recorder_state_dir`, `recording_roots` (recorder `output_dir` + `state_dir` fallback), `locks_dir`, `dispatcher_stop_flag` |
 | **`env.py`** | env parsing; req=fail-loud, opt*=warn+default (self-healing tunables) | `req`, `opt`, `opt_int/float/bool`, `MissingEnvVar` |
 | `instance_lock.py` | generic singleton flock; `_already_running_error` hook | `InstanceLock`, `InstanceAlreadyRunning` |
 | `deletion.py` | safebrake guard on every delete path | `DeletionGuard` |
@@ -65,7 +65,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 |---|---|
 | `orchestrator.py` | Template Method cycle: circuit→health→recover→per-user{reconcile→download→checkpoint}; post-run reconcile-all + orphaned-ingest + auto-sort + backfill. Checkpoint = `date_floor=MAX(upload_date WHERE sent)`. **Fetching platforms run CONCURRENTLY** (`_run_platforms` gathers `_run_one_platform`, each on its OWN `ItemStore` connection; cap `ARCHIVER_MAX_CONCURRENT_PLATFORMS`, `1`=sequential). `run_stories()` = IG stories-only fast lane (own cadence, no checkpoint advance) |
 | `platforms.py` | Strategy `Platform` (X/IG gallery-dl, TikTok yt-dlp); `LocalPlatform` = folder, no download. new-download = before/after dir diff. Per-platform `Pacing` (IG/TikTok own sleep-request/sleep-429/retries/user-gap, decoupled from global `SLEEP_*`); `browser` fingerprint matches cookie origin. **`_GDL_LOCK`** serializes the process-global `gallery_dl.config` critical section across concurrent in-process gallery-dl jobs (X + IG + IG-stories), held per-user → one request stream per account. IG `download`(posts/reels, date-min) vs `download_stories`(stories, no date-min). **Incremental = the extractor archive** (skips re-downloads); `date-min` is a no-op for the X/IG extractors. X adds gallery-dl `skip=abort:N` (`X_ABORT_AFTER`, dflt 20) → newest-first walk aborts N consecutive already-archived files past the frontier (kills the `/with_replies` full-timeline crawl), gated on `date_floor` so first-run/`--full-history` still walks fully; IG intentionally omits it (`abort_after` knob present) |
-| `reconcile.py` | walk disk→register stable files via `register_file`→seed extractor archives |
+| `reconcile.py` | walk disk→register stable files via `register_file`→seed extractor archives; `reconcile_recordings` scans every `core.paths.recording_roots` root (recorder `state_dir` read from the recorder's own `.env`), skipping a missing/unreadable root |
 | `cookies.py` | Firefox cookies.sqlite→Netscape txt (copy-first); cookie-refresh self-heal |
 | `lock_reader.py` | read tiktok soft-lock; **liveness-gated** (self-heals stale lock) |
 | `loop_state.py` | loop phase heartbeat (via core.heartbeat + core.paths) |

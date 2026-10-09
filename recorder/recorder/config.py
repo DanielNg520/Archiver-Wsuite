@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from core import db_path as _core_db_path
 from core import env
+from core import paths as _core_paths
 from core.platform import paths as _osp
 
 load_dotenv(_osp.config_dir(_osp.RECORDER) / ".env")
@@ -126,7 +127,7 @@ class RecorderConfig:
                                        _opt("OUTPUT_DIR",
                                             os.path.expanduser("~/recorder-output"))),
             state_dir           = _opt("STATE_DIR",
-                                       os.path.expanduser("~/.recorder")),
+                                       str(_core_paths.recorder_state_dir())),
             lock_path           = _opt("LOCK_PATH",
                                        str(_osp.locks_dir() / "tiktok.lock")),
             tiktok_users        = users,

@@ -3154,6 +3154,140 @@ def test_stories_fast_lane_seam() -> None:
        "run_stories NEVER touches posts/reels checkpoints (lanes independent)")
 
 
+def test_recording_roots_seam(tmp: Path) -> None:
+    section("Seam 36: recordings reconcile covers the recorder's fallback root")
+    from archiver import reconcile as archiver_reconcile
+    from core import ingest, paths as core_paths
+    from core.media_prep import PrepResult
+
+    _osp = archiver_reconcile._osp
+
+    # 1. recording_roots ordering + dedupe
+    primary = tmp / "primary"
+    fallback = tmp / "fallback"
+    roots = core_paths.recording_roots(primary, fallback)
+    ok(roots == (primary, fallback),
+       "recording_roots returns (primary, fallback) in order")
+    same = core_paths.recording_roots(primary, primary)
+    ok(same == (primary,), "recording_roots dedupes equal roots to one path")
+
+    orig_prep = ingest.media_prep.prepare
+    ingest.media_prep.prepare = (                        # type: ignore
+        lambda p, split_threshold_bytes=None: PrepResult.passthrough(p))
+    try:
+        # 2. both roots hold a recording for different users
+        primary2 = tmp / "primary2"
+        fallback2 = tmp / "fallback2"
+        db = _fresh_db()
+        try:
+            p_alice = _write_media(primary2 / "alice" / "alice_1700.mp4",
+                                   b"PRIMARY-ALICE")
+            f_bob = _write_media(fallback2 / "bob" / "bob_1600.mp4",
+                                 b"FALLBACK-BOB")
+            old = time.time() - 3600
+            for f in (p_alice, f_bob):
+                os.utime(f, (old, old))
+
+            orig_rd = archiver_reconcile._recorder_output_dir
+            orig_rs = archiver_reconcile._recorder_state_dir
+            archiver_reconcile._recorder_output_dir = lambda: primary2
+            archiver_reconcile._recorder_state_dir = lambda: fallback2
+            try:
+                reports = archiver_reconcile.reconcile_recordings(db)
+                names = {r.username for r in reports}
+                ok(names == {"alice", "bob"},
+                   "reconcile cover both roots' users")
+                ok(db.id_of(str(p_alice)) is not None,
+                   "primary recording got a row")
+                ok(db.id_of(str(f_bob)) is not None,
+                   "fallback recording got a row")
+            finally:
+                archiver_reconcile._recorder_output_dir = orig_rd
+                archiver_reconcile._recorder_state_dir = orig_rs
+        finally:
+            db.close()
+
+        # 3. primary root does not exist → fallback still registered
+        primary3 = tmp / "primary3"
+        fallback3 = tmp / "fallback3"
+        db = _fresh_db()
+        try:
+            f_carol = _write_media(fallback3 / "carol" / "carol_1600.mp4",
+                                   b"FALLBACK-ONLY")
+            old = time.time() - 3600
+            os.utime(f_carol, (old, old))
+
+            orig_rd = archiver_reconcile._recorder_output_dir
+            orig_rs = archiver_reconcile._recorder_state_dir
+            archiver_reconcile._recorder_output_dir = lambda: primary3
+            archiver_reconcile._recorder_state_dir = lambda: fallback3
+            try:
+                reports = archiver_reconcile.reconcile_recordings(db)
+                ok({r.username for r in reports} == {"carol"},
+                   "missing primary root is skipped, fallback still runs")
+                ok(db.id_of(str(f_carol)) is not None,
+                   "fallback-only recording got a row")
+            finally:
+                archiver_reconcile._recorder_output_dir = orig_rd
+                archiver_reconcile._recorder_state_dir = orig_rs
+        finally:
+            db.close()
+
+        # 4. primary "root" is a regular file → iter dir raises OSError
+        primary4 = tmp / "primary4"
+        fallback4 = tmp / "fallback4"
+        db = _fresh_db()
+        try:
+            file_as_root = primary4
+            file_as_root.write_bytes(b"not a directory")
+            f_dave = _write_media(fallback4 / "dave" / "dave_1600.mp4",
+                                  b"FALLBACK-DAVE")
+            old = time.time() - 3600
+            os.utime(f_dave, (old, old))
+
+            orig_rd = archiver_reconcile._recorder_output_dir
+            orig_rs = archiver_reconcile._recorder_state_dir
+            archiver_reconcile._recorder_output_dir = lambda: file_as_root
+            archiver_reconcile._recorder_state_dir = lambda: fallback4
+            try:
+                reports = archiver_reconcile.reconcile_recordings(db)
+                ok({r.username for r in reports} == {"dave"},
+                   "unreadable primary root is skipped, fallback still runs")
+                ok(db.id_of(str(f_dave)) is not None,
+                   "fallback recording got a row despite primary OSError")
+            finally:
+                archiver_reconcile._recorder_output_dir = orig_rd
+                archiver_reconcile._recorder_state_dir = orig_rs
+        finally:
+            db.close()
+
+        # 5. _recorder_state_dir env parsing
+        env_dir = tmp / "recorder_env"
+        env_dir.mkdir()
+        env_file = env_dir / ".env"
+        env_file.write_text("STATE_DIR =   /tmp/spaced_state_dir   \n")
+        env_path = Path("/tmp/spaced_state_dir")
+        orig_config_dir = _osp.config_dir
+        _osp.config_dir = lambda _kind: env_dir
+        try:
+            ok(archiver_reconcile._recorder_state_dir() == env_path,
+               "STATE_DIR is stripped from .env")
+        finally:
+            _osp.config_dir = orig_config_dir
+
+        env_file.write_text("OTHER=1\n")
+        orig_config_dir = _osp.config_dir
+        _osp.config_dir = lambda _kind: env_dir
+        try:
+            ok(archiver_reconcile._recorder_state_dir()
+               == core_paths.recorder_state_dir(),
+               "missing STATE_DIR falls back to core default")
+        finally:
+            _osp.config_dir = orig_config_dir
+    finally:
+        ingest.media_prep.prepare = orig_prep            # type: ignore
+
+
 def main() -> int:
     print("cross-worker seam integration tests")
     # Each test gets an isolated temp config.toml so the real user config is
@@ -3213,6 +3347,7 @@ def main() -> int:
         test_burner_account_seam()
         test_concurrent_platform_loops_seam()
         test_stories_fast_lane_seam()
+        test_recording_roots_seam(tmp / "s36")
 
     print(f"\nALL PASS ({_checks} checks)")
     return 0

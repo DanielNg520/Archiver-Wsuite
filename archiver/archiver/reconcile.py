@@ -47,7 +47,9 @@ from core import (
     identity, stability, cleanup_sidecars, DeletionGuard, media_prep,
     split_group_key,
 )
+from dotenv import dotenv_values
 from core.hashing import full_hash
+from core.paths import recorder_state_dir, recording_roots
 from core.platform import paths as _osp
 from core.recorder_lock import live_recording_user as _live_recording_user
 
@@ -176,12 +178,15 @@ def reconcile_recordings(
 
     Recorder writes {output_dir}/{username}/... files, so each direct
     subfolder is treated as a recorded TikTok user. Loose files directly in
-    the recorder root are queued as @ _root.
+    a recorder root are queued as @ _root. When records_dir is None both
+    the recorder output dir and its state-dir fallback root are scanned.
     """
-    root = Path(records_dir).expanduser() if records_dir else _recorder_output_dir()
+    roots = (
+        [Path(records_dir).expanduser()]
+        if records_dir else
+        recording_roots(_recorder_output_dir(), _recorder_state_dir())
+    )
     reports: list[ReconcileReport] = []
-    if not root.exists():
-        return reports
 
     # NEVER sweep the dir a live recorder is currently recording into. The
     # stability probe is not enough: an ffmpeg reconnect stall makes a growing
@@ -197,54 +202,63 @@ def reconcile_recordings(
     # only splitting above the ~3.9 GiB upload ceiling.
     split_threshold = _recorder_split_threshold_bytes()
 
-    root_files = [p for p in root.iterdir() if p.is_file()]
-    if root_files:
-        report = ReconcileReport(platform="tiktok", username="_root")
-        reports.append(_reconcile_dir(
-            platform=None,
-            username="_root",
-            db=db,
-            scan_dir=root,
-            recursive=False,
-            seed_extractor_archive=False,
-            report=report,
-            source="recorder",
-            caption_for_path=lambda path: _recording_caption("_root", path),
-            identifier_for_path=_recorder_identifier,
-            priority=_RECORDER_PRIORITY,
-            guard=guard,
-            split_threshold_bytes=split_threshold,
-        ))
-
-    for user_dir in sorted(p for p in root.iterdir()
-                           if p.is_dir() and not p.name.startswith(".")):
-        # Skip dot-dirs: `.deleted/` is the quarantine bucket for banned users
-        # (core.quarantine) — reconciling it would resurrect banned usernames
-        # as phantom archives.
-        if lock_held and recording_user in (None, user_dir.name):
-            log.info("reconcile: skipping %s — a live recorder is recording "
-                     "%s", user_dir.name,
-                     f"@{recording_user}" if recording_user else
-                     "(user unknown, skipping all user dirs)")
+    for root in roots:
+        if not root.exists():
             continue
-        report = ReconcileReport(platform="tiktok", username=user_dir.name)
-        reports.append(_reconcile_dir(
-            platform=None,
-            username=user_dir.name,
-            db=db,
-            scan_dir=user_dir,
-            recursive=True,
-            seed_extractor_archive=False,
-            report=report,
-            source="recorder",
-            caption_for_path=lambda path, user=user_dir.name: (
-                _recording_caption(user, path)
-            ),
-            identifier_for_path=_recorder_identifier,
-            priority=_RECORDER_PRIORITY,
-            guard=guard,
-            split_threshold_bytes=split_threshold,
-        ))
+        try:
+            entries = list(root.iterdir())
+        except OSError as e:
+            log.warning("reconcile: skipping recorder root %s: %s", root, e)
+            continue
+
+        root_files = [p for p in entries if p.is_file()]
+        if root_files:
+            report = ReconcileReport(platform="tiktok", username="_root")
+            reports.append(_reconcile_dir(
+                platform=None,
+                username="_root",
+                db=db,
+                scan_dir=root,
+                recursive=False,
+                seed_extractor_archive=False,
+                report=report,
+                source="recorder",
+                caption_for_path=lambda path: _recording_caption("_root", path),
+                identifier_for_path=_recorder_identifier,
+                priority=_RECORDER_PRIORITY,
+                guard=guard,
+                split_threshold_bytes=split_threshold,
+            ))
+
+        for user_dir in sorted(p for p in entries
+                               if p.is_dir() and not p.name.startswith(".")):
+            # Skip dot-dirs: `.deleted/` is the quarantine bucket for banned
+            # users (core.quarantine) — reconciling it would resurrect banned
+            # usernames as phantom archives.
+            if lock_held and recording_user in (None, user_dir.name):
+                log.info("reconcile: skipping %s — a live recorder is "
+                         "recording %s", user_dir.name,
+                         f"@{recording_user}" if recording_user else
+                         "(user unknown, skipping all user dirs)")
+                continue
+            report = ReconcileReport(platform="tiktok", username=user_dir.name)
+            reports.append(_reconcile_dir(
+                platform=None,
+                username=user_dir.name,
+                db=db,
+                scan_dir=user_dir,
+                recursive=True,
+                seed_extractor_archive=False,
+                report=report,
+                source="recorder",
+                caption_for_path=lambda path, user=user_dir.name: (
+                    _recording_caption(user, path)
+                ),
+                identifier_for_path=_recorder_identifier,
+                priority=_RECORDER_PRIORITY,
+                guard=guard,
+                split_threshold_bytes=split_threshold,
+            ))
     return reports
 
 
@@ -533,6 +547,20 @@ def _recorder_config() -> dict:
 def _recorder_output_dir() -> Path:
     raw = _recorder_config().get("output_dir")
     return Path(raw).expanduser() if raw else RECORDER_DEFAULT_OUTPUT_DIR
+
+
+def _recorder_state_dir() -> Path:
+    env_path = _osp.config_dir(_osp.RECORDER) / ".env"
+    raw = ""
+    if env_path.exists():
+        try:
+            values = dotenv_values(str(env_path))
+            raw = values.get("STATE_DIR", "") or ""
+        except OSError as e:
+            log.warning("reconcile: could not read %s: %s", env_path, e)
+    if raw and raw.strip():
+        return Path(raw.strip()).expanduser()
+    return recorder_state_dir()
 
 
 # Default part size / split trigger for the recorder "split mode" (GiB). Each

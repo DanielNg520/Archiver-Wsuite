@@ -4,11 +4,11 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-(none open)
+F1 [high · 1 · 2026-10-08→2026-10-08] `archiver loop`: 7 glibc heap-corruption SIGABRT core dumps (`double free`, `malloc(): unaligned tcache`); none since 22:19; cause unknown (verified symptom).
 
 ## Commands
 
-- Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (285 checks).
+- Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (296 checks).
 - Selftests: `PYTHONPATH=core:recorder PYTHONUTF8=1 .venv-test/bin/python3 -m recorder._selftest_<name>`; same pattern per package.
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
@@ -32,9 +32,10 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Reconnects re-run `start`, so a drive lost mid-session moves the next segment to the fallback; the in-flight segment is lost.
 - Startup sweep runs on `output_dir` then `state_dir` (separate try/except, logs `fallback startup sweep`).
 - Test: `_selftest_capture.test_start_falls_back_when_output_missing`. Built via TriAPI (DeepSeek), one test reply rejected and redispatched.
-- `recorder watch` (`watch._active_recording`) scans both roots; a dead root is skipped per root.
-- Gap: `archiver.reconcile` recordings scan and ban `quarantine_user`/`restore_user` cover `output_dir` only, not the fallback root.
-- Proposal (systemic): one `recording_roots(config)` helper in `recorder.config`, used by sweep, watch, reconcile, quarantine/restore.
+- One root list: `core.paths.recording_roots(output_dir, state_dir)`; used by startup sweep, watch, ban quarantine, unban restore, `archiver.reconcile_recordings`.
+- Archiver learns the recorder `state_dir` from the recorder's `.env` `STATE_DIR` (`dotenv_values`, never `os.environ`), else `core.paths.recorder_state_dir()`.
+- Residual: a `STATE_DIR` set only in the recorder unit environment (not `.env`) is invisible to the archiver; ops reads the pid default only.
+- Tests: Seam 36 (`test_recording_roots_seam`), `_selftest_ban_escalation` fallback-root quarantine check.
 - Gap: `windows/recorder` mirror lacks the fallback (parity-only tree).
 
 ## Durable behavior notes
@@ -86,11 +87,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Carryover
 
 Last audit: 2026-10-09 (recorder fallback, watch dual-root, docs sanitation).
-- 2026-10-09: recorder storage fallback shipped and deployed (`ops restart recorder`, both sweeps logged); 285 seams + all recorder selftests pass.
-- 2026-10-09: historical docs deleted, `connection_fix.md` code-comment refs reworded via TriAPI; 285 seams + stall-backoff tests pass.
-- 2026-10-09: eject test passed: StoragEDGE unmounted, live-config capture start went to `~/.recorder/<user>/`; services stayed nominal.
-- OPEN: StoragEDGE left UNMOUNTED; `udisksctl mount -b /dev/sdc2` needs polkit (owner runs it or clicks it in the file manager). Check `findmnt /run/media/dyne/StoragEDGE` first.
-- While unmounted: recordings land in `~/.recorder/<user>/`; `ROUTES_DIR` route folders unreachable. Data on the drive untouched (832M records, 3.0G routes).
+- 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
+- 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots. StoragEDGE remounted, data intact.
 - Unverified: the running service's own fallback on a real live; grep `using fallback` in `~/.local/log/recorder.out.log`.
-- After remount: fallback recordings stay in `~/.recorder`; uploads delete them, startup sweep requeues leftovers. No move-back needed.
-- Next: systemic `recording_roots(config)` proposal (Recorder storage fallback section), then Known tech debt.
+- Next: F1 (archiver heap corruption: `coredumpctl info <pid>` + py-spy/gdb backtrace), then Known tech debt.
