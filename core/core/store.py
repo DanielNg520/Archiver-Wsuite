@@ -588,10 +588,10 @@ class ItemStore:
                 else:
                     pending = cur.execute(
                         f"""SELECT id, platform, username, source, file_path,
-                                  discovered_at, group_disc, chat_disc, topic_disc
+                                  discovered_at, retry_after, group_disc, chat_disc, topic_disc
                              FROM (
                                 SELECT id, platform, username, source, file_path,
-                                       priority, discovered_at,
+                                       priority, discovered_at, retry_after,
                                        {GROUP_DISC} AS group_disc,
                                        IFNULL(chat_id,'') AS chat_disc,
                                        IFNULL(topic_id,-1) AS topic_disc,
@@ -656,11 +656,12 @@ class ItemStore:
         candidates = cur.execute(
             f"""SELECT * FROM items
                  WHERE status='pending'
+                   AND (retry_after IS NULL OR retry_after <= ?)
                    AND platform=? AND username=? AND source=?
                    AND {group_disc_sql}=?
                    AND IFNULL(chat_id,'')=? AND IFNULL(topic_id,-1)=?
                  ORDER BY priority ASC, discovered_at ASC""",
-            (anchor["platform"], anchor["username"], anchor["source"],
+            (now_iso(), anchor["platform"], anchor["username"], anchor["source"],
              anchor["group_disc"], anchor["chat_disc"], anchor["topic_disc"]),
         ).fetchall()
         same_bucket = [r for r in candidates
@@ -699,6 +700,9 @@ class ItemStore:
         document group becomes eligible on a later claim."""
         deferred: set = set()
         for anchor in pending:
+            if (anchor["retry_after"] is not None
+                    and anchor["retry_after"] > now_iso()):
+                continue                 # backed off — not ready to anchor
             bucket = album_bucket(anchor["source"], anchor["file_path"])
             gkey = (anchor["platform"], anchor["username"], anchor["source"],
                     anchor["group_disc"], anchor["chat_disc"],

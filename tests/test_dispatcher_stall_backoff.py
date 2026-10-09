@@ -101,6 +101,61 @@ class RetryAfterClaimTests(unittest.TestCase):
                         "the other rows (NULL retry_after) must still be "
                         "claimable via claim_batch")
 
+    def test_claim_batch_ungated_skips_future_retry_after_in_album(self):
+        db = self._fresh_store()
+        for i in range(3):
+            db.add_item(source="archiver", platform="x", username="u",
+                        identifier=f"p{i}", file_path=f"/tmp/p{i}.jpg",
+                        priority=10)
+        ids = [db.id_of(f"/tmp/p{i}.jpg") for i in range(3)]
+
+        # Claim and fail the first with a long backoff.
+        first = db.claim_next()
+        db.mark_failed(first.id, error="stall", max_retries=4, backoff_s=3600)
+
+        batch = db.claim_batch()
+        batch_ids = {it.id for it in batch}
+        self.assertNotIn(first.id, batch_ids,
+                         "claim_batch must not gather a future-retry_after "
+                         "row into an album")
+        self.assertEqual(batch_ids, set(ids) - {first.id},
+                         "the other album rows must still be claimable")
+
+    def test_claim_batch_gated_skips_future_retry_after_in_album(self):
+        db = self._fresh_store()
+        for i in range(3):
+            db.add_item(source="archiver", platform="x", username="u",
+                        identifier=f"p{i}", file_path=f"/tmp/p{i}.jpg",
+                        priority=10)
+        ids = [db.id_of(f"/tmp/p{i}.jpg") for i in range(3)]
+
+        # Claim and fail the first with a long backoff.
+        first = db.claim_next()
+        db.mark_failed(first.id, error="stall", max_retries=4, backoff_s=3600)
+
+        batch = db.claim_batch(min_batch=lambda a: 1,
+                               flush_age_s=lambda a: None)
+        batch_ids = {it.id for it in batch}
+        self.assertNotIn(first.id, batch_ids,
+                         "gated claim_batch must not gather a "
+                         "future-retry_after row into an album")
+        self.assertEqual(batch_ids, set(ids) - {first.id},
+                         "the other album rows must still be claimable")
+
+    def test_claim_batch_gated_empty_when_only_row_backed_off(self):
+        db = self._fresh_store()
+        db.add_item(source="archiver", platform="x", username="u",
+                    identifier="p0", file_path="/tmp/p0.jpg", priority=10)
+
+        first = db.claim_next()
+        db.mark_failed(first.id, error="stall", max_retries=4, backoff_s=3600)
+
+        batch = db.claim_batch(min_batch=lambda a: 1,
+                               flush_age_s=lambda a: None)
+        self.assertEqual(batch, [],
+                         "gated claim_batch must return an empty list when "
+                         "the only pending row has a future retry_after")
+
 
 # ── 2. mark_failed() sets retry_after only on the pending transition ──────
 
