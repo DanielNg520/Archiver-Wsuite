@@ -4,80 +4,20 @@ Repo-root reference for coding agents. Sections below tagged `triapi:plan` are e
 
 ## Findings
 
-F1 [high · 105 hits · 2026-09-19->2026-10-08, FIXED] archiver.service:
-heap corruption (`malloc(): unaligned tcache chunk` / `double free`) SIGABRTs
-`python3.13`, auto-restarted by systemd in ~30s. Root cause: curl_cffi 0.14.0
-(TikTok yt-dlp impersonation) bundles libcurl 8.15.0-IMPERSONATE, inside
-CVE-2026-10536's vulnerable range (fixed 8.21.0) -- a curl_easy_reset/cleanup
-UAF on HTTP/2 stream-dependency state, which impersonation sets to mimic
-Chrome's h2 priority tree. 101/105 coredumps abort inside a curl_cffi/libcurl
-frame. Fix = bump `curl-cffi` past the `<0.15` pin in `archiver/pyproject.toml`
-to a release bundling libcurl >=8.21.0. **Fixed 2026-10-08**: user signed
-off, bumped to `curl-cffi>=0.16.0` (resolved 0.16.3, confirmed bundles
-`libcurl/8.21.0-IMPERSONATE`), reinstalled archiver (`core` verified
-editable), 285/285 seams pass, `ops restart archiver` clean. Checked
-`recorder` (also yt-dlp-based) for the same exposure: its `yt-dlp` dep has
-no `[default]` extra and no `curl_cffi` installed in that venv -- not
-exposed, no action needed there. See 2026-10-08 section below for the
-full trace. Watch `~/.local/log/archiver.err.log` for a recurrence before
-calling this closed for good.
-
-## F1 root-caused: curl_cffi/libcurl UAF, not an archiver bug (2026-10-08)
-
-Investigation only, no code changed. `journalctl --user -u com.duy.archiver
-.service` has 105 coredumps since 2026-09-19 (systemd doesn't journal the
-app's own stdout/err -- those go to `~/.local/log/archiver.{out,err}.log`
-per `core.platform.service.log_dir`, which is WHY `journalctl -u archiver
-.service` alone found nothing -- the real unit is `com.duy.archiver.service`).
-Parsed all 105 coredump stack traces: 101 have the aborting thread's call
-stack pass through a `curl`-named frame; the actual abort site is
-`malloc_printerr` <- `__strdup` <- `Curl_setstropt` <- `Curl_init_userdefined`
-<- `_cffi_f_curl_easy_reset` -- i.e. inside libcurl's own `curl_easy_reset()`,
-called by curl_cffi (yt-dlp's TikTok TLS-impersonation backend, in-process,
-`archiver/archiver/platforms.py:691`). Checked concurrency first (orchestrator
-fans platforms out via `asyncio.to_thread`, no lock covers TikTok's yt-dlp
-call) but ruled it out: yt-dlp's `CurlCFFIRH`/`InstanceStoreMixin` creates
-one `Session` per `YoutubeDL`/thread with no cross-thread sharing, and no
-other platform (gallery-dl, used by X/IG) links curl_cffi at all -- so this
-reproduces within a single TikTok download, no concurrency needed.
-`curl_cffi.curl.Curl().version()` in the archiver venv reports
-`libcurl/8.15.0-IMPERSONATE`, inside CVE-2026-10536's vulnerable range
-(7.88.0-8.20.0, fixed 8.21.0): a use-after-free when an app sets HTTP/2
-stream-dependency options then calls `curl_easy_reset()` + `curl_easy_
-cleanup()` -- impersonation sets exactly those options to mimic Chrome's h2
-priority tree, and a multi-video TikTok profile walk resets/reuses its
-`Session` across many sequential requests, matching the trigger pattern.
-Not 100% certain (no ASan repro), but strong enough to act on: 101/105
-independent crashes landing in the same 4-frame libcurl call chain is not
-coincidence. **Pending user sign-off** (dependency change) to bump
-`curl-cffi` past `archiver/pyproject.toml`'s `<0.15` pin -- latest is 0.16.0,
-bundled libcurl version unconfirmed, needs checking after the bump.
-
-## Moved back off SanDisk USB, onto StoragEDGE (2026-10-09)
-
-Config/infra only, no code changes. Temporary: an SD card reader is on order
-to become StoragEDGE's **permanent** connection (replacing whatever link
-caused the 2026-10-08 disconnect storm); this reverts the stopgap USB move
-below until it arrives.
-
-- Stopped all 3 workers (`ops unload`), moved all 27 route folders (3.0GB)
-  `ULTRAFIT/.routes` -> `StoragEDGE/.routes` (plain `mv`, not
-  `migrate_split_roots.py` -- that tool only migrates OUT of `OUTPUT_DIR`;
-  routes already lived outside it). `.records` was already empty on
-  ULTRAFIT (recorder had nothing in-flight) -- nothing to move there.
-  Checked `suite.db` first: 0 rows reference ULTRAFIT paths (route ingests
-  are leave-no-trace, same as 2026-10-08), so no DB rewrite needed either way.
-- `ROUTES_DIR` -> `/run/media/dyne/StoragEDGE/.routes`,
-  `recorder.output_dir` -> `/run/media/dyne/StoragEDGE/.records` (both
-  reverted to their pre-2026-10-08 values). Workers reloaded, `ops health`
-  nominal, `ROUTES_DIR` disk gauge confirms StoragEDGE (99GB free).
-- Unmounted `/dev/sdb1` (ULTRAFIT) via `udisksctl unmount`; `power-off`
-  failed on a polkit auth prompt (no controlling tty) but is cosmetic --
-  confirmed unmounted via `lsblk`, safe to unplug.
+F1 [high · 105 hits · 2026-09-19->2026-10-08, FIXED 2026-10-08] archiver.service:
+heap corruption SIGABRTs, systemd auto-restart masked it. Root cause:
+curl_cffi 0.14.0 bundled libcurl 8.15.0, hit by CVE-2026-10536 (UAF on
+`curl_easy_reset`+cleanup with HTTP/2 stream-dependency state, which TLS
+impersonation sets). Fixed: bumped `curl-cffi>=0.16.0` (libcurl 8.21.0).
+`recorder` checked, not exposed (no `curl_cffi` dep). 285/285 seams pass.
+(verified)
 
 ## Storage reshuffle: recorder + routes -> SanDisk USB (2026-10-08)
 
-Config/infra only, no code changes.
+Config/infra only, no code changes. **Reverted 2026-10-09**: moved back to
+StoragEDGE (plain `mv`, 27 folders/3.0GB, 0 suite.db rows referenced
+ULTRAFIT), USB unmounted. Stopgap only -- an SD card reader is on order to
+become StoragEDGE's permanent connection.
 
 - `recorder.output_dir` -> `/run/media/dyne/ULTRAFIT/.records` (SanDisk USB,
   15GB). Config loads once at `recorder start`; restart required to apply.
