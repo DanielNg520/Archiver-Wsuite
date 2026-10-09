@@ -4,14 +4,48 @@ Repo-root reference for coding agents. Sections below tagged `triapi:plan` are e
 
 ## Findings
 
-F1 [high · 105 hits · 2026-09-19->2026-10-08, ongoing] archiver.service:
-native heap corruption (`malloc(): unaligned tcache chunk` / `double free or
-corruption`) aborts the main `python3.13` process (SIGABRT, core dump).
-systemd auto-restarts in ~30s every time, masking it from `ops health` and
-uptime checks. Crash is inside the interpreter itself (backtrace frames are
-`python3.13 + offset`), not a forked subprocess (gallery-dl/yt-dlp/ffmpeg
-run separately) -- points to a C-extension dependency corrupting the heap,
-exact culprit not identified. 8 occurrences on 2026-10-08 alone. (verified)
+F1 [high · 105 hits · 2026-09-19->2026-10-08, root-caused] archiver.service:
+heap corruption (`malloc(): unaligned tcache chunk` / `double free`) SIGABRTs
+`python3.13`, auto-restarted by systemd in ~30s. Root cause: curl_cffi 0.14.0
+(TikTok yt-dlp impersonation) bundles libcurl 8.15.0-IMPERSONATE, inside
+CVE-2026-10536's vulnerable range (fixed 8.21.0) -- a curl_easy_reset/cleanup
+UAF on HTTP/2 stream-dependency state, which impersonation sets to mimic
+Chrome's h2 priority tree. 101/105 coredumps abort inside a curl_cffi/libcurl
+frame. Fix = bump `curl-cffi` past the `<0.15` pin in `archiver/pyproject.toml`
+to a release bundling libcurl >=8.21.0 (0.16.x likely does, unconfirmed) --
+a dependency change, needs user sign-off before dispatch. See 2026-10-08
+section below for the full trace. (verified)
+
+## F1 root-caused: curl_cffi/libcurl UAF, not an archiver bug (2026-10-08)
+
+Investigation only, no code changed. `journalctl --user -u com.duy.archiver
+.service` has 105 coredumps since 2026-09-19 (systemd doesn't journal the
+app's own stdout/err -- those go to `~/.local/log/archiver.{out,err}.log`
+per `core.platform.service.log_dir`, which is WHY `journalctl -u archiver
+.service` alone found nothing -- the real unit is `com.duy.archiver.service`).
+Parsed all 105 coredump stack traces: 101 have the aborting thread's call
+stack pass through a `curl`-named frame; the actual abort site is
+`malloc_printerr` <- `__strdup` <- `Curl_setstropt` <- `Curl_init_userdefined`
+<- `_cffi_f_curl_easy_reset` -- i.e. inside libcurl's own `curl_easy_reset()`,
+called by curl_cffi (yt-dlp's TikTok TLS-impersonation backend, in-process,
+`archiver/archiver/platforms.py:691`). Checked concurrency first (orchestrator
+fans platforms out via `asyncio.to_thread`, no lock covers TikTok's yt-dlp
+call) but ruled it out: yt-dlp's `CurlCFFIRH`/`InstanceStoreMixin` creates
+one `Session` per `YoutubeDL`/thread with no cross-thread sharing, and no
+other platform (gallery-dl, used by X/IG) links curl_cffi at all -- so this
+reproduces within a single TikTok download, no concurrency needed.
+`curl_cffi.curl.Curl().version()` in the archiver venv reports
+`libcurl/8.15.0-IMPERSONATE`, inside CVE-2026-10536's vulnerable range
+(7.88.0-8.20.0, fixed 8.21.0): a use-after-free when an app sets HTTP/2
+stream-dependency options then calls `curl_easy_reset()` + `curl_easy_
+cleanup()` -- impersonation sets exactly those options to mimic Chrome's h2
+priority tree, and a multi-video TikTok profile walk resets/reuses its
+`Session` across many sequential requests, matching the trigger pattern.
+Not 100% certain (no ASan repro), but strong enough to act on: 101/105
+independent crashes landing in the same 4-frame libcurl call chain is not
+coincidence. **Pending user sign-off** (dependency change) to bump
+`curl-cffi` past `archiver/pyproject.toml`'s `<0.15` pin -- latest is 0.16.0,
+bundled libcurl version unconfirmed, needs checking after the bump.
 
 ## Storage reshuffle: recorder + routes -> SanDisk USB (2026-10-08)
 
