@@ -2,6 +2,17 @@
 
 Repo-root reference for coding agents. Sections below tagged `triapi:plan` are execution plans appended by TriAPI's Tier 1 planner -- see the run's own checklist for progress.
 
+## Findings
+
+F1 [high · 105 hits · 2026-09-19->2026-10-08, ongoing] archiver.service:
+native heap corruption (`malloc(): unaligned tcache chunk` / `double free or
+corruption`) aborts the main `python3.13` process (SIGABRT, core dump).
+systemd auto-restarts in ~30s every time, masking it from `ops health` and
+uptime checks. Crash is inside the interpreter itself (backtrace frames are
+`python3.13 + offset`), not a forked subprocess (gallery-dl/yt-dlp/ffmpeg
+run separately) -- points to a C-extension dependency corrupting the heap,
+exact culprit not identified. 8 occurrences on 2026-10-08 alone. (verified)
+
 ## Storage reshuffle: recorder + routes -> SanDisk USB (2026-10-08)
 
 Config/infra only, no code changes.
