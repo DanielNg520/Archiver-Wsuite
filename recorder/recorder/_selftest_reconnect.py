@@ -6,7 +6,8 @@ platform, asserting the safety contract:
   - a capture exit while still-live → relaunch on a fresh URL and keep recording
   - all segment files of one session are accumulated and handed off once
   - the download-lock is HELD across reconnects, released exactly once at the end
-  - terminal exits (stop / dead-stream rc=-2) never reconnect
+  - terminal exits (stop / rc=-1 clean shutdown, rc=-2 dead stream,
+    rc=-3 stalled) never reconnect
   - reconnect is bounded (consecutive zero-byte relaunches give up)
 
 No network, no yt-dlp: real temp files stand in for segments so byte tallies and
@@ -159,17 +160,29 @@ def test_genuine_end_no_reconnect(tmp: Path) -> None:
     check(not lock.held, "lock released")
 
 
-def test_dead_stream_never_reconnects(tmp: Path) -> None:
-    print("\n── rc=-2 (dead stream) is terminal even if is_live says True ──")
-    cap = FakeCapture(tmp, [{"rc": -2, "bytes": 0}])
-    plat = FakePlatform([True, True, True])    # would say live, but must be ignored
-    lock = FakeLock()
-    sm = _sm(tmp, cap, plat, lock)
-    sm._start_recording("alice")
-    sm._wait_for_recording_done()
-    check(cap.starts == 1 and plat.is_live_calls == 0,
-          "dead stream short-circuits before any liveness re-check")
-    check(sm._upload_q.qsize() == 0, "nothing enqueued for a dead stream")
+def test_terminal_rcs_never_reconnect(tmp: Path) -> None:
+    print("\n── rc -1/-2/-3 are terminal even if is_live says True ──")
+    cases = [
+        (-1, 500, 1),
+        (-2, 0, 0),
+        (-3, 700, 1),
+    ]
+    for rc, nbytes, expect_q in cases:
+        sub = tmp / f"case-{rc}"
+        cap = FakeCapture(sub, [{"rc": rc, "bytes": nbytes}])
+        plat = FakePlatform([True, True, True])
+        lock = FakeLock()
+        sm = _sm(sub, cap, plat, lock)
+        sm._start_recording("alice")
+        sm._wait_for_recording_done()
+        check(cap.starts == 1, f"rc={rc}: never reconnects")
+        check(plat.is_live_calls == 0,
+              f"rc={rc}: short-circuits before any liveness re-check")
+        check(not lock.held and lock.exits == 1,
+              f"rc={rc}: lock released exactly once")
+        check(sm.state == RecorderState.HANDOFF, f"rc={rc}: ends in HANDOFF")
+        check(sm._upload_q.qsize() == expect_q,
+              f"rc={rc}: upload queue size is {expect_q}")
 
 
 def test_stop_request_is_terminal(tmp: Path) -> None:
@@ -210,7 +223,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         test_reconnect_while_live(Path(d) / "a")
         test_genuine_end_no_reconnect(Path(d) / "b")
-        test_dead_stream_never_reconnects(Path(d) / "c")
+        test_terminal_rcs_never_reconnect(Path(d) / "c")
         test_stop_request_is_terminal(Path(d) / "d")
         test_zero_byte_budget(Path(d) / "e")
     print(f"\nALL PASS ({_checks} checks)")

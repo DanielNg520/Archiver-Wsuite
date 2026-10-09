@@ -60,7 +60,6 @@ None open.
 
 ## Known tech debt
 
-- [ ] No test drives `state._wait_for_recording_done` with fake rc -1/-2/-3 to assert each is terminal.
 - [ ] Drain unconditional `backoff_s` throughput cost on one-off `ConnectionError`s unverified; TriAPI task `b41afde0` (non-stalled seam test) not landed.
 - [ ] `tests/test_seams.py` oversized (~157K chars); split along `── Seam N` boundaries, preserving behavior.
 - [ ] `core/core/manual_delete.py` docstrings/log say "Recycle Bin"; Linux uses freedesktop trash.
@@ -76,6 +75,7 @@ None open.
 - Recorder falls back to `~/.recorder/<user>/` when StoragEDGE is absent (owner, 2026-10-09).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
+- Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
@@ -109,4 +109,5 @@ Last audit: 2026-10-09 (through ce26403 + `retry()` backoff fix).
 - 2026-10-09: wrap-up audit: `ItemStore.retry` (manual requeue) now clears `retry_after`; test `test_manual_retry_clears_backoff`. Reset-failed paths need nothing (failed rows never carry `retry_after`).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
 - Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
-- Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
+- 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
+- Next: Known tech debt, top down; first drain backoff non-stalled test (`b41afde0`).
