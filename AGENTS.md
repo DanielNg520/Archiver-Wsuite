@@ -76,6 +76,8 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 
 - Ask owner: land F2's Seam 11b/11c via (1) two tiny anchored dispatches [recommended], (2) approved hand edit, or (3) agy? (2026-10-09)
 
+- Ask owner: gate Archiver-Suite code dirs (dispatch-gate-paths + ledger pre-commit hook, like SemAI/TriAPI)? Currently ungated, verified 2026-10-09.
+
 ## Index
 
 - `core/core/` shared library: store/schema (`suite.db`), ingest, dedup, quarantine, media_prep, `platform/` OS seam.
@@ -100,7 +102,7 @@ Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
 - IN PROGRESS F2: store fix + 3 unit tests on pushed branch `f2-retry-after` (TriAPI `tasks/drain_retry_after` t8b/t9); Seam 11b fails there (1 send, expects 3).
-- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test (TriAPI t10 kept failing); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
+- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test; apply with TriAPI `--check` (plain-assert seams print no pytest counts, `--test` rolls back); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
 - F2 follow-up proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - F2 supersedes TriAPI task `b41afde0` (mark it complete once Seam 11c lands).
 - Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
