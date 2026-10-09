@@ -80,6 +80,21 @@ class RetryAfterClaimTests(unittest.TestCase):
         self.assertIsNotNone(reclaimed)
         self.assertEqual(reclaimed.id, it.id)
 
+    def test_manual_retry_clears_backoff(self):
+        db = self._fresh_store()
+        db.add_item(source="archiver", platform="x", username="u",
+                    identifier="a", file_path="/tmp/a.bin", priority=10)
+        it = db.claim_next()
+        db.mark_failed(it.id, error="stall", max_retries=4, backoff_s=3600)
+
+        self.assertIsNone(db.claim_next())
+
+        self.assertTrue(db.retry(it.id))
+
+        reclaimed = db.claim_next()
+        self.assertIsNotNone(reclaimed)
+        self.assertEqual(reclaimed.id, it.id)
+
     def test_claim_batch_skips_future_retry_after(self):
         db = self._fresh_store()
         ids = []

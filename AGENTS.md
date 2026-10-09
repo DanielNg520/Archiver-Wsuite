@@ -96,7 +96,7 @@ None open.
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
+Last audit: 2026-10-09 (through ce26403 + `retry()` backoff fix).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -106,6 +106,7 @@ Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
+- 2026-10-09: wrap-up audit: `ItemStore.retry` (manual requeue) now clears `retry_after`; test `test_manual_retry_clears_backoff`. Reset-failed paths need nothing (failed rows never carry `retry_after`).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
 - Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.

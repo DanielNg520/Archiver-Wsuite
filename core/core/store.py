@@ -1189,10 +1189,10 @@ class ItemStore:
         return [Item.from_row(r) for r in self.conn.execute(sql, params)]
 
     def retry(self, item_id: int) -> bool:
-        """Any status → pending, attempts=0. CLI manual requeue."""
+        """Any status → pending, attempts=0. CLI manual requeue. Clears any backoff (retry_after)."""
         cur = self.conn.execute(
             """UPDATE items SET status='pending', attempts=0, claimed_at=NULL,
-                   sent_at=NULL, last_error=NULL WHERE id=?""",
+                   sent_at=NULL, last_error=NULL, retry_after=NULL WHERE id=?""",
             (item_id,),
         )
         self._commit()
