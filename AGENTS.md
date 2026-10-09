@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-F1 [high · 1 · 2026-10-08→2026-10-08] `archiver loop`: 7 glibc heap-corruption SIGABRT core dumps (`double free`, `malloc(): unaligned tcache`); none since 22:19; cause unknown (verified symptom).
+(none open)
 
 ## Commands
 
@@ -49,6 +49,8 @@ F1 [high · 1 · 2026-10-08→2026-10-08] `archiver loop`: 7 glibc heap-corrupti
 - Stale `tiktok.lock` with service down: `ops restart recorder`; if still held and its pid is dead, remove it (`ops/RUNBOOK.md`).
 - Windows branch: a file with an open handle cannot be replaced or deleted; keep that in mind for any `windows/` or `core.platform` nt change.
 - `ops.health` `@_memo` wrappers accept positional args only: `drain_eta_fields(60)`, not `window_minutes=60`.
+- Archiver needs `curl-cffi>=0.16.0` (libcurl 8.21.0): 0.14.0's libcurl 8.15.0 UAF (CVE-2026-10536) SIGABRTed `archiver loop` ~100 times in `curl_easy_reset`.
+- Check a crash's curl_cffi: `eu-unstrip -n --core=<core>`; 0.14.0 build-id `88b47b15…`, 0.16.3 `f92375e0…`. Floor applies only after a reinstall.
 
 ## Known tech debt
 
@@ -94,4 +96,6 @@ Last audit: 2026-10-09 (`recording_roots` helper, through 6e8b6dc).
 - During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
 - Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
-- Next: F1 (archiver heap corruption: `coredumpctl info <pid>` + py-spy/gdb backtrace), then Known tech debt.
+- 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
+- Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
+- Next: Known tech debt, top down.
