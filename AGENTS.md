@@ -67,6 +67,7 @@ F1 [high · 1 · 2026-10-08→2026-10-08] `archiver loop`: 7 glibc heap-corrupti
 
 - Recorder falls back to `~/.recorder/<user>/` when StoragEDGE is absent (owner, 2026-10-09).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
+- StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
@@ -86,8 +87,11 @@ F1 [high · 1 · 2026-10-08→2026-10-08] `archiver loop`: 7 glibc heap-corrupti
 
 ## Carryover
 
-Last audit: 2026-10-09 (recorder fallback, watch dual-root, docs sanitation).
+Last audit: 2026-10-09 (`recording_roots` helper, through 6e8b6dc).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
-- 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots. StoragEDGE remounted, data intact.
-- Unverified: the running service's own fallback on a real live; grep `using fallback` in `~/.local/log/recorder.out.log`.
+- 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
+- OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
+- During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
+- Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
+- End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - Next: F1 (archiver heap corruption: `coredumpctl info <pid>` + py-spy/gdb backtrace), then Known tech debt.
