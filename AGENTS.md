@@ -4,7 +4,7 @@ Repo-root reference for coding agents. Sections below tagged `triapi:plan` are e
 
 ## Findings
 
-F1 [high · 105 hits · 2026-09-19->2026-10-08, root-caused] archiver.service:
+F1 [high · 105 hits · 2026-09-19->2026-10-08, FIXED] archiver.service:
 heap corruption (`malloc(): unaligned tcache chunk` / `double free`) SIGABRTs
 `python3.13`, auto-restarted by systemd in ~30s. Root cause: curl_cffi 0.14.0
 (TikTok yt-dlp impersonation) bundles libcurl 8.15.0-IMPERSONATE, inside
@@ -12,9 +12,15 @@ CVE-2026-10536's vulnerable range (fixed 8.21.0) -- a curl_easy_reset/cleanup
 UAF on HTTP/2 stream-dependency state, which impersonation sets to mimic
 Chrome's h2 priority tree. 101/105 coredumps abort inside a curl_cffi/libcurl
 frame. Fix = bump `curl-cffi` past the `<0.15` pin in `archiver/pyproject.toml`
-to a release bundling libcurl >=8.21.0 (0.16.x likely does, unconfirmed) --
-a dependency change, needs user sign-off before dispatch. See 2026-10-08
-section below for the full trace. (verified)
+to a release bundling libcurl >=8.21.0. **Fixed 2026-10-08**: user signed
+off, bumped to `curl-cffi>=0.16.0` (resolved 0.16.3, confirmed bundles
+`libcurl/8.21.0-IMPERSONATE`), reinstalled archiver (`core` verified
+editable), 285/285 seams pass, `ops restart archiver` clean. Checked
+`recorder` (also yt-dlp-based) for the same exposure: its `yt-dlp` dep has
+no `[default]` extra and no `curl_cffi` installed in that venv -- not
+exposed, no action needed there. See 2026-10-08 section below for the
+full trace. Watch `~/.local/log/archiver.err.log` for a recurrence before
+calling this closed for good.
 
 ## F1 root-caused: curl_cffi/libcurl UAF, not an archiver bug (2026-10-08)
 

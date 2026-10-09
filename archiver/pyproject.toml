@@ -9,7 +9,9 @@ dependencies = [
     "gallery-dl>=1.27.0",            # X media + TikTok photo carousels
     # Config / env
     "python-dotenv>=1.0.0",
-    "curl-cffi>=0.10,<0.15",
+    "curl-cffi>=0.16.0",   # >=0.16.0 bundles libcurl 8.21.0, fixing CVE-2026-10536
+                            # (reset/cleanup UAF on HTTP/2 stream-dependency state
+                            # impersonation sets) -- see AGENTS.md F1.
 ]
 
 [project.scripts]
