@@ -407,7 +407,8 @@ tight. If it's getting tight:
   (`archiver policy` / dispatcher delete policy).
 - The archiver self-purges already-sent files on ENOSPC, but that's a last
   resort, not a strategy.
-- Recorder output (`~/.archive/.records`) is NOT auto-deleted unless
+- Recorder output (`[recorder] output_dir`, plus `~/.recorder/<user>/` when
+  the drive was absent) is NOT auto-deleted unless
   the dispatcher's `delete_after_upload_records` policy is on. Live recordings
   are large — check there first.
 

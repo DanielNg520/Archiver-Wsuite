@@ -5,24 +5,27 @@ dense code map. This file is only the traps that bite automated sessions.
 
 ## Environment traps (Linux)
 
-- **Self-contained config root (`<repo>/.config`).** On Linux the suite keeps
-  ALL per-app state — config, `suite.db`, sessions, cookies, logs, locks — under
-  `<repo>/.config/<app>` (git-ignored), resolved by `core.platform.paths`
-  from the editable-injected `core`'s own `__file__`. So the checkout carries
-  its own state and there is nothing under `~/.config` to touch. `XDG_CONFIG_HOME`
-  is deliberately **not** consulted (it would defeat self-containment);
-  `ARCHIVER_CONFIG_HOME` is the one override.
-- **`pipx` / `yt-dlp` shims:** always `python -m pipx ...` / `python -m yt_dlp`
-  — bare exe names can resolve to broken/stale shims on a stale-PATH shell.
+- **Config root: live state is `~/.archive/.config`, not `<repo>/.config`.**
+  Code default on Linux is `<repo>/.config/<app>` (`core.platform.paths`,
+  `XDG_CONFIG_HOME` ignored), but this machine sets
+  `ARCHIVER_CONFIG_HOME=/home/dyne/.archive/.config` in the login shell and the
+  `com.duy.*.service.d/10-env.conf` drop-ins. A process started without that
+  env silently uses a fresh `<repo>/.config` instead.
+- **Worker logs** are `~/.local/log/<app>.{out,err}.log` (unit `StandardOutput`),
+  not `$CONFIG/archiver-suite/logs` (frozen since 2026-07-28).
+- **Unit names are `com.duy.{archiver,dispatcher,recorder,logrotate}`** — a bare
+  `systemctl --user is-active recorder` reports `inactive` for a running service.
+- **`yt-dlp` shims:** always `python -m yt_dlp` — bare exe names can resolve to
+  broken/stale shims on a stale-PATH shell.
 - Set `PYTHONUTF8=1` for any suite process whose stdout is redirected
   (status glyphs crash a non-UTF8 locale otherwise).
 
 ## Build / test
 
 - Packages: **`uv tool` venvs** (`dispatcher`, `media-archiver`, `recorder`, `ops`;
-  `pipx` in older notes below is stale — check with `uv tool list`) with
-  `core` injected **editable** — `core` edits are live on worker restart; the
-  other four need a reinstall after edits:
+  check with `uv tool list`), each installed **editable** with `core` injected
+  editable — source edits to any package are live on worker restart
+  (`ops restart <worker>`). Reinstall only for dependency/entry-point changes:
   `uv tool install --force --editable ./<pkg> --with-editable ./core`.
   **`--with-editable ./core` is not optional** — a bare `uv tool install
   --force --editable ./<pkg>` recreates the venv from scratch and DROPS the
@@ -54,7 +57,7 @@ dense code map. This file is only the traps that bite automated sessions.
 ## Operational rules
 
 - Workers run as **systemd --user services** (`ops install/load/unload/uninstall`);
-  the unit files under `~/.config/systemd/user/` embed absolute pipx paths —
+  the unit files under `~/.config/systemd/user/` embed absolute tool paths —
   regenerate with `ops uninstall && ops install` after any path change. Enable
   `loginctl enable-linger $USER` for the services to run while logged out.
 - Don't run destructive DB/config operations while workers are up; check with

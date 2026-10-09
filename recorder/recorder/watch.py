@@ -77,26 +77,29 @@ def _lock(config: RecorderConfig) -> tuple[bool, str | None]:
 
 
 def _active_recording(config: RecorderConfig) -> Active | None:
-    """The newest video file under output_dir touched within the active window
-    — i.e. the stream being written right now. Its parent dir is the username."""
-    root = Path(config.output_dir).expanduser()
+    """The newest video file under output_dir or the state_dir fallback touched
+    within the active window — i.e. the stream being written right now. Its
+    parent dir is the username."""
+    roots = [Path(config.output_dir).expanduser(),
+             Path(config.state_dir).expanduser()]
     cutoff = time.time() - _ACTIVE_WINDOW_S
     newest: tuple[float, Path] | None = None
-    try:
-        for user_dir in root.iterdir():
-            if not user_dir.is_dir():
-                continue
-            for f in user_dir.iterdir():
-                if f.suffix.lower() not in _VIDEO_SUFFIXES:
+    for root in roots:
+        try:
+            for user_dir in root.iterdir():
+                if not user_dir.is_dir():
                     continue
-                try:
-                    st = f.stat()
-                except OSError:
-                    continue
-                if st.st_mtime >= cutoff and (newest is None or st.st_mtime > newest[0]):
-                    newest = (st.st_mtime, f)
-    except OSError:
-        return None
+                for f in user_dir.iterdir():
+                    if f.suffix.lower() not in _VIDEO_SUFFIXES:
+                        continue
+                    try:
+                        st = f.stat()
+                    except OSError:
+                        continue
+                    if st.st_mtime >= cutoff and (newest is None or st.st_mtime > newest[0]):
+                        newest = (st.st_mtime, f)
+        except OSError:
+            continue
     if newest is None:
         return None
     f = newest[1]

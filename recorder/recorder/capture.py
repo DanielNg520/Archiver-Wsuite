@@ -78,8 +78,11 @@ log = logging.getLogger(__name__)
 class StreamCapture:
     def __init__(self, output_dir: str, cookies_file: str | None,
                  start_timeout_s: float = 120.0,
-                 stall_timeout_s: float = 300.0):
+                 stall_timeout_s: float = 300.0,
+                 fallback_dir: str | None = None):
         self.output_dir = Path(output_dir).expanduser()
+        self.fallback_dir = (Path(fallback_dir).expanduser()
+                             if fallback_dir is not None else None)
         self.cookies_file = cookies_file
         # Dead-stream guard: terminate yt-dlp if it produces ZERO bytes
         # within this many seconds of starting. Zero bytes means there is no
@@ -99,10 +102,31 @@ class StreamCapture:
         # output. The authoritative source for output_files() (see module doc).
         self._manifest_path: Path | None = None
 
+    def _choose_run_dir(self, username: str) -> Path:
+        primary_root = self.output_dir
+        primary_run = primary_root / username
+        if primary_root.is_dir():
+            try:
+                primary_run.mkdir(parents=True, exist_ok=True)
+                probe = primary_run / ".probe"
+                probe.touch()
+                probe.unlink()
+                return primary_run
+            except OSError as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+        else:
+            reason = "output_dir is not an existing directory"
+        if self.fallback_dir is not None:
+            fallback_run = self.fallback_dir / username
+            log.warning("output_dir %s unavailable (%s); using fallback %s",
+                        primary_run, reason, fallback_run)
+            fallback_run.mkdir(parents=True, exist_ok=True)
+            return fallback_run
+        raise OSError(f"output_dir {primary_run} unavailable: {reason}")
+
     def start(self, stream_url: str, username: str) -> None:
-        """Launch yt-dlp. Files land in output_dir/<username>/."""
-        self._run_dir = self.output_dir / username
-        self._run_dir.mkdir(parents=True, exist_ok=True)
+        """Launch yt-dlp. Files land in output_dir/<username>/, or fallback_dir/<username>/ if output_dir is unavailable."""
+        self._run_dir = self._choose_run_dir(username)
         self._started_at = time.time()
 
         # Fresh output manifest per run. Unlink any leftover at this exact path

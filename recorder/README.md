@@ -28,6 +28,10 @@ recorder config add|remove|list|priority   # manage the watched-users list
 # config.toml
 [recorder]
 output_dir = "~/.archive/.records"   # dot-prefixed: orphaned scanner skips it
+# If output_dir is missing or unwritable at capture start (e.g. an unmounted
+# USB drive), the capture goes to state_dir/<user>/ (STATE_DIR, default
+# ~/.recorder) instead; the startup sweep covers both roots. The output_dir
+# root itself is never created, so an empty mountpoint is never written to.
 split_at_chunk_size = true    # optional split mode: every recording over…
 split_chunk_gib     = 2.0     # …this size is cut into <=2 GiB album parts
 

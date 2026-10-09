@@ -77,14 +77,7 @@ separate processes — not from giving them disjoint code.
 | [archiver/README.md](archiver/README.md) | archiver CLI, env vars, platforms |
 | [dispatcher/README.md](dispatcher/README.md) | dispatcher CLI, env vars, burner account, queue smoke test |
 | [recorder/README.md](recorder/README.md) | recorder config, split mode, cookies, quality/fallback behavior |
-| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (self-contained `.config`, `uv tool` reinstalls, test invocation) |
-
-Historical plan docs (kept as period records, paths may be outdated):
-[CONVERSION_PLAN.md](CONVERSION_PLAN.md) / [WINDOWS_PORT.md](WINDOWS_PORT.md)
-(the completed 2026-07 Windows port) and
-[REFACTOR_PLAN_bans_and_paths.md](REFACTOR_PLAN_bans_and_paths.md) (ban
-quarantine + two-root storage split — both shipped; the plan doc is kept only
-as a historical record, not a pending TODO).
+| [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (live config root, logs, unit names, `uv tool` reinstalls, test invocation) |
 
 ---
 
@@ -163,15 +156,17 @@ so the checkout carries its own state and nothing lands in `~/.config`. Set
 `ARCHIVER_CONFIG_HOME` to relocate it; `XDG_CONFIG_HOME` is intentionally *not*
 consulted (it would defeat self-containment). `$CONFIG` below means
 `<repo>/.config`. (On Windows the equivalent self-contained root is
-`~/.archive/.config`; see `core.platform.paths`.)
+`~/.archive/.config`; see `core.platform.paths`.) **This machine overrides it:**
+the `com.duy.*` units' `10-env.conf` drop-ins and the login shell set
+`ARCHIVER_CONFIG_HOME=~/.archive/.config`, so `$CONFIG` below is `~/.archive/.config`.
 
 | What | Where (this machine) |
 |------|----------------------|
 | config / DB / sessions / cookies / logs / locks | `$CONFIG/archiver-suite`, `$CONFIG/dispatcher`, `$CONFIG/recorder` |
 | media output (`OUTPUT_DIR`) | `~/.archive` |
-| chat_id route folders (`ROUTES_DIR`) | defaults to `OUTPUT_DIR` (single-tree layout); set it to move ONLY the route folders to another volume — everything else stays put |
-| recorder output | `~/.archive/.records` (dot-prefixed so the orphaned scanner skips it) |
-| worker logs (service capture) | `$CONFIG/archiver-suite/logs` |
+| chat_id route folders (`ROUTES_DIR`) | `/run/media/dyne/StoragEDGE/.routes` (defaults to `OUTPUT_DIR` when unset; moves ONLY the route folders to another volume) |
+| recorder output | `/run/media/dyne/StoragEDGE/.records` (`[recorder] output_dir`); falls back to `~/.recorder/<user>/` when that drive is absent |
+| worker logs (service capture) | `~/.local/log/<app>.{out,err}.log` (unit `StandardOutput`); `$CONFIG/archiver-suite/logs` is a frozen pre-2026-07-28 copy |
 | AutoSplitter (oversize-video splitter) | `~/Coding/autosplitter` — sibling checkout, auto-discovered by `core.media_prep`; no config needed |
 
 ```
@@ -209,7 +204,7 @@ $CONFIG/recorder/
 > platform downloads, `.records` and the `.deleted\` quarantine always stay
 > under `OUTPUT_DIR`. Apply the physical move with
 > `tools/migrate_split_roots.py` (workers stopped → `--apply` → set
-> `ROUTES_DIR` → restart). Design history: `REFACTOR_PLAN_bans_and_paths.md`.
+> `ROUTES_DIR` → restart).
 
 ---
 

@@ -1,7 +1,7 @@
 """
 tests.test_dispatcher_stall_backoff
 ────────────────────────────────────
-Regression tests for the 2026-09-05 connection_fix.md fix (dispatcher
+Regression tests for the 2026-09-05 dispatcher post-outage upload-stall fix (
 post-outage upload-stall infinite loop). Every call in this file matches
 the actual, current signatures in core/core/store.py, core/core/models.py,
 dispatcher/dispatcher/send.py and dispatcher/dispatcher/config.py — read

@@ -26,7 +26,7 @@ immediately (injected editable).
 cp .env.example <repo>/.config/dispatcher/.env
 ```
 
-Edit `<repo>/.config/dispatcher/.env` to fill in `TELEGRAM_API_ID`,
+Edit `$CONFIG/dispatcher/.env` (`$CONFIG`: see the root README) to fill in `TELEGRAM_API_ID`,
 `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, and `TELEGRAM_CHAT_ID`.
 
 Optional Telegram routing overrides live in the same file. TikTok videos use
@@ -35,9 +35,14 @@ use `TELEGRAM_CHAT_ID_TIKTOK_LIVE`, or
 `TELEGRAM_CHAT_ID_TIKTOK_LIVE_<USER>` for a single recorded account.
 Set `USE_IPV6=1` to prefer IPv6 when connecting to Telegram DCs (defaults to IPv4).
 
+Post-outage stall knobs (defaults): `FAST_UPLOAD_CONNECT_TIMEOUT_S` (8),
+`FAST_UPLOAD_CONNECT_RETRIES` (2), `FAST_UPLOAD_CONNECT_STAGGER_S` (0.1),
+`STALL_BACKOFF_S` (300). `UPLOAD_CONNECTIONS` (8) at 4 eases router NAT/flood
+limits during WAN recovery.
+
 First time you run `dispatcher start`, Telethon will prompt for the SMS
 auth code interactively and write a session file at
-`<repo>/.config/dispatcher/session.session`. After that, sessions persist.
+`$CONFIG/dispatcher/session.session`. After that, sessions persist.
 
 ## Commands
 

@@ -361,6 +361,39 @@ def test_start_wires_manifest(tmp: Path) -> None:
           "a stale manifest at the same path is cleared on start")
 
 
+def test_start_falls_back_when_output_missing(tmp: Path) -> None:
+    print("\n── start: falls back when output_dir is missing ──")
+    fallback = tmp / "fb"
+    fallback.mkdir(parents=True, exist_ok=True)
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    orig_popen = cap_mod.subprocess.Popen
+    orig_time = cap_mod.time.time
+    cap_mod.time.time = lambda: 1_000_000.0
+    cap_mod.subprocess.Popen = (
+        lambda cmd, **k: _FakeProc())
+    try:
+        cap = StreamCapture(str(tmp / "nope"), None, fallback_dir=str(fallback))
+        cap.start("https://example/live", "bob")
+        cap._close_log()
+        check(cap._run_dir == fallback / "bob",
+              "missing output_dir falls back to fallback_dir/user")
+        check(not (tmp / "nope").exists(),
+              "missing output_dir root is not created")
+
+        cap = StreamCapture(str(fallback), None, fallback_dir=str(tmp / "unused"))
+        cap.start("https://example/live", "bob")
+        cap._close_log()
+        check(cap._run_dir == fallback / "bob",
+              "existing output_dir wins over fallback_dir")
+    finally:
+        cap_mod.subprocess.Popen = orig_popen
+        cap_mod.time.time = orig_time
+
+
 def main() -> int:
     print("recorder capture-termination + remux integrity self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -387,6 +420,7 @@ def main() -> int:
         test_scan_fallback_excludes_scratch(root / "m3")
         test_finalize_removes_manifest(root / "m4")
         test_start_wires_manifest(root / "m5")
+        test_start_falls_back_when_output_missing(root / "fb")
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

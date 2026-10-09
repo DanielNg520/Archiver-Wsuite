@@ -161,8 +161,15 @@ def cmd_start(args: argparse.Namespace) -> int:
     except Exception as e:
         log.warning("startup sweep skipped after error: %s", e)
 
+    try:
+        fallback_report = sweep(config.state_dir, config.db_path,
+                                split_threshold_bytes=config.split_threshold_bytes)
+        log.info("fallback startup sweep — %s", fallback_report, extra={"ev": "sweep"})
+    except Exception as e:
+        log.warning("fallback startup sweep skipped after error: %s", e)
+
     platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
-    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
+    capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s, fallback_dir=config.state_dir)
     enqueue_client = EnqueueClient(
         config.db_path, split_threshold_bytes=config.split_threshold_bytes)
     lock = TikTokLock(config.lock_path, os.getpid())
@@ -265,7 +272,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         pid_path.write_text(str(os.getpid()))
 
         platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
-        capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s)
+        capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s, fallback_dir=config.state_dir)
         enqueue_client = EnqueueClient(
             config.db_path, split_threshold_bytes=config.split_threshold_bytes)
         lock = TikTokLock(config.lock_path, os.getpid())

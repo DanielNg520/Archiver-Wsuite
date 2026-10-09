@@ -6,7 +6,7 @@ Verify `file:line` against code before trusting — comments may lag.
 
 ## TL;DR topology
 
-Four processes + ops, pivoting on **one SQLite file** (`<repo>/.config/archiver-suite/suite.db`).
+Four processes + ops, pivoting on **one SQLite file** (`$CONFIG/archiver-suite/suite.db`; `$CONFIG` = `<repo>/.config`, or `ARCHIVER_CONFIG_HOME` — `~/.archive/.config` on this machine).
 No IPC sockets; they coordinate via the DB + on-disk artifacts.
 
 ```
@@ -77,13 +77,13 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 | module | purpose |
 |---|---|
 | `state.py` | state machine LISTENING→RECORDING→HANDOFF→STOPPED + producer/consumer uploader thread; **lock held only around active recording** |
-| `capture.py` | yt-dlp wrapper (ffmpeg HLS, MPEG-TS, --no-part, infinite retries); **process-group kill** (no orphaned ffmpeg); reconnect on premature still-live exit |
+| `capture.py` | yt-dlp wrapper (ffmpeg HLS, MPEG-TS, --no-part, infinite retries); **process-group kill** (no orphaned ffmpeg); reconnect on premature still-live exit; run dir falls back to `fallback_dir` (= `state_dir`) when `output_dir` is missing/unwritable, never creating the `output_dir` root |
 | `platforms/base.py` | `LivePlatform` Protocol (structural) |
 | `platforms/tiktok.py` | TikTokLive lib (sync↔async bridge per call); `_extract_pull_url` picks **highest-possible quality** (origin→uhd→hd→sd→ld via `live_core_sdk_data` levels, else name-rank; **FLV breaks ties**); age-restricted → `tiktok_browser` fallback |
 | `platforms/tiktok_browser.py` | age-restricted (18+) fallback: headless Chromium (Playwright) drives the live page so TikTok's JS signs the pull URL; sniffs room-info JSON → same highest-quality selector (falls back to default-quality media-URL sniff); **self-healing browser install** (auto `playwright install chromium` on a stale/missing build, once per process) |
 | `cookie_refresh.py` | `simulate_human_browsing(config)`: keeps the TikTok session cookie file alive between lives by driving a headless, non-persistent Chromium through a few scroll-and-pause cycles, then writing rotated cookies back to `tiktok_cookies_file`; reuses `tiktok_browser`'s launch/cookie-parse helpers. Triggered from `state.py`'s `_scan_priority_list_once` on a probability curve keyed off `core.ItemStore`'s `tiktok_last_cookie_refresh` metadata (forced past 48h, tapering off, never under 12h) — not a literal `RecorderState.HANDOFF` hook, since that transition itself does nothing but set `self.state` |
 | `enqueue.py` | `register_file` at `priority=5` (before archiver's 10), min-batch exempt |
-| `startup_sweep.py` | reconcile disk↔queue once at start (sent→del, pending/sending→leave, failed→re-arm, new→ingest, drop empty dirs via `core.prune_empty_dirs` — `#`-prefixed hashtag buckets spared) |
+| `startup_sweep.py` | reconcile disk↔queue once at start, over `output_dir` and the `state_dir` fallback root (sent→del, pending/sending→leave, failed→re-arm, new→ingest, drop empty dirs via `core.prune_empty_dirs` — `#`-prefixed hashtag buckets spared) |
 | `lock.py` | `TikTokLock` writes pid-stamped heartbeat (via core.heartbeat + core.paths) |
 | `watch.py` | dashboard snapshot/render; `_pid` via `heartbeat.pid_alive` |
 | CLI: `start[--daemon]`, `record`, `stop`, `status`, `watch`, `config` |

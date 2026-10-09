@@ -199,7 +199,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         "ALTER TABLE items ADD COLUMN topic_id INTEGER",
     ]),
     (5, [
-        # Per-item stall backoff (2026-09-05 connection_fix.md fix): a NULL
+        # Per-item stall backoff (2026-09-05 dispatcher post-outage fix): a NULL
         # or past retry_after leaves the row immediately claimable; a future
         # timestamp (set by mark_failed on a stall) hides it from
         # claim_next/claim_batch until that time passes, so a stalled

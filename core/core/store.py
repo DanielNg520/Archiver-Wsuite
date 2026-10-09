@@ -818,7 +818,7 @@ class ItemStore:
         send outcome can legally arrive from) — a stray failure for an already
         terminal/reset row is logged and ignored, never written through.
 
-        backoff_s (2026-09-05 connection_fix.md fix): when given AND the row
+        backoff_s (2026-09-05 dispatcher post-outage upload-stall fix): when given AND the row
         is going back to 'pending', stamp retry_after backoff_s seconds into
         the future so claim_next/claim_batch can't reclaim it immediately —
         the fix for a stalled high-priority item monopolizing the drain
