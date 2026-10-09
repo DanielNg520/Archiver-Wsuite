@@ -13,6 +13,8 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
 - Code changes go through TriAPI `rebuild/` dispatch.
+- Gated (2026-10-09): the 8 code dirs are in `~/.claude/dispatch-gate-paths.txt`; `.git/hooks/pre-commit` runs the ledger check. Hand fix: owner runs `dispatch-ledger-hand.sh`.
+- Apply seams-verified edits with `--check "env PYTHONPATH=core:archiver:recorder:dispatcher:ops PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py" --cwd <repo>`; `--test` rolls back (no pytest counts).
 
 ## Live deployment (this machine, Fedora)
 
@@ -70,6 +72,7 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 - Recorder falls back to `~/.recorder/<user>/` when StoragEDGE is absent (owner, 2026-10-09).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
+- Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
@@ -100,7 +103,7 @@ Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
 - IN PROGRESS F2: store fix + 3 unit tests on pushed branch `f2-retry-after` (TriAPI `tasks/drain_retry_after` t8b/t9); Seam 11b fails there (1 send, expects 3).
-- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test (TriAPI t10 kept failing); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
+- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test; apply with TriAPI `--check` (plain-assert seams print no pytest counts, `--test` rolls back); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
 - F2 follow-up proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - F2 supersedes TriAPI task `b41afde0` (mark it complete once Seam 11c lands).
 - Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
