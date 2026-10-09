@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `_gather_group`: ignored `retry_after`, so drain backoff never applied since ed35808 (verified). Fix applied uncommitted, see Carryover.
+F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `_gather_group`: ignored `retry_after`, so drain backoff never applied since ed35808 (verified). Fix on branch `f2-retry-after`, see Carryover.
 
 ## Commands
 
@@ -74,7 +74,7 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 
 ## Ask owner
 
-(none open)
+- Ask owner: land F2's Seam 11b/11c via (1) two tiny anchored dispatches [recommended], (2) approved hand edit, or (3) agy? (2026-10-09)
 
 ## Index
 
@@ -89,7 +89,7 @@ F2 [medium · 1 · 2026-10-09] `core/core/store.py` `claim_batch` gated path + `
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 7fa0ac5; docs only, no code changes since a0c31f1).
+Last audit: 2026-10-09 (through 4db28b9 + F2 branch diff).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -99,7 +99,8 @@ Last audit: 2026-10-09 (through 7fa0ac5; docs only, no code changes since a0c31f
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
-- IN PROGRESS F2: store fix + 3 unit tests applied (TriAPI `tasks/drain_retry_after` t8b/t9), uncommitted; Seam 11b now fails (1 send, expects 3).
-- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test (TriAPI t10 kept failing); then 296+ seams, commit, `ops restart dispatcher`.
+- IN PROGRESS F2: store fix + 3 unit tests on pushed branch `f2-retry-after` (TriAPI `tasks/drain_retry_after` t8b/t9); Seam 11b fails there (1 send, expects 3).
+- F2 remaining: Seam 11b `stall_backoff_s=0` + new Seam 11c drain test (TriAPI t10 kept failing); then 296+ seams, merge to main, `ops restart dispatcher`. Workers run editable from main, so keep F2 off main until green.
+- F2 follow-up proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - F2 supersedes TriAPI task `b41afde0` (mark it complete once Seam 11c lands).
 - Next: Known tech debt, top down; first `_wait_for_recording_done` rc -1/-2/-3 test.
