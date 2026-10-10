@@ -368,7 +368,7 @@ class Archiver:
                 try:
                     on_user("instagram", username)
                 except Exception:
-                    pass
+                    pass   # a status hook must never break the run
             try:
                 n = await asyncio.to_thread(
                     platform.download_stories, username, self.db)

@@ -60,7 +60,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Known tech debt
 
-- [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
 
@@ -127,4 +126,5 @@ Last audit: 2026-10-10 (through 9e87ae1).
 - 2026-10-10: `cookie_refresh.py` writes atomically (`_write_atomic`) and keeps `#HttpOnly_` (TriAPI `archiver_cookie_atomic`); selftest 23 checks, both mutants caught; recorder restarted.
 - 2026-10-10: seams split (TriAPI `archiver_seams_split`): byte-range splitter moved 44 tests into `tests/seams/`; defs verbatim except two edits; 303 checks, output-diff identical.
 - Trap: `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
+- 2026-10-10: `orchestrator.py:370` stories `on_user` swallow now carries the sibling comment (TriAPI `archiver_hook_comment`); 3 hook-guard sites, all commented.
 - Next session: Known tech debt, top down.
