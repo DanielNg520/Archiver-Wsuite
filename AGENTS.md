@@ -83,7 +83,7 @@ None open.
 
 ## Ask owner
 
-None open.
+- Ask owner: delete `requirements.txt`? Unconsumed duplicate of per-package `pyproject.toml` pins; its stale curl-cffi pin drifted (2026-10-09).
 
 ## Index
 
@@ -98,7 +98,7 @@ None open.
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 175afdc).
+Last audit: 2026-10-09 (through 342989a).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.

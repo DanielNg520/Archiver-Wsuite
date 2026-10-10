@@ -297,7 +297,7 @@ Telegram-compatible) into ≤2 GiB parts — each shipped as one ordered album �
 turn on split mode in the recorder's config:
 
 ```toml
-# <repo>/.config/recorder/config.toml
+# $CONFIG/recorder/config.toml  ($CONFIG = ~/.archive/.config on this machine)
 [recorder]
 split_at_chunk_size = true   # split recordings over the chunk size
 split_chunk_gib     = 2.0    # part size / split trigger (default 2 GiB)
