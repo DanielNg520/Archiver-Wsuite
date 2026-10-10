@@ -38,7 +38,6 @@ None open.
 - Archiver learns the recorder `state_dir` from the recorder's `.env` `STATE_DIR` (`dotenv_values`, never `os.environ`), else `core.paths.recorder_state_dir()`.
 - Residual: a `STATE_DIR` set only in the recorder unit environment (not `.env`) is invisible to the archiver; ops reads the pid default only.
 - Tests: Seam 36 (`test_recording_roots_seam`), `_selftest_ban_escalation` fallback-root quarantine check.
-- Gap: `windows/recorder` mirror lacks the fallback (parity-only tree).
 
 ## Durable behavior notes
 
@@ -50,7 +49,7 @@ None open.
 - Dispatcher whole-batch failures always set `retry_after` (`stall_backoff_s`, 300s); schema v5 `items.retry_after` gates `claim_next`/`claim_batch`.
 - Dispatcher wedged on one upload with Telegram route loss: `ops restart dispatcher` is the known unstick.
 - Stale `tiktok.lock` with service down: `ops restart recorder`; if still held and its pid is dead, remove it (`ops/RUNBOOK.md`).
-- Windows branch: a file with an open handle cannot be replaced or deleted; keep that in mind for any `windows/` or `core.platform` nt change.
+- Windows branch: a file with an open handle cannot be replaced or deleted; keep that in mind for any `core.platform` nt change.
 - `ops.health` `@_memo` wrappers accept positional args only: `drain_eta_fields(60)`, not `window_minutes=60`.
 - Archiver needs `curl-cffi>=0.16.0` (libcurl 8.21.0): 0.14.0's libcurl 8.15.0 UAF (CVE-2026-10536) SIGABRTed `archiver loop` ~100 times in `curl_easy_reset`.
 - Check a crash's curl_cffi: `eu-unstrip -n --core=<core>`; 0.14.0 build-id `88b47b15…`, 0.16.3 `f92375e0…`. Floor applies only after a reinstall.
@@ -67,7 +66,6 @@ None open.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
-- [ ] `windows/` mirrors drift: `archiver/pyproject.toml` still pins CVE-range `curl-cffi<0.15`; missing stall guard, `retry_after`/`backoff_s`, storage fallback; needs file-by-file diff if revived.
 - [ ] Stale gitignored `*/build/lib/` dirs under packages; safe to remove.
 
 ## Decisions
@@ -78,13 +76,14 @@ None open.
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
 - "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
-- `requirements.txt` (root and `windows/`) deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
-- `PROJECT_MAP.md` and `windows/` plan/map docs folded and deleted under the current rules (owner, 2026-10-09).
+- `requirements.txt` deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
+- `PROJECT_MAP.md` folded and deleted under the current rules (owner, 2026-10-09).
+- Drop all Windows support: `windows/` mirror deleted; Windows branches in code, tools and docs to be removed; macOS kept (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
 
-None open.
+- Ask owner: also strip Windows (Task Scheduler/msvcrt/taskkill) and macOS branches from `core/core/platform/`, or keep parity? (2026-10-09)
 
 ## Index
 
@@ -94,8 +93,7 @@ None open.
 - `recorder/` TikTok live recorder: `state.py` loop, `capture.py` yt-dlp, `platforms/` URL resolve + browser fallback, `startup_sweep.py`.
 - `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate; `RUNBOOK.md`.
 - `tests/` seams suite + dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
-- `windows/` parity mirror of the four packages, unexercised on Linux.
-- Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`. `windows/` keeps its own doc copies.
+- Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
 ## Carryover
 
