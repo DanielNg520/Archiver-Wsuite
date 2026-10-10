@@ -67,7 +67,7 @@ None open.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
-- [ ] `windows/` mirrors drift: missing stall guard, `retry_after`/`backoff_s`, storage fallback; needs file-by-file diff if revived.
+- [ ] `windows/` mirrors drift: `archiver/pyproject.toml` still pins CVE-range `curl-cffi<0.15`; missing stall guard, `retry_after`/`backoff_s`, storage fallback; needs file-by-file diff if revived.
 - [ ] Stale gitignored `*/build/lib/` dirs under packages; safe to remove.
 
 ## Decisions
@@ -78,12 +78,13 @@ None open.
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
 - "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
+- `requirements.txt` (root and `windows/`) deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
 - `PROJECT_MAP.md` and `windows/` plan/map docs folded and deleted under the current rules (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
 
-- Ask owner: delete `requirements.txt`? Unconsumed duplicate of per-package `pyproject.toml` pins; its stale curl-cffi pin drifted (2026-10-09).
+None open.
 
 ## Index
 
@@ -112,7 +113,7 @@ Last audit: 2026-10-09 (through 342989a).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
 - Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
-- 2026-10-09: rules sanitation (6c87351): `requirements.txt` curl-cffi pin bumped past CVE range; `.venv-test` rebuilt on 0.16.3; 303 seams.
+- 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
 - Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
 - Next: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
