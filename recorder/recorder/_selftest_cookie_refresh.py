@@ -31,6 +31,7 @@ sys.path.insert(0, str(_repo / "recorder"))
 from core import ItemStore                                     # noqa: E402
 from recorder import cookie_refresh                            # noqa: E402
 from recorder.config import RecorderConfig                     # noqa: E402
+from recorder.platforms.tiktok import _parse_netscape_cookies  # noqa: E402
 from recorder.platforms.tiktok_browser import _netscape_to_playwright  # noqa: E402
 from recorder.state import StateMachine                        # noqa: E402
 
@@ -242,6 +243,9 @@ def test_httponly_round_trip(tmp: Path) -> None:
           "sessionid httpOnly survives round-trip")
     check(names["tt_csrf"]["httpOnly"] is False,
           "tt_csrf httpOnly stays False after round-trip")
+    parsed = _parse_netscape_cookies(str(path))
+    check(parsed.get("sessionid") == "s1" and parsed.get("tt_csrf") == "c1",
+          "httpx reader keeps #HttpOnly_ sessionid")
 
 
 def test_atomic_write_failure_keeps_original(tmp: Path) -> None:

@@ -306,18 +306,8 @@ def _extract_pull_url(room_info: dict) -> str | None:
 
 
 def _parse_netscape_cookies(path: str) -> dict[str, str]:
-    """Minimal Netscape cookies.txt → {name: value}. Best-effort; bad
-    lines are skipped. We only need the values httpx will send as a cookie
-    header, not full attributes."""
-    out: dict[str, str] = {}
-    try:
-        for line in Path(path).expanduser().read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 7:
-                out[parts[5]] = parts[6]
-    except OSError:
-        pass
-    return out
+    """Delegates to the shared HttpOnly-aware Netscape parser in
+    tiktok_browser, which handles #HttpOnly_ prefixes, ~ expansion, and
+    malformed lines; returns {name: value}."""
+    from .tiktok_browser import _netscape_to_playwright
+    return {c["name"]: c["value"] for c in _netscape_to_playwright(path)}
