@@ -78,8 +78,6 @@ separate processes — not from giving them disjoint code.
 | [recorder/README.md](recorder/README.md) | recorder config, split mode, cookies, quality/fallback behavior |
 | [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (MSIX virtualization, `python -m pipx`, test invocation) |
 
-Historical plan docs were removed 2026-10-09; git history keeps them.
-
 ---
 
 ## Install (Windows)

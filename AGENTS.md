@@ -61,7 +61,6 @@ None open.
 
 ## Known tech debt
 
-- [ ] Drain unconditional `backoff_s` throughput cost on one-off `ConnectionError`s unverified; TriAPI task `b41afde0` (non-stalled seam test) not landed.
 - [ ] `tests/test_seams.py` oversized (~157K chars); split along `── Seam N` boundaries, preserving behavior.
 - [ ] `core/core/manual_delete.py` docstrings/log say "Recycle Bin"; Linux uses freedesktop trash.
 - [ ] `recorder/recorder/cookie_refresh.py`: cookie write not atomic (use temp + `os.replace`); drops `#HttpOnly_` prefix on rewrite.
@@ -113,4 +112,7 @@ Last audit: 2026-10-09 (through 175afdc).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
 - Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
-- Next: Known tech debt, top down; first drain backoff non-stalled test (`b41afde0`).
+- 2026-10-09: rules sanitation (6c87351): `requirements.txt` curl-cffi pin bumped past CVE range; `.venv-test` rebuilt on 0.16.3; 303 seams.
+- 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
+- Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
+- Next: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.

@@ -13,7 +13,7 @@ Run (from anywhere in the repo):
 
     python tools/setup_test_venv.py
 
-Then run the seams test with the printed command. Re-runnable: `uv venv`
+Then run the seams test with the printed command. Re-runnable: `uv venv --clear`
 recreates `.venv-test` from scratch each time.
 """
 
@@ -43,7 +43,7 @@ def main() -> None:
     venv_dir = repo_root / ".venv-test"
     venv_python = venv_dir / "bin" / "python"
 
-    _run(["uv", "venv", str(venv_dir)], "creating the test virtualenv")
+    _run(["uv", "venv", "--clear", str(venv_dir)], "creating the test virtualenv")
 
     packages = [
         repo_root / "core",
