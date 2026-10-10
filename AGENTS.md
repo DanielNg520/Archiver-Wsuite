@@ -102,7 +102,8 @@ Last audit: 2026-10-09 (through 50d9fd9).
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
 - During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
 - Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
-- Trial status 2026-10-09 evening: zero `using fallback` lines, no `~/.recorder/<user>/` dirs yet (no live since unmount); no coredumps today.
+- Trial status 2026-10-09 evening: zero `using fallback` lines; service fallback still unexercised.
+- 2026-10-09 17:11-17:22 recorder service stopped; @daviddieal recorded meanwhile by a non-service run into `~/.recorder`, sent 17:23, deleted.
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
@@ -115,14 +116,15 @@ Last audit: 2026-10-09 (through 50d9fd9).
 - Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
 - 2026-10-09: `requirements.txt` files and `windows/` mirror deleted (9457f56, 723475c); dead `windows` gate-path entry removed.
 - NEXT (owner go: "remove all traces", 2026-10-09): Windows removal via TriAPI, one task per file; Linux/macOS behavior byte-identical.
-- Code: `core/core/platform/{service,filelock,procgroup,process,signals,paths}.py` drop `win32`/`nt` branches; `platform/__init__.py` docstring.
+- DONE 2026-10-09: `core/core/platform/*` Windows-free via TriAPI (`tasks/archiver_windows_platform`), −839 lines; 303 seams; workers restarted, health green.
 - Code: `core/core/termui.py` (VT enable, UTF-8 pin), `media_prep.py:637` lock unlink, `archiver/archiver/cookies.py` APPDATA branch.
 - Comments only: `core/core/{schema,instance_lock}.py`, `recorder/recorder/capture.py`, `ops/ops/{cli,health,update}.py`.
 - Tests: Windows branches in `core/core/_selftest_quarantine.py`, `recorder/recorder/_selftest_capture.py`, `ops/ops/_selftest_logrotate.py`.
 - Also (2026-10-09 grep, missing above): comments in `core/core/{heartbeat,quarantine}.py`, `dispatcher/dispatcher/cli.py:104`, `recorder/recorder/cli.py:142`, `tools/migrate_paths_to_archive.py`.
 - Also: `archiver/archiver/cli.py:1580` user message says "Windows Recycle Bin"; fix with the `manual_delete.py` tech-debt line (freedesktop trash).
 - Also: `tests/test_seams.py:73,198,235` Windows venv comments/branches; read before editing. Keep `recorder/recorder/ban_check.py:37` UA string (exempt from end grep).
-- Start order: AGENTS inventory done; dispatch `core/core/platform/*` first, audit, commit; rest in a new session (phase-sized).
+- Next phase (new session): the Code/Comments/Tests/Tools lines below, then docs. One TriAPI task per file.
+- Also: 122 tracked files are CRLF in the index (Windows-era); renormalize to LF in its own commit (`.gitattributes` + `git add --renormalize`).
 - Tools: delete `tools/migrate_paths_to_windows.py`, `tools/migrate_config_to_archive.py`; strip WinGet/taskkill from `tools/recover_suite_db.py`.
 - Cleanup: delete gitignored `*/build/lib/`; trash untracked `watch-miki.bat`. Docs: Windows lines in README, DESIGN, USER-GUIDE, RUNBOOK.
 - Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA|Windows` empty, `ops restart` all, `ops health` green.

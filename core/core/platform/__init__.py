@@ -2,22 +2,19 @@
 core.platform
 ─────────────
 The single seam between the suite and the host operating system. Everything
-POSIX-specific that the port must replace lives behind an adapter here, so the
-rest of the codebase (store / ingest / send / media_prep) stays platform-blind
-— no scattered ``if os.name == "nt"`` checks.
+POSIX-specific lives behind an adapter here, so the rest of the codebase
+(store / ingest / send / media_prep) stays platform-blind.
 
-Adapters (added phase by phase):
-  • paths      — config/state/lock directories        (Phase 1)
-  • filelock   — fcntl.flock ↔ msvcrt.locking          (Phase 2)
-  • process    — os.kill(pid,0) ↔ OpenProcess liveness (Phase 2)
-  • procgroup  — os.killpg ↔ CTRL_BREAK / taskkill /T   (Phase 3)
-  • signals    — SIGTERM ↔ SIGBREAK, sync/async wiring   (Phase 4)
-  • service    — launchd ↔ Task Scheduler               (Phase 5)
+Adapters:
+  • paths      — config/state/lock directories
+  • filelock   — fcntl.flock
+  • process    — os.kill(pid,0)
+  • procgroup  — os.killpg
+  • signals    — SIGTERM, sync/async wiring
+  • service    — launchd / systemd user units
 
-Design rule: each adapter exposes ONE platform-blind API; the POSIX and Windows
-implementations sit side by side and are selected at call time by ``os.name``.
-POSIX behavior must stay byte-for-byte what it was before the port so existing
-macOS/Linux installs are untouched.
+Design rule: each adapter exposes ONE API, branching between Linux and macOS
+only where they differ; behavior is kept parallel.
 """
 
 from __future__ import annotations
