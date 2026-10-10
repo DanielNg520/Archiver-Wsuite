@@ -9,9 +9,9 @@ Lifecycle (one entry in the PolicyStore deletion roster drives all three):
   1. request   — `archiver delete` marks the roster + drops the user from the
                  active list. NO files, NO rows touched yet.
   2. trash     — each sweep, a roster user with every DB row `sent` has their
-                 folder sent to the WINDOWS RECYCLE BIN (send2trash) and
-                 `trashed_at` stamped. Any pending/sending/failed row defers
-                 to the next cycle: un-uploaded work is never dropped.
+                 folder sent to the trash (send2trash) and `trashed_at`
+                 stamped. Any pending/sending/failed row defers to the next
+                 cycle: un-uploaded work is never dropped.
   3. row GC    — RETENTION_DAYS after trashed_at, the user's DB rows (and
                  checkpoint) are deleted and the roster entry evicted.
 
@@ -22,9 +22,9 @@ Cautions encoded here:
     after a crash between trash and stamp).
   - Row GC drops the user's content_hash dedup memory: re-adding the user
     later could re-upload old bytes. Accepted for an intentional delete.
-  - The Recycle Bin only exists on a local volume that has one; on a volume
-    without one, send2trash degrades to a PERMANENT delete (documented
-    tradeoff — output_dir lives on C:, which has a bin).
+  - send2trash needs a usable trash on the folder's volume (freedesktop
+    trash on Linux) and raises otherwise, so the user stays queued and is
+    retried next sweep.
   - The retention clock is wall-clock ISO timestamps (`now - trashed_at`),
     never process uptime.
 """
@@ -52,7 +52,7 @@ def _now_iso() -> str:
 
 
 def _default_trash(path: str) -> None:
-    """Send a path to the Recycle Bin. Imported lazily so the suite runs
+    """Send a path to the trash. Imported lazily so the suite runs
     (and every non-delete selftest passes) without Send2Trash installed."""
     from send2trash import send2trash
     send2trash(path)
@@ -118,7 +118,7 @@ def process_pending_deletions(
                     folder = Path(output_dir) / platform / username
                     if folder.exists():
                         trash(str(folder))
-                        log.warning("manual-delete: %s → Recycle Bin (%s)",
+                        log.warning("manual-delete: %s → trash (%s)",
                                     key, folder, extra={"ev": "delete"})
                     else:
                         log.info("manual-delete: %s has no folder — stamping "

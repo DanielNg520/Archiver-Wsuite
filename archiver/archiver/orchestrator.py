@@ -487,7 +487,7 @@ class Archiver:
 
     def _process_pending_deletions(self) -> None:
         """Manual-delete sweeper (core.manual_delete): trash fully-uploaded
-        roster users to the Recycle Bin, GC their rows after the retention
+        roster users to the trash, GC their rows after the retention
         window. Never fatal — a failed sweep just retries next run."""
         from core import process_pending_deletions
 

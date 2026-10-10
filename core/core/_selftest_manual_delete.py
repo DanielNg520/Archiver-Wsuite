@@ -1,11 +1,11 @@
 """
 Focused validation for the manual-delete lifecycle (Phase 4): deletion roster,
-deferred Recycle-Bin trash, recorder-lock deferral, 30-day row GC, cancel.
+deferred trash, recorder-lock deferral, 30-day row GC, cancel.
 
 Run: python core/core/_selftest_manual_delete.py
 
 Standalone (no pytest). Real ItemStore + PolicyStore on temp paths; the trash
-call is mocked (no real Recycle Bin involved) and the clock is injected.
+call is mocked (no real trash involved) and the clock is injected.
 """
 import sys
 import tempfile

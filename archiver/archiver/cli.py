@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     s_del = sub.add_parser(
         "delete",
         help="Request FULL deletion of a user: drop from the active list now; "
-             "folder → Recycle Bin once every upload is sent; DB rows purged "
+             "folder → trash once every upload is sent; DB rows purged "
              "30 days after that. Reversible until the row GC via "
              "`archiver deleting cancel`.")
     s_del.add_argument("--platform", choices=PLATFORM_CHOICES, required=True)
@@ -1521,7 +1521,7 @@ def cmd_banned(args, config: Config, db: ItemStore) -> int:
 def cmd_delete(args, config: Config, db: ItemStore) -> int:
     """Request a manual, terminal deletion of one user. Only the roster entry
     and the active-list drop happen here — files and rows are handled later by
-    the per-cycle sweeper (core.manual_delete): folder → Recycle Bin once every
+    the per-cycle sweeper (core.manual_delete): folder → trash once every
     row is `sent`, rows GC'd 30 days after that."""
     from datetime import datetime, timezone
 
@@ -1542,10 +1542,10 @@ def cmd_delete(args, config: Config, db: ItemStore) -> int:
     unsent = sum(n for s, n in counts.items() if s != "sent")
     log.info("@%s [%s] marked for deletion.", username, platform)
     if unsent:
-        log.info("%d un-sent row(s) remain — the folder moves to the Recycle "
-                 "Bin only after they all upload (checked every cycle).", unsent)
+        log.info("%d un-sent row(s) remain — the folder moves to the trash "
+                 "only after they all upload (checked every cycle).", unsent)
     else:
-        log.info("All rows sent — the folder moves to the Recycle Bin on the "
+        log.info("All rows sent — the folder moves to the trash on the "
                  "next archiver cycle.")
     log.info("DB rows are purged 30 days after the trash. Cancel with "
              "`archiver deleting cancel --platform %s --user %s`.",
@@ -1577,8 +1577,8 @@ def cmd_deleting(args, config: Config, db: ItemStore) -> int:
             log.info("Cancelled — the 30-day row GC will NOT run; DB rows are "
                      "kept.")
             log.info("The folder was already trashed (%s) — restore it from "
-                     "the Windows Recycle Bin yourself if you want the files "
-                     "back.", trashed_at)
+                     "the trash yourself if you want the files back.",
+                     trashed_at)
         else:
             store.add_user(platform, username)
             log.info("Cancelled before any trash — @%s restored to the [%s] "

@@ -353,8 +353,8 @@ class PolicyStore:
     # Users the operator asked to DELETE (manual, terminal — distinct from the
     # auto-ban quarantine). Stored under `[platform.<name>.deleting]` keyed by
     # username → {requested_at, trashed_at?}, parallel to `banned`. The entry
-    # drives the deferred-trash sweeper (core.manual_delete): folder → Recycle
-    # Bin once every row is sent, rows GC'd 30 days after the trash.
+    # drives the deferred-trash sweeper (core.manual_delete): folder → trash
+    # once every row is sent, rows GC'd 30 days after the trash.
 
     def list_deleting(self, platform: str) -> tuple[str, ...]:
         with self._lock:
