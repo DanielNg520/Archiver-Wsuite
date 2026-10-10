@@ -396,6 +396,8 @@ def scenario_cmd_loop() -> None:
 
     def fake_cmd_run(args, config, db, **kw):
         recorded_runs.append((args, kw))
+        if not fake_sequence:
+            raise KeyboardInterrupt()
         item = fake_sequence.pop(0)
         if isinstance(item, BaseException):
             raise item

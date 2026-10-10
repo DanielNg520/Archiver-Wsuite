@@ -96,7 +96,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through 1b49c99).
+Last audit: 2026-10-10 (through 0c2bc7d).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -136,5 +136,6 @@ Last audit: 2026-10-10 (through 1b49c99).
 - 2026-10-10: `ops health` null_hash counts unsent rows only (7c20ed4, TriAPI `archiver_nullhash_unsent`); 84 legacy sent rows with deleted files can't be hashed.
 - 2026-10-10: `archiver/_selftest_cli.py` (bdfd7f7, TriAPI `archiver_cli_selftest`): 39 checks; 8/9 mutants caught, survivor equivalent (`DeletionGuard.delete` re-checks safebrake).
 - 2026-10-10 audit of a47e7c0..1b49c99 clean; `queue_health` docstring "single indexed queries" is inaccurate (both counts scan), cosmetic.
-- 2026-10-10: `_selftest_cli.py` extended (TriAPI `archiver_cli_run_selftest`): run/stories/loop/config/migrate, 106 checks; 15/15 cli mutants caught (crash-rc mutant only as a hang).
-- Next session: StoragEDGE remount ~2026-10-16; optional `_READY` fragment proposal, `queue_health` docstring.
+- 2026-10-10: `_selftest_cli.py` extended (TriAPI `archiver_cli_run_selftest`): run/stories/loop/config/migrate, 106 checks; 15/15 cli mutants caught.
+- 2026-10-10 audit: exhausted `fake_cmd_run` sequence hung the loop test on a crash-count regression; now raises KeyboardInterrupt, mutant fails fast.
+- Next session: StoragEDGE remount ~2026-10-16; optional `_READY` fragment, `queue_health` docstring, patch `build_platforms` in `scenario_cmd_run` E.1 (regressed guard reaches the real one).
