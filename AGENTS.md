@@ -77,12 +77,12 @@ None open.
 - "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
 - `requirements.txt` deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
 - `PROJECT_MAP.md` folded and deleted under the current rules (owner, 2026-10-09).
-- Drop all Windows support: `windows/` mirror deleted; Windows branches in code, tools and docs to be removed; macOS kept (owner, 2026-10-09).
+- Drop all Windows support, zero trace: code, tools, docs, memory; macOS kept (owner, 2026-10-09). Windows-era memories trashed 2026-10-09.
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
 
-- Ask owner: delete the 7 Windows-box memory entries (MSIX, Modern Standby, pipx shim, etc.) or keep as history? (2026-10-09)
+None open.
 
 ## Index
 
@@ -114,12 +114,13 @@ Last audit: 2026-10-09 (through 723475c).
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
 - Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
 - 2026-10-09: `requirements.txt` files and `windows/` mirror deleted (9457f56, 723475c); dead `windows` gate-path entry removed.
-- NEXT (plan given, awaiting owner "go"): Windows removal via TriAPI, one task per file; Linux/macOS behavior byte-identical.
+- NEXT (owner go: "remove all traces", 2026-10-09): Windows removal via TriAPI, one task per file; Linux/macOS behavior byte-identical.
 - Code: `core/core/platform/{service,filelock,procgroup,process,signals,paths}.py` drop `win32`/`nt` branches; `platform/__init__.py` docstring.
 - Code: `core/core/termui.py` (VT enable, UTF-8 pin), `media_prep.py:637` lock unlink, `archiver/archiver/cookies.py` APPDATA branch.
 - Comments only: `core/core/{schema,instance_lock}.py`, `recorder/recorder/capture.py`, `ops/ops/{cli,health,update}.py`.
 - Tests: Windows branches in `core/core/_selftest_quarantine.py`, `recorder/recorder/_selftest_capture.py`, `ops/ops/_selftest_logrotate.py`.
 - Tools: delete `tools/migrate_paths_to_windows.py`, `tools/migrate_config_to_archive.py`; strip WinGet/taskkill from `tools/recover_suite_db.py`.
 - Cleanup: delete gitignored `*/build/lib/`; trash untracked `watch-miki.bat`. Docs: Windows lines in README, DESIGN, USER-GUIDE, RUNBOOK.
-- Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA` empty, `ops restart` all, `ops health` green.
+- Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA|Windows` empty, `ops restart` all, `ops health` green.
+- Last step: delete every Windows mention left in AGENTS.md/CLAUDE.md, including the Decisions line and CLAUDE.md porting note.
 - Then: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
