@@ -65,11 +65,12 @@ dense code map. This file is only the traps that bite automated sessions.
 - `FilePartsInvalid` failures are permanent by design (oversize file needs a
   split, not a retry) — see [ops/RUNBOOK.md](ops/RUNBOOK.md).
 
-## Porting notes (this is the Linux port)
+## Porting notes
 
-- The OS seam is `core/core/platform/` (`service` = systemd/launchd/Task
-  Scheduler; `filelock` = fcntl/msvcrt; `procgroup` = killpg/taskkill; `signals`;
-  `process`; `paths`). Keep the three OS branches behavior-parallel — every verb
-  exists on all three.
-- The macOS (`launchd`) and Windows (`Task Scheduler`) branches are kept for
-  parity but are not exercised here; Linux/systemd is the deployment target.
+- The OS seam is `core/core/platform/` (`service` = systemd/launchd;
+  `filelock`; `procgroup`; `signals`; `process`; `paths`). Keep the Linux and
+  macOS branches behavior-parallel — every verb exists on both.
+- Windows support is dropped (owner, 2026-10-09); never add an `nt`/`win32`
+  branch. Remaining Windows code is being removed (AGENTS.md Carryover).
+- The macOS (`launchd`) branch is kept but not exercised here; Linux/systemd is
+  the deployment target.

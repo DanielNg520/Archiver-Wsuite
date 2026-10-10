@@ -66,7 +66,6 @@ None open.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
-- [ ] Stale gitignored `*/build/lib/` dirs under packages; safe to remove.
 
 ## Decisions
 
@@ -83,7 +82,7 @@ None open.
 
 ## Ask owner
 
-- Ask owner: also strip Windows (Task Scheduler/msvcrt/taskkill) and macOS branches from `core/core/platform/`, or keep parity? (2026-10-09)
+- Ask owner: delete the 7 Windows-box memory entries (MSIX, Modern Standby, pipx shim, etc.) or keep as history? (2026-10-09)
 
 ## Index
 
@@ -97,7 +96,7 @@ None open.
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 342989a).
+Last audit: 2026-10-09 (through 723475c).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -114,4 +113,13 @@ Last audit: 2026-10-09 (through 342989a).
 - 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
 - Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
-- Next: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
+- 2026-10-09: `requirements.txt` files and `windows/` mirror deleted (9457f56, 723475c); dead `windows` gate-path entry removed.
+- NEXT (plan given, awaiting owner "go"): Windows removal via TriAPI, one task per file; Linux/macOS behavior byte-identical.
+- Code: `core/core/platform/{service,filelock,procgroup,process,signals,paths}.py` drop `win32`/`nt` branches; `platform/__init__.py` docstring.
+- Code: `core/core/termui.py` (VT enable, UTF-8 pin), `media_prep.py:637` lock unlink, `archiver/archiver/cookies.py` APPDATA branch.
+- Comments only: `core/core/{schema,instance_lock}.py`, `recorder/recorder/capture.py`, `ops/ops/{cli,health,update}.py`.
+- Tests: Windows branches in `core/core/_selftest_quarantine.py`, `recorder/recorder/_selftest_capture.py`, `ops/ops/_selftest_logrotate.py`.
+- Tools: delete `tools/migrate_paths_to_windows.py`, `tools/migrate_config_to_archive.py`; strip WinGet/taskkill from `tools/recover_suite_db.py`.
+- Cleanup: delete gitignored `*/build/lib/`; trash untracked `watch-miki.bat`. Docs: Windows lines in README, DESIGN, USER-GUIDE, RUNBOOK.
+- Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA` empty, `ops restart` all, `ops health` green.
+- Then: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
