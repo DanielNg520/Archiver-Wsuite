@@ -1,7 +1,8 @@
 """
 Selftest for destructive-command safety paths in cli.py: cmd_purge_sent
 (DeletionGuard safebrake + confirmation + dry-run), cmd_reset (all / failed /
-user subcommands + non-TTY guard), and _validate_chat_id_format.
+user subcommands + non-TTY guard), _validate_chat_id_format, cmd_run,
+cmd_stories, cmd_loop, cmd_config, and cmd_migrate.
 
 Run: python archiver/archiver/_selftest_cli.py
 
@@ -11,8 +12,12 @@ store before returning.
 """
 import builtins
 import io
+import logging
+import os
+import signal
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -22,6 +27,7 @@ sys.path.insert(0, str(_repo / "archiver"))
 
 from core import ItemStore, PolicyStore  # noqa: E402
 import archiver.cli as cli              # noqa: E402
+import archiver.loop_state as loop_state  # noqa: E402
 
 OK = "✓"
 _checks = 0
@@ -260,6 +266,344 @@ def scenario_validate_chat_id() -> None:
               f"validate chat id: {chat!r} rejected with message")
 
 
+# ── E. cmd_run ──────────────────────────────────────────────────────────────
+def scenario_cmd_run() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    db = ItemStore.open(str(tmp / "suite.db"))
+    store = PolicyStore(tmp / "config.toml")
+    config = _make_config(tmp, store)
+    orig = cli.Archiver
+
+    calls: list = []
+    run_kwargs: list = []
+    results_preset: list[dict] = []
+
+    class FakeArchiver:
+        def __init__(self, config, db):
+            calls.append(self)
+            self.config = config
+            self.db = db
+            self.ingest_lock = None
+
+        async def run(self, **kw):
+            run_kwargs.append(kw)
+            return results_preset.pop(0)
+
+    try:
+        cli.Archiver = FakeArchiver
+
+        # 1. full_history=True with no platform and no user
+        args = types.SimpleNamespace(platform=None, user=None, full_history=True)
+        rc = cli.cmd_run(args, config, db)
+        check(rc == 2, "cmd_run: full-history without platform/user returns 2")
+        check(len(calls) == 0, "cmd_run: full-history validation abort constructs no Archiver")
+
+        # 2. full_history=True with platform, re-arms before archiving
+        orig_build = cli.build_platforms
+        cli.build_platforms = lambda config: [types.SimpleNamespace(name="x", users=("alice", "bob"))]
+        try:
+            db.mark_full_history_done("x", "alice")
+            db.mark_full_history_done("x", "bob")
+            results_preset.append({"x/alice": {"status": "ok"}})
+            args = types.SimpleNamespace(platform="x", user=None, full_history=True)
+            rc = cli.cmd_run(args, config, db)
+            check(rc == 0, "cmd_run: full-history with platform returns 0")
+            check(db.needs_full_history("x", "alice"), "cmd_run: alice full-history re-armed")
+            check(db.needs_full_history("x", "bob"), "cmd_run: bob full-history re-armed")
+        finally:
+            cli.build_platforms = orig_build
+
+        # 3. filtered run with sentinel ingest_lock
+        sentinel = object()
+        results_preset.append({"a": {"status": "ok"}, "b": {"status": "banned"}})
+        args = types.SimpleNamespace(platform="x", user="@alice", full_history=False)
+        rc = cli.cmd_run(args, config, db, ingest_lock=sentinel)
+        check(rc == 0, "cmd_run: filtered run returns 0")
+        check(run_kwargs[-1]["user_filter"] == "alice", "cmd_run: user_filter passed to run")
+        check(run_kwargs[-1]["platform_filter"] == "x", "cmd_run: platform_filter passed to run")
+        check(calls[-1].ingest_lock is sentinel, "cmd_run: ingest_lock attached to Archiver")
+
+        # 4. partial result → 1
+        results_preset.append({"a": {"status": "partial"}})
+        args = types.SimpleNamespace(platform=None, user=None, full_history=False)
+        rc = cli.cmd_run(args, config, db)
+        check(rc == 1, "cmd_run: partial result returns 1")
+
+        # 5. error result → 1
+        results_preset.append({"a": {"status": "error", "reason": "boom"}})
+        rc = cli.cmd_run(args, config, db)
+        check(rc == 1, "cmd_run: error result returns 1")
+    finally:
+        cli.Archiver = orig
+        db.close()
+
+
+# ── F. cmd_stories ──────────────────────────────────────────────────────────
+def scenario_cmd_stories() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    db = ItemStore.open(str(tmp / "suite.db"))
+    store = PolicyStore(tmp / "config.toml")
+    orig = cli.Archiver
+    calls: list = []
+    run_stories_kwargs: list = []
+    results_preset: list[dict] = []
+
+    class FakeArchiver:
+        def __init__(self, config, db):
+            calls.append(self)
+
+        async def run_stories(self, **kw):
+            run_stories_kwargs.append(kw)
+            return results_preset.pop(0)
+
+    try:
+        cli.Archiver = FakeArchiver
+
+        config = types.SimpleNamespace(policy_store=store,
+                                       output_dir=str(tmp / "archive"),
+                                       instagram=None)
+        args = types.SimpleNamespace(user=None)
+        rc = cli.cmd_stories(args, config, db)
+        check(rc == 0, "cmd_stories: no instagram config returns 0")
+        check(len(calls) == 0, "cmd_stories: no instagram constructs no Archiver")
+
+        config = types.SimpleNamespace(policy_store=store,
+                                       output_dir=str(tmp / "archive"),
+                                       instagram=types.SimpleNamespace(stories_interval=0))
+        results_preset.append({"a": {"status": "ok"}, "b": {"status": "gone"}, "c": {"status": "skipped"}})
+        args = types.SimpleNamespace(user="@bob")
+        rc = cli.cmd_stories(args, config, db)
+        check(rc == 0, "cmd_stories: ok/gone/skipped returns 0")
+        check(run_stories_kwargs[-1]["user_filter"] == "bob",
+              "cmd_stories: user filter passed to run_stories")
+
+        results_preset.append({"a": {"status": "error"}})
+        args = types.SimpleNamespace(user=None)
+        rc = cli.cmd_stories(args, config, db)
+        check(rc == 1, "cmd_stories: error result returns 1")
+    finally:
+        cli.Archiver = orig
+        db.close()
+
+
+# ── G. cmd_loop ─────────────────────────────────────────────────────────────
+def scenario_cmd_loop() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    db = ItemStore.open(str(tmp / "suite.db"))
+    store = PolicyStore(tmp / "config.toml")
+    recorded_runs: list = []
+    fake_sequence: list = []
+
+    def fake_cmd_run(args, config, db, **kw):
+        recorded_runs.append((args, kw))
+        item = fake_sequence.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    orig_cmd_run = cli.cmd_run
+    orig_sleep = time.sleep
+    orig_write_running = loop_state.write_running
+    orig_write_sleeping = loop_state.write_sleeping
+    orig_scan_done = loop_state.scan_done
+    orig_clear = loop_state.clear
+    clear_calls: list = []
+
+    def check_loop_cleanup(label: str) -> None:
+        check(signal.getsignal(signal.SIGINT) is before_sigint,
+              f"cmd_loop: SIGINT handler restored ({label})")
+        check(len(logging.getLogger("archiver.loop").handlers) == before_handlers,
+              f"cmd_loop: loop logger handlers restored ({label})")
+
+    before_sigint = signal.getsignal(signal.SIGINT)
+    before_handlers = len(logging.getLogger("archiver.loop").handlers)
+
+    try:
+        cli.cmd_run = fake_cmd_run
+        time.sleep = lambda *a, **k: None
+        loop_state.write_running = lambda *a, **k: None
+        loop_state.write_sleeping = lambda *a, **k: None
+        loop_state.scan_done = lambda *a, **k: None
+        loop_state.clear = lambda *a, **k: clear_calls.append(a)
+
+        config = types.SimpleNamespace(log_file=str(tmp / "logs" / "archiver.log"),
+                                       db_path=str(tmp / "suite.db"),
+                                       instagram=None,
+                                       policy_store=store,
+                                       output_dir=str(tmp / "archive"))
+        base = dict(min_sleep=1, max_sleep=1, max_fails=1, platform=None,
+                    user=None, ingest_interval=0)
+
+        # 1. validation failures, no cmd_run called
+        for bad in (dict(min_sleep=0), dict(min_sleep=10, max_sleep=5), dict(max_fails=0)):
+            args = types.SimpleNamespace(**{**base, **bad})
+            recorded_runs.clear()
+            fake_sequence[:] = [0]
+            rc = cli.cmd_loop(args, config, db)
+            check(rc == 2, f"cmd_loop: invalid args {bad} return 2")
+            check(len(recorded_runs) == 0, f"cmd_loop: invalid args {bad} never call cmd_run")
+            check_loop_cleanup(f"invalid {bad}")
+
+        # 2. bail after consecutive failures
+        recorded_runs.clear()
+        fake_sequence[:] = [1, 1]
+        args = types.SimpleNamespace(**{**base, "max_fails": 2})
+        rc = cli.cmd_loop(args, config, db)
+        check(rc == 1, "cmd_loop: consecutive failures bail with rc=1")
+        check(len(recorded_runs) == 2, "cmd_loop: exactly 2 calls before bail")
+        check((tmp / "logs" / "loop.log").exists(), "cmd_loop: loop.log created")
+        check_loop_cleanup("consecutive failures")
+
+        # 3. success resets consecutive count
+        recorded_runs.clear()
+        fake_sequence[:] = [1, 0, 1, 1]
+        args = types.SimpleNamespace(**{**base, "max_fails": 2})
+        rc = cli.cmd_loop(args, config, db)
+        check(rc == 1, "cmd_loop: success resets consecutive failures, bails after 4")
+        check(len(recorded_runs) == 4, "cmd_loop: exactly 4 calls after reset")
+        check_loop_cleanup("success reset")
+
+        # 4. crash counts as failure
+        recorded_runs.clear()
+        fake_sequence[:] = [RuntimeError("boom")]
+        args = types.SimpleNamespace(**{**base, "max_fails": 1})
+        rc = cli.cmd_loop(args, config, db)
+        check(rc == 1, "cmd_loop: crash counts as failure, bails")
+        check(len(recorded_runs) == 1, "cmd_loop: exactly 1 call after crash")
+        check_loop_cleanup("crash")
+
+        # 5. KeyboardInterrupt exits cleanly
+        recorded_runs.clear()
+        clear_calls.clear()
+        fake_sequence[:] = [0, KeyboardInterrupt()]
+        args = types.SimpleNamespace(**{**base, "max_fails": 1})
+        rc = cli.cmd_loop(args, config, db)
+        check(rc == 0, "cmd_loop: KeyboardInterrupt exits cleanly with rc=0")
+        check(len(recorded_runs) == 2, "cmd_loop: exactly 2 calls before interrupt")
+        check(len(clear_calls) > 0, "cmd_loop: clear recorder called on exit")
+        check_loop_cleanup("keyboard interrupt")
+    finally:
+        cli.cmd_run = orig_cmd_run
+        time.sleep = orig_sleep
+        loop_state.write_running = orig_write_running
+        loop_state.write_sleeping = orig_write_sleeping
+        loop_state.scan_done = orig_scan_done
+        loop_state.clear = orig_clear
+        db.close()
+
+
+# ── H. cmd_config ───────────────────────────────────────────────────────────
+def scenario_cmd_config() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    db = ItemStore.open(str(tmp / "suite.db"))
+    store = PolicyStore(tmp / "config.toml")
+    config = _make_config(tmp, store)
+    try:
+        args = types.SimpleNamespace(config_cmd="list", platform=None, user=None)
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 0, "cmd_config: list returns 0")
+
+        args = types.SimpleNamespace(config_cmd="add", platform="x", user="@alice")
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 0, "cmd_config: add alice returns 0")
+        check("alice" in store.list_users("x"), "cmd_config: alice added")
+
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 1, "cmd_config: duplicate add returns 1")
+
+        store.ban_user("x", "dave", reason="gone")
+        args = types.SimpleNamespace(config_cmd="add", platform="x", user="dave")
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 0, "cmd_config: add banned user returns 0")
+        check("dave" in store.list_users("x"), "cmd_config: dave added")
+        check("dave" not in store.list_banned("x"), "cmd_config: dave unbanned")
+
+        args = types.SimpleNamespace(config_cmd="remove", platform="x", user="alice")
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 0, "cmd_config: remove alice returns 0")
+        check("alice" not in store.list_users("x"), "cmd_config: alice removed")
+
+        rc = cli.cmd_config(args, config, db)
+        check(rc == 1, "cmd_config: remove missing user returns 1")
+    finally:
+        db.close()
+
+
+# ── I. cmd_migrate ──────────────────────────────────────────────────────────
+def scenario_cmd_migrate() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    db = ItemStore.open(str(tmp / "suite.db"))
+    store = PolicyStore(tmp / "config.toml")
+    config = _make_config(tmp, store)
+    managed_keys = set()
+    env_snapshot: dict[str, str | None] = {}
+    for k in list(os.environ.keys()):
+        if (k in ("X_USERS", "TIKTOK_USERS", "INSTAGRAM_USERS",
+                  "DELETE_AFTER_UPLOAD") or
+                k.startswith("DELETE_AFTER_UPLOAD_")):
+            managed_keys.add(k)
+            env_snapshot[k] = os.environ.get(k)
+    for k in managed_keys:
+        os.environ.pop(k, None)
+
+    try:
+        os.environ["X_USERS"] = "@alice, bob,"
+        os.environ["TIKTOK_USERS"] = "zed"
+        os.environ["DELETE_AFTER_UPLOAD"] = "yes"
+        os.environ["DELETE_AFTER_UPLOAD_X"] = "0"
+        os.environ["DELETE_AFTER_UPLOAD_X_ALICE"] = "true"
+        os.environ["DELETE_AFTER_UPLOAD_TIKTOK_ZED"] = "1"
+        os.environ["DELETE_AFTER_UPLOAD_X_BOB"] = "maybe"
+        os.environ["DELETE_AFTER_UPLOAD_FOO"] = "1"
+
+        store.add_user("x", "alice")
+
+        args = types.SimpleNamespace()
+        rc = cli.cmd_migrate(args, config, db)
+        check(rc == 0, "cmd_migrate: returns 0")
+        x_users = store.list_users("x")
+        check(sorted(x_users) == ["alice", "bob"],
+              "cmd_migrate: x users are alice and bob")
+        check("zed" in store.list_users("tiktok"), "cmd_migrate: tiktok user zed added")
+
+        check(store.get("delete_after_upload") is True,
+              "cmd_migrate: global delete_after_upload True")
+        check(store.get("delete_after_upload", platform="x") is False,
+              "cmd_migrate: platform x delete_after_upload False")
+        check(store.get("delete_after_upload", platform="x", username="alice") is True,
+              "cmd_migrate: per-user alice delete_after_upload True")
+        check(store.get("delete_after_upload", platform="tiktok", username="zed") is True,
+              "cmd_migrate: per-user tiktok/zed delete_after_upload True")
+        check(store.get("delete_after_upload", platform="x", username="bob") is False,
+              "cmd_migrate: per-user bob falls back to platform value False")
+
+        rc = cli.cmd_migrate(args, config, db)
+        check(rc == 0, "cmd_migrate: second run returns 0")
+        check(len(store.list_users("x")) == 2, "cmd_migrate: idempotent user count")
+    finally:
+        to_remove = set()
+        for k in list(os.environ.keys()):
+            if (k in ("X_USERS", "TIKTOK_USERS", "INSTAGRAM_USERS",
+                      "DELETE_AFTER_UPLOAD") or
+                    k.startswith("DELETE_AFTER_UPLOAD_")):
+                to_remove.add(k)
+        for k in to_remove:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if v is not None:
+                os.environ[k] = v
+        db.close()
+
+    current_managed: dict[str, str | None] = {}
+    for k in list(os.environ.keys()):
+        if (k in ("X_USERS", "TIKTOK_USERS", "INSTAGRAM_USERS",
+                  "DELETE_AFTER_UPLOAD") or
+                k.startswith("DELETE_AFTER_UPLOAD_")):
+            current_managed[k] = os.environ.get(k)
+    check(current_managed == env_snapshot,
+          f"cmd_migrate: managed env keys restored to snapshot, got {current_managed!r}")
+
+
 def _unexpected_prompt(prompt: str = "") -> str:
     raise AssertionError(f"FAILED: unexpected confirmation prompt {prompt!r}")
 
@@ -272,6 +616,11 @@ def main() -> int:
         scenario_reset_all()
         scenario_reset_failed_and_user()
         scenario_validate_chat_id()
+        scenario_cmd_run()
+        scenario_cmd_stories()
+        scenario_cmd_loop()
+        scenario_cmd_config()
+        scenario_cmd_migrate()
     finally:
         builtins.input = orig_input
     print(f"\nALL PASS ({_checks} checks)")
