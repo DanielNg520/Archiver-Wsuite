@@ -96,7 +96,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through 9e87ae1).
+Last audit: 2026-10-10 (through a47e7c0).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -130,5 +130,7 @@ Last audit: 2026-10-10 (through 9e87ae1).
 - 2026-10-10: `orchestrator.py:370` stories `on_user` swallow now carries the sibling comment (TriAPI `archiver_hook_comment`); 3 hook-guard sites, all commented.
 - 2026-10-10: `archiver/_selftest_orchestrator.py` (TriAPI `archiver_orch_selftest`): 34 checks; 7/7 orchestrator mutants caught.
 - 2026-10-10: fixed `_download_with_recovery`: `AccountGoneError` on the auth/ENOSPC retry now bans (was uncaught/`disk-full-unresolved`); B.6/B.7 fail on old code.
-- OPEN: archiver not restarted for that fix (mid 14h scan); next `ops restart archiver` makes it live.
-- Next session: Known tech debt, top down.
+- 2026-10-10: all three workers restarted after `c5f215a`; health nominal. `archiver.err.log` malloc lines are pre-F1-fix (2026-10-08), not new.
+- 2026-10-10 audit: `b8d7a9e` `#HttpOnly_` prefix broke `tiktok._parse_netscape_cookies` (dormant until next refresh); now delegates to `_netscape_to_playwright` (a47e7c0); recorder restarted.
+- Suspected only: 253 pending rows, oldest 166h, all files local, no `retry_after`; likely min-batch gate or hold policy, unverified.
+- Next session: `cli.py` coverage (Known tech debt); then the pending-age check above; StoragEDGE remount ~2026-10-16.
