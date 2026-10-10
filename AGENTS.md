@@ -61,7 +61,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Known tech debt
 
 - [ ] `tests/test_seams.py` oversized (~157K chars); split along `── Seam N` boundaries, preserving behavior.
-- [ ] `recorder/recorder/cookie_refresh.py`: cookie write not atomic (use temp + `os.replace`); drops `#HttpOnly_` prefix on rewrite.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
@@ -120,10 +119,11 @@ Last audit: 2026-10-10 (through 9e87ae1).
 - Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
 - Trap: `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
 - Trial 2026-10-10: service fallback EXERCISED (04:39+): @thinh_kobe20 6 segments → `~/.recorder`, all `sent`, mp4s deleted; DEADSTREAM/ytdlp logs remain.
-- Trial 2026-10-10 06:58: @19970609bun recording live into `~/.recorder` (371MB); confirm it sends next session.
+- Trial 2026-10-10: @19970609bun 861MB recorded into `~/.recorder`, sent 08:37, deleted. Fallback trial confirmed end to end.
 - 2026-10-10: audit of 8dcb9c5..484912a clean except two `Task Scheduler` docstrings; fixed with F3.
 - 2026-10-10: F3 fixed via TriAPI (`tasks/archiver_stale_tooling`, 8 files): `pipx`/Task Scheduler wording → `uv tool`/`ops update`/systemd.
 - 2026-10-10: 121 CRLF files renormalized to LF; `miki_status.py` trashed. 303 seams, all selftests, stall-backoff pass.
 - Trap: `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path (from `call_deepseek` stderr), not the task `.out` copy.
 - Expect: first `ops update` after 6fc7a6b sees every package changed (EOL-only fingerprint shift) and does one full drain/reinstall/restart; safe.
-- Next session: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
+- 2026-10-10: `cookie_refresh.py` writes atomically (`_write_atomic`) and keeps `#HttpOnly_` (TriAPI `archiver_cookie_atomic`); selftest 23 checks, both mutants caught; recorder restarted.
+- Next session: Known tech debt, top down.

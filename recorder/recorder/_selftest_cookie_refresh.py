@@ -6,6 +6,8 @@ Asserts:
   - Last refreshed >48h ago -> simulate_human_browsing called (forced), timestamp updated.
   - Last refreshed <12h ago -> simulate_human_browsing NOT called, timestamp unchanged.
   - Refresh reports failure/skip (returns False) -> timestamp NOT updated.
+  - httpOnly cookie round-trips through _playwright_to_netscape and _netscape_to_playwright.
+  - _write_atomic failure preserves the original file and cleans up temp files.
 
 No Playwright, no network: simulate_human_browsing is stubbed in-process.
 Uses a real core.ItemStore-backed SQLite DB to verify metadata persistence.
@@ -29,6 +31,7 @@ sys.path.insert(0, str(_repo / "recorder"))
 from core import ItemStore                                     # noqa: E402
 from recorder import cookie_refresh                            # noqa: E402
 from recorder.config import RecorderConfig                     # noqa: E402
+from recorder.platforms.tiktok_browser import _netscape_to_playwright  # noqa: E402
 from recorder.state import StateMachine                        # noqa: E402
 
 _checks = 0
@@ -214,6 +217,60 @@ def test_refresh_reports_not_run(tmp: Path) -> None:
     store2.close()
 
 
+def test_httponly_round_trip(tmp: Path) -> None:
+    tmp.mkdir(parents=True)
+    cookies = [
+        {"name": "sessionid", "value": "s1", "domain": ".tiktok.com",
+         "path": "/", "expires": -1, "secure": True, "httpOnly": True},
+        {"name": "tt_csrf", "value": "c1", "domain": ".tiktok.com",
+         "path": "/", "expires": -1, "secure": False, "httpOnly": False},
+    ]
+    path = tmp / "cookies.txt"
+    cookie_refresh._write_atomic(path, cookie_refresh._playwright_to_netscape(cookies))
+    text = path.read_text()
+    lines = text.splitlines()
+    session_line = next(l for l in lines if "\tsessionid\t" in l)
+    csrf_line = next(l for l in lines if "\ttt_csrf\t" in l)
+    check(session_line.startswith("#HttpOnly_.tiktok.com\t"),
+          "httpOnly cookie line starts with #HttpOnly_ domain")
+    check(not csrf_line.startswith("#"), "non-httpOnly cookie line has no # prefix")
+    loaded = _netscape_to_playwright(str(path))
+    names = {c["name"]: c for c in loaded}
+    check("sessionid" in names and "tt_csrf" in names,
+          "both cookie names round-trip")
+    check(names["sessionid"]["httpOnly"] is True,
+          "sessionid httpOnly survives round-trip")
+    check(names["tt_csrf"]["httpOnly"] is False,
+          "tt_csrf httpOnly stays False after round-trip")
+
+
+def test_atomic_write_failure_keeps_original(tmp: Path) -> None:
+    tmp.mkdir(parents=True)
+    path = tmp / "cookies.txt"
+    path.write_text("ORIGINAL\n")
+    real_replace = cookie_refresh.os.replace
+
+    def boom(src: str, dst: str) -> None:
+        raise OSError("boom")
+
+    cookie_refresh.os.replace = boom
+    try:
+        try:
+            cookie_refresh._write_atomic(path, "NEW\n")
+            check(False, "_write_atomic raised OSError on replace failure")
+        except OSError:
+            check(True, "_write_atomic raised OSError on replace failure")
+    finally:
+        cookie_refresh.os.replace = real_replace
+    check(path.read_text() == "ORIGINAL\n",
+          "original file preserved after replace failure")
+    check(list(tmp.glob("*.tmp")) == [],
+          "no temp files remain after replace failure")
+    cookie_refresh._write_atomic(path, "NEW\n")
+    check(path.read_text() == "NEW\n", "file updated after replace restored")
+    check(list(tmp.glob("*.tmp")) == [], "no temp files remain after success")
+
+
 def main() -> int:
     print("recorder.state cookie-refresh self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -221,6 +278,8 @@ def main() -> int:
         test_last_refreshed_over_48h(Path(d) / "b")
         test_last_refreshed_under_12h(Path(d) / "c")
         test_refresh_reports_not_run(Path(d) / "d")
+        test_httponly_round_trip(Path(d) / "e")
+        test_atomic_write_failure_keeps_original(Path(d) / "f")
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

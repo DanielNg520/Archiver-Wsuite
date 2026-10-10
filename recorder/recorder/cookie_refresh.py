@@ -1,11 +1,13 @@
 """Keep a TikTok session cookie file alive via simulated headless browsing.
 
-Converts Playwright cookie dictionaries into Netscape cookie-file text.
+Converts Playwright cookie dictionaries into Netscape cookie-file text, preserving the HttpOnly prefix and writing atomically.
 """
 
 import asyncio
 import logging
+import os
 import random
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -18,10 +20,11 @@ def _playwright_to_netscape(cookies: list[dict]) -> str:
         include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
         secure = "TRUE" if cookie["secure"] else "FALSE"
         expires = "0" if cookie["expires"] == -1 else str(int(cookie["expires"]))
+        http_only_prefix = "#HttpOnly_" if cookie.get("httpOnly") else ""
         lines.append(
             "\t".join(
                 (
-                    domain,
+                    http_only_prefix + domain,
                     include_subdomains,
                     cookie["path"],
                     secure,
@@ -32,6 +35,31 @@ def _playwright_to_netscape(cookies: list[dict]) -> str:
             )
         )
     return "\n".join(lines) + "\n"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write text to path atomically via a temp file and os.replace."""
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=path.parent,
+        prefix="." + path.name + ".",
+        suffix=".tmp",
+        delete=False,
+        encoding="utf-8",
+    )
+    try:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp.name, path)
+    except Exception:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
 
 
 def simulate_human_browsing(config) -> bool:
@@ -67,7 +95,7 @@ async def _refresh_async(cookies_file: str) -> bool:
                 await page.mouse.wheel(0, random.randint(300, 1200))
                 await asyncio.sleep(random.uniform(3.0, 7.0))
             updated = await ctx.cookies()
-            Path(cookies_file).write_text(_playwright_to_netscape(updated))
+            _write_atomic(Path(cookies_file), _playwright_to_netscape(updated))
             return True
         finally:
             await browser.close()
