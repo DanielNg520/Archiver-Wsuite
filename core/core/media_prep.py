@@ -430,7 +430,7 @@ def is_nonstreamable_video(path: Path) -> bool:
 # ── Split (AutoSplitter) ──────────────────────────────────────────────────────
 #
 # AutoSplitter ships two ways and we support both. Typically it is installed
-# stand-alone (pipx → its own isolated interpreter), so it CANNOT be imported
+# stand-alone (uv tool → its own isolated interpreter), so it CANNOT be imported
 # into this process; we drive its CLI as a subprocess. If it instead happens to
 # be importable in this same venv (editable install / sibling checkout on the
 # path) we call run_split() in-process to skip the subprocess hop. Either way a
@@ -442,7 +442,7 @@ _cli_cache: "str | None | bool" = None
 
 def _load_run_split():
     """Return an importable AutoSplitter run_split(), or None. Tried first; the
-    CLI is the fallback when AutoSplitter lives in its own (e.g. pipx) venv."""
+    CLI is the fallback when AutoSplitter lives in its own (e.g. uv tool) venv."""
     global _run_split_cache
     if _run_split_cache is not None:
         return None if _run_split_cache is False else _run_split_cache

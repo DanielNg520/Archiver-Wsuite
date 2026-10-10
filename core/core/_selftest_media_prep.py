@@ -191,7 +191,7 @@ def test_split_threshold(tmp: Path) -> None:
 
 def test_split_via_cli(tmp: Path) -> None:
     """Force the CLI path (how AutoSplitter is reached when installed stand-alone
-    via pipx, i.e. not importable into this interpreter)."""
+    via uv tool, i.e. not importable into this interpreter)."""
     print("\n── media_prep split via CLI ──")
     if media_prep._find_cli() is None:
         print("  (autosplitter CLI not on PATH — skipping)")

@@ -76,9 +76,10 @@ def _assert_video_metadata_backend() -> None:
     if importlib.util.find_spec("hachoir") is None:
         raise RuntimeError(
             "hachoir is not installed — Telethon cannot read video geometry, so "
-            "album videos would upload as 1x1 static images. Install it with "
-            "`pipx inject dispatcher hachoir` (it is a declared dependency; a "
-            "clean reinstall also pulls it in)."
+            "album videos would upload as 1x1 static images. Install it by "
+            "reinstalling the dispatcher: `uv tool install --force --editable "
+            "./dispatcher --with-editable ./core` (hachoir is a declared "
+            "dependency; a clean reinstall also pulls it in)."
         )
 
 

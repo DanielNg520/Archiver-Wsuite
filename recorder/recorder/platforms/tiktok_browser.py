@@ -210,7 +210,7 @@ async def _launch_chromium(pw):
     """Launch headless Chromium, self-healing a missing/stale browser build.
 
     Playwright pins an exact browser revision per library version. When pip or
-    pipx bumps `playwright` (e.g. to one wanting build 1228), the Chromium
+    uv tool bumps `playwright` (e.g. to one wanting build 1228), the Chromium
     binaries already on disk no longer match and `launch()` raises
     "Executable doesn't exist at ...", which would otherwise fail EVERY
     age-restricted recording until a human manually runs `playwright install`.

@@ -154,7 +154,7 @@ class SchemaVersionError(RuntimeError):
         self.found, self.known = found, known
         super().__init__(
             f"suite.db schema is v{found} but this build only knows v{known}. "
-            f"Upgrade this component (pipx upgrade) — do not downgrade the DB."
+            f"Upgrade this component with `ops update` — do not downgrade the DB."
         )
 
 _MIGRATIONS: list[tuple[int, list[str]]] = [

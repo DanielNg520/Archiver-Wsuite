@@ -118,7 +118,7 @@ def _memo(min_ttl: float = 0.0):
 
 
 # ── service / process liveness ─────────────────────────────────────────────
-# The OS-specifics (launchd vs Task Scheduler; ps vs process snapshots) live in
+# The OS-specifics (systemd vs launchd; ps vs process snapshots) live in
 # core.platform; ops just asks for a managed pid, then falls back to finding the
 # worker in the process table.
 

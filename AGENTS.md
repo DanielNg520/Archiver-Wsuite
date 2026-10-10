@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F3 [low · 1 · 2026-10-09→2026-10-09] `core/core/schema.py:157`, `dispatcher/dispatcher/cli.py:80`: runtime messages advise `pipx`; suite uses `uv tool` (verified).
+- None open.
 
 ## Commands
 
@@ -13,6 +13,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
 - Code changes go through TriAPI `rebuild/` dispatch.
+- Line endings: LF only, enforced by `.gitattributes` (`* text=auto eol=lf`); renormalized 2026-10-10.
 - Gated (2026-10-09): the 8 code dirs are in `~/.claude/dispatch-gate-paths.txt`; `.git/hooks/pre-commit` runs the ledger check. Hand fix: owner runs `dispatch-ledger-hand.sh`.
 - Apply seams-verified edits with `--check "env PYTHONPATH=core:archiver:recorder:dispatcher:ops PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py" --cwd <repo>`; `--test` rolls back (no pytest counts).
 
@@ -79,11 +80,11 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Linux (systemd) and macOS (launchd) are the only supported platforms (owner, 2026-10-09).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
+- Anything Windows-only can be removed: CRLF → LF renormalize, trash `miki_status.py` + its `.gitignore` lines (owner, 2026-10-10).
 
 ## Ask owner
 
-- Ask owner: line endings: 121 tracked files are CRLF; LF renormalize touches 107 `.py`, so the owner runs `dispatch-ledger-hand.sh` on them.
-- Ask owner: untracked `miki_status.py` hardcodes a `C:\` Miki path and is unusable here; trash it and its `.gitignore` lines?
+- None open.
 
 ## Index
 
@@ -97,7 +98,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 50d9fd9).
+Last audit: 2026-10-10 (through 484912a).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -120,5 +121,8 @@ Last audit: 2026-10-09 (through 50d9fd9).
 - Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
 - Trap: `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
 - Trial status 22:00: still zero `using fallback` lines; manual @vandaihoang4 run into `~/.recorder` sent 20:17, swept.
-- Next session: wrap-up audit of 8dcb9c5..484912a, then the Ask owner items, then F3.
-- Then: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
+- 2026-10-10: audit of 8dcb9c5..484912a clean except two `Task Scheduler` docstrings; fixed with F3.
+- 2026-10-10: F3 fixed via TriAPI (`tasks/archiver_stale_tooling`, 8 files): `pipx`/Task Scheduler wording → `uv tool`/`ops update`/systemd.
+- 2026-10-10: 121 CRLF files renormalized to LF; `miki_status.py` trashed. 303 seams, all selftests, stall-backoff pass.
+- Trap: `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path (from `call_deepseek` stderr), not the task `.out` copy.
+- Next: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.

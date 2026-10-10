@@ -18,7 +18,7 @@ __pycache__/
 *.egg
 .eggs/
 
-# ── pipx / venv (shouldn't be in repo, but just in case) ──
+# ── venv (shouldn't be in repo, but just in case) ──
 .venv/
 venv/
 .venv-test/
@@ -64,9 +64,4 @@ librarian/
 # ── Streamer is its OWN repo (independent worker; archiver suite is reference only); never track it here ──
 Streamer/
 Autosplitter.zip
-
-# ── Miki (Telegram archiver) is its OWN repo; this local-only "join" appends a
-#    MIKI section to `ops watch` on THIS machine only — never track it here ──
-miki_status.py
-watch-miki.bat
 .codegraph/

@@ -84,10 +84,8 @@ separate processes — not from giving them disjoint code.
 
 The suite installs as **`uv tool` venvs with the shared `core` injected
 editable** — so day-to-day you just type `dispatcher status`, `ops health`,
-etc. No `PYTHONPATH`, no `python -m`. (Older notes/scripts in this repo may
-still say `pipx` — that convention is retired on this port; `pipx` isn't even
-installed on this box. Always check what's actually there with
-`uv tool list`.)
+etc. No `PYTHONPATH`, no `python -m`. (`pipx` is retired and not installed;
+check what's actually there with `uv tool list`.)
 
 ```bash
 # 1. Install each app as its own uv-managed venv, with the shared core

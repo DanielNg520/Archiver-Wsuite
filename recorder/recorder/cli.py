@@ -72,7 +72,7 @@ def _pid_path(config: RecorderConfig) -> Path:
 
 
 def _resolve_ops_bin() -> str | None:
-    """Absolute path to the `ops` CLI. Prefer PATH (pipx puts it there), fall
+    """Absolute path to the `ops` CLI. Prefer PATH (uv tool puts it there), fall
     back to ~/.local/bin/ops. Mirrors ops.cli._resolve_bin so a manual record
     can hand the recorder service back to the OS service manager on exit."""
     found = shutil.which("ops")
