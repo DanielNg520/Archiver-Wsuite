@@ -70,7 +70,5 @@ dense code map. This file is only the traps that bite automated sessions.
 - The OS seam is `core/core/platform/` (`service` = systemd/launchd;
   `filelock`; `procgroup`; `signals`; `process`; `paths`). Keep the Linux and
   macOS branches behavior-parallel — every verb exists on both.
-- Windows support is dropped (owner, 2026-10-09); never add an `nt`/`win32`
-  branch. Remaining Windows code is being removed (AGENTS.md Carryover).
 - The macOS (`launchd`) branch is kept but not exercised here; Linux/systemd is
   the deployment target.

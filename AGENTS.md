@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-None open.
+- F3 [low · 1 · 2026-10-09→2026-10-09] `core/core/schema.py:157`, `dispatcher/dispatcher/cli.py:80`: runtime messages advise `pipx`; suite uses `uv tool` (verified).
 
 ## Commands
 
@@ -49,7 +49,6 @@ None open.
 - Dispatcher whole-batch failures always set `retry_after` (`stall_backoff_s`, 300s); schema v5 `items.retry_after` gates `claim_next`/`claim_batch`.
 - Dispatcher wedged on one upload with Telegram route loss: `ops restart dispatcher` is the known unstick.
 - Stale `tiktok.lock` with service down: `ops restart recorder`; if still held and its pid is dead, remove it (`ops/RUNBOOK.md`).
-- Windows branch: a file with an open handle cannot be replaced or deleted; keep that in mind for any `core.platform` nt change.
 - `ops.health` `@_memo` wrappers accept positional args only: `drain_eta_fields(60)`, not `window_minutes=60`.
 - Archiver needs `curl-cffi>=0.16.0` (libcurl 8.21.0): 0.14.0's libcurl 8.15.0 UAF (CVE-2026-10536) SIGABRTed `archiver loop` ~100 times in `curl_easy_reset`.
 - Check a crash's curl_cffi: `eu-unstrip -n --core=<core>`; 0.14.0 build-id `88b47b15…`, 0.16.3 `f92375e0…`. Floor applies only after a reinstall.
@@ -61,7 +60,6 @@ None open.
 ## Known tech debt
 
 - [ ] `tests/test_seams.py` oversized (~157K chars); split along `── Seam N` boundaries, preserving behavior.
-- [ ] `core/core/manual_delete.py` docstrings/log say "Recycle Bin"; Linux uses freedesktop trash.
 - [ ] `recorder/recorder/cookie_refresh.py`: cookie write not atomic (use temp + `os.replace`); drops `#HttpOnly_` prefix on rewrite.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
@@ -77,12 +75,15 @@ None open.
 - "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
 - `requirements.txt` deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
 - `PROJECT_MAP.md` folded and deleted under the current rules (owner, 2026-10-09).
-- Drop all Windows support, zero trace: code, tools, docs, memory; macOS kept (owner, 2026-10-09). Windows-era memories trashed 2026-10-09.
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
+- Linux (systemd) and macOS (launchd) are the only supported platforms (owner, 2026-10-09).
+- `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
+- Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
 
 ## Ask owner
 
-None open.
+- Ask owner: line endings: 121 tracked files are CRLF; LF renormalize touches 107 `.py`, so the owner runs `dispatch-ledger-hand.sh` on them.
+- Ask owner: untracked `miki_status.py` hardcodes a `C:\` Miki path and is unusable here; trash it and its `.gitignore` lines?
 
 ## Index
 
@@ -114,19 +115,10 @@ Last audit: 2026-10-09 (through 50d9fd9).
 - 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
 - Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
-- 2026-10-09: `requirements.txt` files and `windows/` mirror deleted (9457f56, 723475c); dead `windows` gate-path entry removed.
-- NEXT (owner go: "remove all traces", 2026-10-09): Windows removal via TriAPI, one task per file; Linux/macOS behavior byte-identical.
-- DONE 2026-10-09: `core/core/platform/*` Windows-free via TriAPI (`tasks/archiver_windows_platform`), −839 lines; 303 seams; workers restarted, health green.
-- Code: `core/core/termui.py` (VT enable, UTF-8 pin), `media_prep.py:637` lock unlink, `archiver/archiver/cookies.py` APPDATA branch.
-- Comments only: `core/core/{schema,instance_lock}.py`, `recorder/recorder/capture.py`, `ops/ops/{cli,health,update}.py`.
-- Tests: Windows branches in `core/core/_selftest_quarantine.py`, `recorder/recorder/_selftest_capture.py`, `ops/ops/_selftest_logrotate.py`.
-- Also (2026-10-09 grep, missing above): comments in `core/core/{heartbeat,quarantine}.py`, `dispatcher/dispatcher/cli.py:104`, `recorder/recorder/cli.py:142`, `tools/migrate_paths_to_archive.py`.
-- Also: `archiver/archiver/cli.py:1580` user message says "Windows Recycle Bin"; fix with the `manual_delete.py` tech-debt line (freedesktop trash).
-- Also: `tests/test_seams.py:73,198,235` Windows venv comments/branches; read before editing. Keep `recorder/recorder/ban_check.py:37` UA string (exempt from end grep).
-- Next phase (new session): the Code/Comments/Tests/Tools lines below, then docs. One TriAPI task per file.
-- Also: 122 tracked files are CRLF in the index (Windows-era); renormalize to LF in its own commit (`.gitattributes` + `git add --renormalize`).
-- Tools: delete `tools/migrate_paths_to_windows.py`, `tools/migrate_config_to_archive.py`; strip WinGet/taskkill from `tools/recover_suite_db.py`.
-- Cleanup: delete gitignored `*/build/lib/`; trash untracked `watch-miki.bat`. Docs: Windows lines in README, DESIGN, USER-GUIDE, RUNBOOK.
-- Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA|Windows` empty, `ops restart` all, `ops health` green.
-- Last step: delete every Windows mention left in AGENTS.md/CLAUDE.md, including the Decisions line and CLAUDE.md porting note.
+- DONE 2026-10-09: single-OS cleanup via TriAPI (`tasks/archiver_windows_rest`, 8dcb9c5..484912a); 303 seams + all selftests; workers restarted, health green.
+- `termui.ensure_vt` deleted; `recover_suite_db` verified by read-only `--force` dry run on live DB (156,491 rows); `migrate_split_roots --src` now required.
+- Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
+- Trap: `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
+- Trial status 22:00: still zero `using fallback` lines; manual @vandaihoang4 run into `~/.recorder` sent 20:17, swept.
+- Next session: wrap-up audit of 8dcb9c5..484912a, then the Ask owner items, then F3.
 - Then: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
