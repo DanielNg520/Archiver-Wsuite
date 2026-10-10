@@ -6,15 +6,15 @@ top-level chat_id route folders OUT of the unified `.archive` root onto the
 dedicated routes volume, and rewrite their suite.db file_path rows to match.
 
 Before (interim single root, 2026-07-11):
-    C:/Users/danie/.archive/<platforms>/...     stays
-    C:/Users/danie/.archive/.records/...        stays
-    C:/Users/danie/.archive/<chat_id>[.tN]/...  MOVES → <routes_dir>/<chat_id>/
+    <archive>/<platforms>/...     stays
+    <archive>/.records/...        stays
+    <archive>/<chat_id>[.tN]/...  MOVES → <routes_dir>/<chat_id>/
 
 After the move, set ROUTES_DIR=<routes_dir> in the archiver .env (the code
 side landed in Phase 5 — ROUTES_DIR unset keeps scanning output_dir, so run
 order is: stop workers → --apply → set ROUTES_DIR → restart workers).
 
-Safety (same pattern as migrate_paths_to_archive.py):
+Safety:
 - ⚠️ STOP THE WORKERS FIRST (`ops unload`). The 2026-07 corruption came from
   touching suite.db under live writers; this script also physically moves
   folders the archiver scans every cycle.
@@ -32,8 +32,10 @@ Safety (same pattern as migrate_paths_to_archive.py):
 - The move IS cross-drive (that's the point): shutil.move copy+deletes. With
   the workers stopped there is no concurrent writer to torn-copy against.
 
-Run:  python tools/migrate_split_roots.py --dest D:/routes           # dry run
-      python tools/migrate_split_roots.py --dest D:/routes --apply   # do it
+Run:  python tools/migrate_split_roots.py --src ~/.archive \
+          --dest /run/media/$USER/<volume>/routes                          # dry run
+      python tools/migrate_split_roots.py --src ~/.archive \
+          --dest /run/media/$USER/<volume>/routes --apply                  # do it
 """
 from __future__ import annotations
 
@@ -47,9 +49,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "core"))
 from core import db_path, parse_route  # noqa: E402
-
-ARCHIVE = Path("C:/Users/danie/.archive")
-
 
 def _route_dirs(root: Path) -> list[Path]:
     """Top-level chat_id route folders under `root` — exactly the set the
@@ -72,10 +71,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Move chat_id route folders out of .archive onto the "
                     "routes volume and rewrite their DB rows.")
-    ap.add_argument("--src", default=str(ARCHIVE),
-                    help=f"current unified root (default {ARCHIVE})")
+    ap.add_argument("--src", required=True,
+                    help="current unified root, e.g. ~/.archive")
     ap.add_argument("--dest", required=True,
-                    help="routes root to move chat_id folders into (e.g. D:/routes)")
+                    help="routes root to move chat_id folders into")
     ap.add_argument("--apply", action="store_true",
                     help="write the change (default: dry run)")
     args = ap.parse_args()

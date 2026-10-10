@@ -338,7 +338,7 @@ def test_start_wires_manifest(tmp: Path) -> None:
         lambda cmd, **k: (seen.__setitem__("cmd", cmd) or _FakeProc()))
     # A leftover manifest from a crashed prior run on the same second.
     stale = run / "bob_1000000_files.txt"
-    stale.write_text("D:/old/phantom.mp4\n")
+    stale.write_text("/old/phantom.mp4\n")
     try:
         cap = StreamCapture(str(tmp), None)
         cap.start("https://example/live", "bob")
