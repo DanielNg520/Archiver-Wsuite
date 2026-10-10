@@ -60,7 +60,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Known tech debt
 
-- [ ] `tests/test_seams.py` oversized (~157K chars); split along `── Seam N` boundaries, preserving behavior.
 - [ ] `archiver/archiver/orchestrator.py:370` bare `except Exception: pass` without a comment.
 - [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
@@ -92,7 +91,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - `dispatcher/` sole Telegram sender: claim/drain/send, fast upload, delete-after-upload.
 - `recorder/` TikTok live recorder: `state.py` loop, `capture.py` yt-dlp, `platforms/` URL resolve + browser fallback, `startup_sweep.py`.
 - `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate; `RUNBOOK.md`.
-- `tests/` seams suite + dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
+- `tests/` `tests/test_seams.py` is the seams runner over `tests/seams/` (topic modules + `_harness.py`), plus the dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
 ## Carryover
@@ -126,4 +125,6 @@ Last audit: 2026-10-10 (through 9e87ae1).
 - Trap: `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path (from `call_deepseek` stderr), not the task `.out` copy.
 - Expect: first `ops update` after 6fc7a6b sees every package changed (EOL-only fingerprint shift) and does one full drain/reinstall/restart; safe.
 - 2026-10-10: `cookie_refresh.py` writes atomically (`_write_atomic`) and keeps `#HttpOnly_` (TriAPI `archiver_cookie_atomic`); selftest 23 checks, both mutants caught; recorder restarted.
+- 2026-10-10: seams split (TriAPI `archiver_seams_split`): byte-range splitter moved 44 tests into `tests/seams/`; defs verbatim except two edits; 303 checks, output-diff identical.
+- Trap: `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
 - Next session: Known tech debt, top down.

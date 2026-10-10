@@ -107,7 +107,7 @@ State machine: `pending →claim→ sending →ok→ sent` / `→fail→ pending
 ## ops/ops/
 `health.py` (reads suite.db RO + core.paths artifacts + the service manager; liveness via core.heartbeat), `logrotate.py` (copytruncate), `update.py` (`ops update`: content-hash `source_fingerprint` over the four package dirs → `<suite>/update.fingerprint`; `graceful_stop_dispatcher` writes `core.paths.dispatcher_stop_flag` + waits on `process.pid_alive`; `run_reinstall` shells out to `uv tool install --force --editable <pkg> --with-editable core`, one step per changed worker package; imports no worker pkg), `cli.py` (`install/uninstall/health/watch/load/unload/restart/update/logrotate`). Service seam is `core.platform.service` (systemd --user on Linux, launchd on macOS); task/agent labels `com.duy.{dispatcher,recorder,archiver,logrotate}`. Config root seam is `core.platform.paths._config_home`: `ARCHIVER_CONFIG_HOME` env overrides everywhere; else **Linux → `<repo>/.config`** (self-contained inside the checkout, `_codebase_config_home` via `__file__`; `XDG_CONFIG_HOME` deliberately ignored), macOS → `$XDG_CONFIG_HOME` or `~/.config`.
 
-## Seams (cross-process contracts; tests/test_seams.py, 271 checks, 35 seams)
+## Seams (cross-process contracts; tests/test_seams.py runner, tests/seams/ package, 303 checks)
 1. **DB handoff** — producer writes `pending`, dispatcher claims. One table.
 2. **TikTok soft-lock** — recorder writes `paths.tiktok_lock()`; archiver/ops read **liveness-gated** (stale = self-heal). recorder owns write/remove.
 3. **content_hash** — all producers via `register_file` → global dedup.
