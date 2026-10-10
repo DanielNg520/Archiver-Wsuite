@@ -60,7 +60,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Known tech debt
 
-- [ ] `archiver/` coverage: `cli.py` (~2260 lines) has no direct selftest; `run_stories` auth backoff untested (deferred by owner).
+- [ ] `archiver/` coverage: `cli.py` run/loop/config/migrate commands have no selftest (destructive guards covered by `_selftest_cli`); `run_stories` auth backoff untested (deferred by owner).
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
 
 ## Decisions
@@ -132,5 +132,7 @@ Last audit: 2026-10-10 (through a47e7c0).
 - 2026-10-10: fixed `_download_with_recovery`: `AccountGoneError` on the auth/ENOSPC retry now bans (was uncaught/`disk-full-unresolved`); B.6/B.7 fail on old code.
 - 2026-10-10: all three workers restarted after `c5f215a`; health nominal. `archiver.err.log` malloc lines are pre-F1-fix (2026-10-08), not new.
 - 2026-10-10 audit: `b8d7a9e` `#HttpOnly_` prefix broke `tiktok._parse_netscape_cookies` (dormant until next refresh); now delegates to `_netscape_to_playwright` (a47e7c0); recorder restarted.
-- Suspected only: 253 pending rows, oldest 166h, all files local, no `retry_after`; likely min-batch gate or hold policy, unverified.
-- Next session: `cli.py` coverage (Known tech debt); then the pending-age check above; StoragEDGE remount ~2026-10-16.
+- 2026-10-10: pending-age verified benign: every group under min batch 10 per media bucket; @ynxio218623 claimed at exactly 168h (20:46:42Z), sent 20:50:59Z.
+- 2026-10-10: `ops health` null_hash counts unsent rows only (7c20ed4, TriAPI `archiver_nullhash_unsent`); 84 legacy sent rows with deleted files can't be hashed.
+- 2026-10-10: `archiver/_selftest_cli.py` (bdfd7f7, TriAPI `archiver_cli_selftest`): 39 checks; 8/9 mutants caught, survivor equivalent (`DeletionGuard.delete` re-checks safebrake).
+- Next session: `cli.py` run/loop coverage (Known tech debt); StoragEDGE remount ~2026-10-16.
