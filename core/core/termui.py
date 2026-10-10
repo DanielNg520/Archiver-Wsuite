@@ -42,36 +42,10 @@ _COLORS = {
 }
 
 
-def ensure_vt() -> bool:
-    """Enable ANSI/VT escape processing on the Windows console; True if the
-    stream can render ANSI. POSIX terminals always can (True unconditionally).
-
-    Windows consoles need ENABLE_VIRTUAL_TERMINAL_PROCESSING set per handle:
-    Windows Terminal pre-enables it, legacy conhost does not — without this a
-    colorized report prints raw `←[38;5;81m` garbage there. Idempotent and
-    cheap (two kernel32 calls), safe to call every render. Returns False when
-    stdout isn't a console (redirected → the caller should not emit ANSI)."""
-    if os.name != "nt":
-        return True
-    import ctypes
-    k32 = ctypes.windll.kernel32
-    _ENABLE_VT = 0x0004
-    ok = False
-    for std in (-11, -12):                    # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
-        h = k32.GetStdHandle(std)
-        mode = ctypes.c_uint32()
-        if not h or not k32.GetConsoleMode(h, ctypes.byref(mode)):
-            continue                          # redirected / not a console
-        if mode.value & _ENABLE_VT or k32.SetConsoleMode(h, mode.value | _ENABLE_VT):
-            ok = True
-    return ok
-
-
 def color_enabled() -> bool:
-    """True when ANSI colour is safe: a real TTY with NO_COLOR unset (and, on
-    Windows, VT processing successfully enabled). Deliberately does NOT require
-    TERM — macOS shells always export it, but PowerShell/Windows Terminal leave
-    it unset, and gating on it silently monochromes every worker feed there."""
+    """True when ANSI colour is safe: a real TTY with NO_COLOR unset.
+    Deliberately does NOT require TERM — some terminals leave it unset, and
+    gating on it would silently monochrome those feeds; only TERM=dumb does."""
     if os.environ.get("NO_COLOR") is not None:
         return False
     if os.environ.get("TERM") == "dumb":
@@ -81,7 +55,7 @@ def color_enabled() -> bool:
             return False
     except (AttributeError, ValueError):
         return False
-    return ensure_vt()
+    return True
 
 
 def paint(text: str, *styles: str, on: bool | None = None) -> str:
@@ -202,22 +176,6 @@ def setup_logging(verbose: bool, *, quiet: tuple[str, ...] = _DEFAULT_QUIET,
         root.removeHandler(h)
 
     console_stream = stream or sys.stdout
-    # Windows: the process stdout defaults to the legacy console codepage (cp1252),
-    # not UTF-8 — and under Task Scheduler it is a redirected file, not a TTY. The
-    # UI face uses ✓/✗/box-drawing glyphs, so the FIRST such log line would raise
-    # UnicodeEncodeError and take down the log call. Pin the stream to UTF-8 (drop
-    # to errors="replace" rather than crash). POSIX stdout is already UTF-8, so this
-    # is a no-op there and its behaviour is left byte-for-byte unchanged.
-    if os.name == "nt":
-        # Also pin stderr: an uncaught traceback (which may embed a TikTok/X
-        # filename with emoji/CJK) is written to stderr, and the task redirects
-        # both streams — a crash report must not itself die on cp1252.
-        for _stream in (console_stream, sys.stderr):
-            if hasattr(_stream, "reconfigure"):
-                try:
-                    _stream.reconfigure(encoding="utf-8", errors="replace")
-                except (ValueError, OSError):
-                    pass
 
     console = logging.StreamHandler(console_stream)
     console.setFormatter(ConsoleFormatter(color=color_enabled()))

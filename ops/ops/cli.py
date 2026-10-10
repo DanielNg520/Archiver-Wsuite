@@ -15,7 +15,7 @@ ops.cli
   ops logrotate        copytruncate-rotate oversized worker logs (gzip history)
 
 install/load/unload/restart are thin wrappers over the OS service manager
-(launchd on macOS, Task Scheduler on Windows) via core.platform.service, so you
+(systemd on Linux, launchd on macOS) via core.platform.service, so you
 don't have to remember its verbs. Definitions are GENERATED for THIS machine's
 home + local bin dir (wherever PATH/uv tool puts the service CLIs), not shipped
 as static files, so the absolute paths always match where the CLIs actually
@@ -42,7 +42,7 @@ from .health import LABELS, render
 from .logrotate import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_logs
 
 # Where the OS service manager captures each worker's stdout/err. Owned by the
-# platform adapter (launchd → ~/.local/log, Task Scheduler → %APPDATA%/logs).
+# platform adapter (launchd and systemd both write to ~/.local/log).
 LOG_DIR = _service.log_dir()
 
 # Calendar job (not a daemon): rotates the workers' captured logs daily so
@@ -87,10 +87,6 @@ _FRAME_S = 0.25
 
 def cmd_watch(args: argparse.Namespace) -> int:
     _health.set_data_ttl(args.interval)
-    # The alt-screen / cursor / home escapes below need VT processing on a
-    # Windows console even when colour is disabled (NO_COLOR) — without it a
-    # legacy conhost prints the raw escapes instead of switching screens.
-    _termui.ensure_vt()
     out = sys.stdout
     # Alternate screen buffer (like htop/less): watch gets its own screen, so an
     # oversized report can't smear and the user's scrollback is restored on exit.
@@ -350,7 +346,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     # Restart in a deterministic order so a dependent worker isn't left running
     # against a half-updated peer. Drain each worker to its own graceful stop
     # point first, remembering the pids so we can confirm they're gone before
-    # the reinstall (avoids the Windows exe-lock on the pipx overwrite).
+    # the reinstall.
     order = [n for n in ("dispatcher", "recorder", "archiver") if n in restart]
     pids: list[int] = []
 

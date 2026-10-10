@@ -47,11 +47,6 @@ def _firefox_root() -> Path:
         return Path.home() / "Library" / "Application Support" / "Firefox"
     if sys.platform.startswith("linux"):
         return Path.home() / ".mozilla" / "firefox"
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            raise RuntimeError("APPDATA not set; can't locate Firefox profiles.")
-        return Path(appdata) / "Mozilla" / "Firefox"
     raise RuntimeError(f"Unsupported platform for Firefox profile lookup: {sys.platform}")
 
 
