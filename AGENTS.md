@@ -96,7 +96,7 @@ None open.
 
 ## Carryover
 
-Last audit: 2026-10-09 (through 387e939).
+Last audit: 2026-10-09 (through 50d9fd9).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -119,6 +119,10 @@ Last audit: 2026-10-09 (through 387e939).
 - Code: `core/core/termui.py` (VT enable, UTF-8 pin), `media_prep.py:637` lock unlink, `archiver/archiver/cookies.py` APPDATA branch.
 - Comments only: `core/core/{schema,instance_lock}.py`, `recorder/recorder/capture.py`, `ops/ops/{cli,health,update}.py`.
 - Tests: Windows branches in `core/core/_selftest_quarantine.py`, `recorder/recorder/_selftest_capture.py`, `ops/ops/_selftest_logrotate.py`.
+- Also (2026-10-09 grep, missing above): comments in `core/core/{heartbeat,quarantine}.py`, `dispatcher/dispatcher/cli.py:104`, `recorder/recorder/cli.py:142`, `tools/migrate_paths_to_archive.py`.
+- Also: `archiver/archiver/cli.py:1580` user message says "Windows Recycle Bin"; fix with the `manual_delete.py` tech-debt line (freedesktop trash).
+- Also: `tests/test_seams.py:73,198,235` Windows venv comments/branches; read before editing. Keep `recorder/recorder/ban_check.py:37` UA string (exempt from end grep).
+- Start order: AGENTS inventory done; dispatch `core/core/platform/*` first, audit, commit; rest in a new session (phase-sized).
 - Tools: delete `tools/migrate_paths_to_windows.py`, `tools/migrate_config_to_archive.py`; strip WinGet/taskkill from `tools/recover_suite_db.py`.
 - Cleanup: delete gitignored `*/build/lib/`; trash untracked `watch-miki.bat`. Docs: Windows lines in README, DESIGN, USER-GUIDE, RUNBOOK.
 - Verify per file: seams + module selftest; end: grep `os.name|win32|msvcrt|taskkill|APPDATA|Windows` empty, `ops restart` all, `ops health` green.
