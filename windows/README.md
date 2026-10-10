@@ -70,7 +70,6 @@ separate processes — not from giving them disjoint code.
 |-----|--------|
 | **README.md** (this file) | architecture, install, on-disk layout — the hub |
 | [DESIGN.md](DESIGN.md) | dense code map — modules, seams, choke points, invariants |
-| [PROJECT_MAP.md](PROJECT_MAP.md) | 30-second orientation card |
 | [USER-GUIDE.md](USER-GUIDE.md) | task-oriented daily use — every upload path + commands |
 | [AUTOMATION.md](AUTOMATION.md) | Task Scheduler setup, what each automated piece does |
 | [ops/RUNBOOK.md](ops/RUNBOOK.md) | failure recovery procedures |
@@ -79,11 +78,7 @@ separate processes — not from giving them disjoint code.
 | [recorder/README.md](recorder/README.md) | recorder config, split mode, cookies, quality/fallback behavior |
 | [CLAUDE.md](CLAUDE.md) | traps for agent/assistant sessions (MSIX virtualization, `python -m pipx`, test invocation) |
 
-Historical plan docs (kept as period records, paths may be outdated):
-[CONVERSION_PLAN.md](CONVERSION_PLAN.md) / [WINDOWS_PORT.md](WINDOWS_PORT.md)
-(the completed 2026-07 Windows port) and
-[REFACTOR_PLAN_bans_and_paths.md](REFACTOR_PLAN_bans_and_paths.md) (pending:
-ban quarantine + two-root storage split).
+Historical plan docs were removed 2026-10-09; git history keeps them.
 
 ---
 
@@ -210,7 +205,7 @@ C:\Users\danie\.archive\
 > platform downloads, `.records` and the `.deleted\` quarantine always stay
 > under `OUTPUT_DIR`. Apply the physical move with
 > `tools/migrate_split_roots.py` (workers stopped → `--apply` → set
-> `ROUTES_DIR` → restart). Design history: `REFACTOR_PLAN_bans_and_paths.md`.
+> `ROUTES_DIR` → restart). Design history: git log.
 
 ---
 

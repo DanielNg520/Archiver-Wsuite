@@ -42,6 +42,7 @@ None open.
 
 ## Durable behavior notes
 
+- Priority order for design trade-offs: integrity > self-healing > seam robustness > efficiency.
 - Recorder `wait()` exit codes: -1 clean stop, -2 dead stream (zero bytes), -3 stall guard (`stall_timeout_s`, default 300); all three end the reconnect loop.
 - Recorder discards segments under `RECORDER_MIN_SEGMENT_BYTES` (default 1MB) before remux; logs `discarded_stub`.
 - `recorder record --user X` reloads the service on every exit path; `--no-reload` only when the caller reloads itself.
@@ -77,11 +78,13 @@ None open.
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
+- "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
+- `PROJECT_MAP.md` and `windows/` plan/map docs folded and deleted under the current rules (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 
 ## Ask owner
 
-- Ask owner: "long outdated, needs a lot of update" — which part: docs, `windows/` mirror, deps, or code? (2026-10-09)
+None open.
 
 ## Index
 
@@ -92,7 +95,7 @@ None open.
 - `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate; `RUNBOOK.md`.
 - `tests/` seams suite + dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
 - `windows/` parity mirror of the four packages, unexercised on Linux.
-- Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `PROJECT_MAP.md`, per-package `README.md`, `CLAUDE.md`. `windows/` keeps its own doc copies.
+- Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`. `windows/` keeps its own doc copies.
 
 ## Carryover
 

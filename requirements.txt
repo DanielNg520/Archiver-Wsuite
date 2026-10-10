@@ -17,7 +17,7 @@ tomli-w>=1.0.0                    # TOML writer for the policy store (read = std
 # ── archiver (TikTok/X downloads) ─────────────────────────────────────────
 yt-dlp[default]>=2026.1.1         # TikTok videos; [default] pulls curl_cffi for TLS impersonation
 gallery-dl>=1.27.0                # X media + TikTok photo carousels
-curl-cffi>=0.10,<0.15
+curl-cffi>=0.16.0                 # >=0.16.0 bundles libcurl 8.21.0 (CVE-2026-10536); matches archiver/pyproject.toml
 
 # ── recorder (TikTok live) ────────────────────────────────────────────────
 TikTokLive==6.6.5

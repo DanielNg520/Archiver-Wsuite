@@ -70,7 +70,6 @@ separate processes — not from giving them disjoint code.
 |-----|--------|
 | **README.md** (this file) | architecture, install, on-disk layout — the hub |
 | [DESIGN.md](DESIGN.md) | dense code map — modules, seams, choke points, invariants |
-| [PROJECT_MAP.md](PROJECT_MAP.md) | 30-second orientation card |
 | [USER-GUIDE.md](USER-GUIDE.md) | task-oriented daily use — every upload path + commands |
 | [AUTOMATION.md](AUTOMATION.md) | systemd setup, what each automated piece does |
 | [ops/RUNBOOK.md](ops/RUNBOOK.md) | failure recovery procedures |
