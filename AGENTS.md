@@ -98,13 +98,12 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through 484912a).
+Last audit: 2026-10-10 (through 9e87ae1).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
 - During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
 - Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
-- Trial status 2026-10-09 evening: zero `using fallback` lines; service fallback still unexercised.
 - 2026-10-09 17:11-17:22 recorder service stopped; @daviddieal recorded meanwhile by a non-service run into `~/.recorder`, sent 17:23, deleted.
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
@@ -120,9 +119,11 @@ Last audit: 2026-10-10 (through 484912a).
 - `termui.ensure_vt` deleted; `recover_suite_db` verified by read-only `--force` dry run on live DB (156,491 rows); `migrate_split_roots --src` now required.
 - Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
 - Trap: `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
-- Trial status 22:00: still zero `using fallback` lines; manual @vandaihoang4 run into `~/.recorder` sent 20:17, swept.
+- Trial 2026-10-10: service fallback EXERCISED (04:39+): @thinh_kobe20 6 segments → `~/.recorder`, all `sent`, mp4s deleted; DEADSTREAM/ytdlp logs remain.
+- Trial 2026-10-10 06:58: @19970609bun recording live into `~/.recorder` (371MB); confirm it sends next session.
 - 2026-10-10: audit of 8dcb9c5..484912a clean except two `Task Scheduler` docstrings; fixed with F3.
 - 2026-10-10: F3 fixed via TriAPI (`tasks/archiver_stale_tooling`, 8 files): `pipx`/Task Scheduler wording → `uv tool`/`ops update`/systemd.
 - 2026-10-10: 121 CRLF files renormalized to LF; `miki_status.py` trashed. 303 seams, all selftests, stall-backoff pass.
 - Trap: `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path (from `call_deepseek` stderr), not the task `.out` copy.
-- Next: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
+- Expect: first `ops update` after 6fc7a6b sees every package changed (EOL-only fingerprint shift) and does one full drain/reinstall/restart; safe.
+- Next session: Known tech debt, top down; `cookie_refresh.py` atomic write + `#HttpOnly_` prefix.
