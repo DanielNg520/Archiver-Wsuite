@@ -467,7 +467,8 @@ def _humanize_eta(seconds: float | None) -> str:
 def queue_health() -> dict | None:
     """Early-warning signals the counts alone don't show: how long the oldest
     pending row has waited, whether anything is wedged in 'sending', and how
-    many rows are invisible to the dedup guarantee (NULL content_hash). All
+    many unsent rows are invisible to the dedup guarantee (NULL content_hash).
+    All
     read-only, all single indexed queries."""
     conn = _connect_ro(SUITE_DB)
     if conn is None:
@@ -479,8 +480,12 @@ def queue_health() -> dict | None:
         oldest_sending = conn.execute(
             "SELECT MIN(claimed_at) AS m FROM items WHERE status='sending'"
         ).fetchone()["m"]
+        # Sent rows are excluded because their file is usually deleted after
+        # upload (unhashable), and the archiver's auto-backfill already heals
+        # any sent row whose file remains.
         null_hash = conn.execute(
-            "SELECT COUNT(*) AS n FROM items WHERE content_hash IS NULL"
+            "SELECT COUNT(*) AS n FROM items"
+            " WHERE content_hash IS NULL AND status != 'sent'"
         ).fetchone()["n"]
         # The single best stall signal: a healthy drain keeps this fresh
         # while queue counts look identical whether draining or wedged

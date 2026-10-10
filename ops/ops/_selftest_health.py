@@ -120,8 +120,8 @@ def main() -> int:
            "drain_eta_fields: eta_seconds = remaining_bytes / rate_bps")
 
         qh = h.queue_health()
-        ok(qh is not None and qh["null_hash"] == 4,
-           "queue_health: null_hash counts every row with no content_hash")
+        ok(qh is not None and qh["null_hash"] == 1,
+           "queue_health: null_hash counts only unsent rows with no content_hash")
         ok(qh["oldest_pending"] is not None,
            "queue_health: oldest_pending set while p1 is still pending")
         ok(qh["last_sent"] is not None,
