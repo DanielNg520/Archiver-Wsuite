@@ -158,17 +158,12 @@ def main() -> int:
     check(paths["c1"] == old, "restore repoints rows back")
     db.close()
 
-    # ── Windows open-handle rename refusal → deferred, not a crash ──────────
-    import os
+    # ── open handle: POSIX move proceeds ────────────────────────────────────
     _make_user(root, "x", "held", "h.mp4")
     fh = open(root / "x" / "held" / "h.mp4", "rb")
     try:
         r = quarantine_user(root, "x", "held")
-        if os.name == "nt":
-            check(r is LOCKED_SKIPPED and (root / "x" / "held").exists(),
-                  "open handle inside → move deferred (LOCKED_SKIPPED)")
-        else:                                    # POSIX renames succeed anyway
-            check(r is not None, "open handle: POSIX move proceeds")
+        check(r is not None, "open handle: POSIX move proceeds")
     finally:
         fh.close()
 

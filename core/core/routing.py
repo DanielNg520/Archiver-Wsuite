@@ -33,7 +33,7 @@ label delimiter no matter what the label itself holds (spaces, underscores,
 dots, even more tildes). The label is purely cosmetic: it is stripped here and
 NEVER reaches items.chat_id, so the dispatcher always routes on the bare
 canonical id. (`[name]_chat_id` would be ambiguous — `_` is a legal @handle
-char — and `[ ]` are PowerShell/shell wildcards hostile to path cmdlets.)
+char — and `[ ]` are shell glob characters hostile to paths.)
 
 FORUM TOPICS — a route may target a specific forum topic by suffixing the
 chat_id with `.t<topic_id>` (a forum's message_thread_id), e.g.

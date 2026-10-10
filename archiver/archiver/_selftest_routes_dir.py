@@ -33,7 +33,7 @@ def check(cond: bool, label: str) -> None:
 def main() -> int:
     tmp = Path(tempfile.mkdtemp())
     out = tmp / "archive"
-    routes = tmp / "routes"          # stands in for the future D: root
+    routes = tmp / "routes"          # stands in for the separate routes root (external drive)
     (out / "x" / "alice").mkdir(parents=True)
     (routes / "-1001234567890").mkdir(parents=True)
     (routes / "-1001234567890" / "drop.mp4").write_bytes(b"x" * 256)

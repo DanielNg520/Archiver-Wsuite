@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -70,8 +69,7 @@ def _fresh_db() -> "object":
 
 def _dead_pid() -> int:
     """A pid guaranteed not to be alive right now (for stale-heartbeat tests).
-    Uses the suite's portable liveness primitive so this works on Windows too
-    (where os.kill(pid, 0) would terminate the target)."""
+    Uses the suite's portable liveness primitive."""
     from core.platform import process as _process
     p = 999_999
     while _process.pid_alive(p):
@@ -195,10 +193,8 @@ def test_dispatcher_instance_lock_seam(tmp: Path) -> None:
     from dispatcher.instance_lock import DispatcherInstanceLock
 
     session = str(tmp / "telegram-session")
-    # The child prints its OWN os.getpid(): on Windows a venv's python.exe is a
-    # redirector that spawns the base interpreter as a subprocess, so Popen.pid
-    # is the launcher, not the interpreter that holds the lock. The lock file
-    # records the interpreter pid (correctly) — assert against that.
+    # The child prints its own os.getpid(), which is the pid the lock file
+    # records — assert against that.
     code = (
         "import os,sys,time;"
         "sys.path.insert(0,'dispatcher');"
@@ -232,14 +228,6 @@ def test_dispatcher_instance_lock_seam(tmp: Path) -> None:
     finally:
         child.terminate()
         child.wait(timeout=5)
-        # Windows venv redirector again: terminating `child` killed the
-        # launcher; the interpreter that actually holds the lock is its child
-        # and would sleep on for 30s. Kill the true holder too (no-op on
-        # POSIX, where child IS the holder and is already gone).
-        try:
-            os.kill(holder, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
 
     # The kernel frees the lock when the holder dies, but process teardown is
     # asynchronous — poll briefly instead of asserting on a race.

@@ -50,8 +50,7 @@ def check(cond: bool, label: str) -> None:
     print(f"✓ {label}")
 
 
-# pid-liveness via core.platform.process: `os.kill(pid, 0)` is POSIX-only —
-# on Windows it TerminateProcess-es (or errors) instead of merely probing.
+# pid-liveness via core.platform.process: the suite's one liveness primitive.
 _pid_alive = _process.pid_alive
 
 
@@ -109,8 +108,7 @@ def test_terminate_kills_whole_group(tmp: Path) -> None:
     # Parent (stands in for yt-dlp) spawns a writer child (stands in for the
     # ffmpeg downloader) that appends forever. We record the child's pid so we
     # can prove it dies with the group rather than being orphaned. Both levels
-    # are Python: an `sh` parent would report MSYS pids on Windows (useless to
-    # taskkill/OpenProcess), and $!-style forking doesn't exist there at all.
+    # are Python, so the recorded pid is the real writer.
     writer_py = tmp / "writer.py"
     writer_py.write_text(
         "import sys, time\n"
