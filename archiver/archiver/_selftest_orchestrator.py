@@ -253,6 +253,28 @@ def main() -> int:
     check("alice" in store_b5.list_banned("x"),
           "gone account lands on the ban roster")
 
+    # ── B.6 AccountGoneError retires after an AuthError ────────────────────
+    tmp_b6 = Path(tempfile.mkdtemp())
+    config_b6, arch_b6, db_b6, store_b6 = _tmp_archiver(tmp_b6)
+    q.recorder_lock.live_recording_user = lambda: (False, None)
+    plat_b6 = FakePlatform("x", ("alice",), [AuthError("expired"), AccountGoneError("deleted")])
+    res_b6 = _run(arch_b6._download_with_recovery(plat_b6, "alice", db_b6))
+    check(res_b6 == {"_error": {"status": "banned", "reason": "deleted"}},
+          "AccountGoneError after an auth failure reports banned with the reason")
+    check("alice" in store_b6.list_banned("x"),
+          "gone account after an auth failure lands on the ban roster")
+
+    # ── B.7 AccountGoneError retires after an OSError ──────────────────────
+    tmp_b7 = Path(tempfile.mkdtemp())
+    config_b7, arch_b7, db_b7, store_b7 = _tmp_archiver(tmp_b7)
+    q.recorder_lock.live_recording_user = lambda: (False, None)
+    plat_b7 = FakePlatform("x", ("alice",), [OSError(28, "No space left on device"), AccountGoneError("deleted")])
+    res_b7 = _run(arch_b7._download_with_recovery(plat_b7, "alice", db_b7))
+    check(res_b7 == {"_error": {"status": "banned", "reason": "deleted"}},
+          "AccountGoneError after an OSError reports banned with the reason")
+    check("alice" in store_b7.list_banned("x"),
+          "gone account after an OSError lands on the ban roster")
+
     # ── C. Reconcile user set ──────────────────────────────────────────────
     tmp_c1 = Path(tempfile.mkdtemp())
     config_c1, arch_c1, db_c1, store_c1 = _tmp_archiver(tmp_c1)

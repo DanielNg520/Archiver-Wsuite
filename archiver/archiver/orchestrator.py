@@ -960,15 +960,48 @@ class Archiver:
         disk-full recovery behavior. Returns {'count': int} on success or
         {'_error': <result dict>} when the caller should early-return.
         Extracted verbatim from the old inline 4b block so the lockfile
-        branch above can bypass it cleanly.
+        branch above can bypass it cleanly. A gone account on any attempt
+        is retired.
 
         `db` is the caller's store: the shared self.db for a sequential run, or
         a platform-local connection when platforms run concurrently. Every DB
         access below goes through it — never self.db — so two platform loops
         never touch one connection at once."""
         try:
-            count = await asyncio.to_thread(platform.download, username, db)
-            return {"count": count}
+            try:
+                count = await asyncio.to_thread(platform.download, username, db)
+                return {"count": count}
+            except AuthError as e:
+                handled = await self._handle_auth_failure(platform, str(e), db)
+                if handled:
+                    try:
+                        count = await asyncio.to_thread(
+                            platform.download, username, db,
+                        )
+                        return {"count": count}
+                    except AuthError as e2:
+                        log.error("  Auth still failing after recovery: %s", e2)
+                        await self._handle_auth_failure(platform, str(e2), db,
+                                                        attempt_recovery=False)
+                        self._tripped.add(platform.name)
+                        return {"_error": {"status": "auth-failed", "reason": str(e2)}}
+                return {"_error": {"status": "auth-failed", "reason": str(e)}}
+            except OSError as e:
+                if getattr(e, "errno", None) == 28:  # ENOSPC
+                    log.warning("  Disk full — purging already-sent files")
+                    self._purge_sent_files(platform.name, username, db)
+                    try:
+                        count = await asyncio.to_thread(
+                            platform.download, username, db,
+                        )
+                        return {"count": count}
+                    except AccountGoneError:
+                        raise
+                    except Exception as e2:
+                        log.error("  Retry after disk-full failed: %s", e2)
+                        return {"_error": {"status": "error",
+                                           "reason": "disk-full-unresolved"}}
+                raise
         except AccountGoneError as e:
             # The account is gone (banned/suspended/deleted) — not our auth.
             # Retire it: move to the banned list, drop from active users, and
@@ -976,35 +1009,6 @@ class Archiver:
             # user are untouched; the dispatcher still delivers them.
             self._ban_account(platform.name, username, str(e), db)
             return {"_error": {"status": "banned", "reason": str(e)}}
-        except AuthError as e:
-            handled = await self._handle_auth_failure(platform, str(e), db)
-            if handled:
-                try:
-                    count = await asyncio.to_thread(
-                        platform.download, username, db,
-                    )
-                    return {"count": count}
-                except AuthError as e2:
-                    log.error("  Auth still failing after recovery: %s", e2)
-                    await self._handle_auth_failure(platform, str(e2), db,
-                                                    attempt_recovery=False)
-                    self._tripped.add(platform.name)
-                    return {"_error": {"status": "auth-failed", "reason": str(e2)}}
-            return {"_error": {"status": "auth-failed", "reason": str(e)}}
-        except OSError as e:
-            if getattr(e, "errno", None) == 28:  # ENOSPC
-                log.warning("  Disk full — purging already-sent files")
-                self._purge_sent_files(platform.name, username, db)
-                try:
-                    count = await asyncio.to_thread(
-                        platform.download, username, db,
-                    )
-                    return {"count": count}
-                except Exception as e2:
-                    log.error("  Retry after disk-full failed: %s", e2)
-                    return {"_error": {"status": "error",
-                                       "reason": "disk-full-unresolved"}}
-            raise
 
     async def _archive_user(
         self,

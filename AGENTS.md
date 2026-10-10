@@ -60,7 +60,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Known tech debt
 
-- [ ] `archiver/` thin coverage: 2 selftests for `orchestrator.py` (~1250 lines) and `cli.py` (~2260); check Seam 34 first.
+- [ ] `archiver/` coverage: `cli.py` (~2260 lines) has no direct selftest; `run_stories` auth backoff untested (deferred by owner).
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
 
 ## Decisions
@@ -78,6 +78,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
 - Anything Windows-only can be removed: CRLF → LF renormalize, trash `miki_status.py` + its `.gitignore` lines (owner, 2026-10-10).
+- Orchestrator selftests cover disk-full purge, auth circuit, reconcile users; stories auth backoff deferred (owner, 2026-10-10).
 
 ## Ask owner
 
@@ -127,4 +128,7 @@ Last audit: 2026-10-10 (through 9e87ae1).
 - 2026-10-10: seams split (TriAPI `archiver_seams_split`): byte-range splitter moved 44 tests into `tests/seams/`; defs verbatim except two edits; 303 checks, output-diff identical.
 - Trap: `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
 - 2026-10-10: `orchestrator.py:370` stories `on_user` swallow now carries the sibling comment (TriAPI `archiver_hook_comment`); 3 hook-guard sites, all commented.
+- 2026-10-10: `archiver/_selftest_orchestrator.py` (TriAPI `archiver_orch_selftest`): 34 checks; 7/7 orchestrator mutants caught.
+- 2026-10-10: fixed `_download_with_recovery`: `AccountGoneError` on the auth/ENOSPC retry now bans (was uncaught/`disk-full-unresolved`); B.6/B.7 fail on old code.
+- OPEN: archiver not restarted for that fix (mid 14h scan); next `ops restart archiver` makes it live.
 - Next session: Known tech debt, top down.
