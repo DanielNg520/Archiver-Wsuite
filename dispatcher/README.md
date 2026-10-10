@@ -125,7 +125,7 @@ fine):
 INSERT INTO items
   (source, platform, username, identifier, file_path, discovered_at, status, priority, attempts)
 VALUES
-  ('test', 'x', 'testuser', 'manual_smoke', 'C:/Users/danie/test_image.jpg',
+  ('test', 'x', 'testuser', 'manual_smoke', '/tmp/test_image.jpg',
    strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'pending', 10, 0);
 .quit
 ```

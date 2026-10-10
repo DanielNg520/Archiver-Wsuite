@@ -349,11 +349,6 @@ state to clean up: delete the checkout and the suite is gone.
 config outside the checkout). `XDG_CONFIG_HOME` is deliberately **not** consulted
 on Linux — honoring it (usually `~/.config`) would defeat self-containment.
 
-> Legacy note: the Windows build of this suite migrated config out of
-> `%APPDATA%` into a self-contained `~/.archive/.config` root; that path and the
-> MSIX-virtualization caveat around it are Windows-only history and do not apply
-> to this Linux port.
-
 ---
 
 ## Two-root split (chat_id route folders → ROUTES_DIR)
@@ -381,9 +376,6 @@ ops load
 > free space ≥ the route folders' total size; the source stays intact until
 > each folder's copy completes. `ENOSPC` (no space left) mid-run = destination full —
 > free space and re-run (already-moved folders are skipped as clashes).
-
-*Status (2026-07-17): `ROUTES_DIR=D:\routes` is set; the physical folder move is
-being done manually (D: was full at attempt time).*
 
 **Disk gauge follows the split.** `ops health` / `ops watch` derive each root's
 volume from item `file_path`s (no worker config read), keyed on `chat_id`:

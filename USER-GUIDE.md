@@ -339,16 +339,15 @@ recorder banned unban --user someone --re-add
 `unban` also moves the folder back out of `.deleted\`. The two rosters are
 independent — banning in one app doesn't ban in the other.
 
-## Deleting a user (manual, goes to the Recycle Bin)
+## Deleting a user (manual, goes to the trash)
 
 Distinct from a ban: `archiver delete` is intentional and terminal, but staged
 so nothing un-uploaded is ever lost:
 
 1. **Request** — dropped from the active list immediately; files and DB rows
    untouched.
-2. **Trash** — once **every** row is uploaded, the folder goes to the Windows
-   **Recycle Bin** (checked every cycle; never while a live recording holds
-   the user).
+2. **Trash** — once **every** row is uploaded, the folder goes to the trash
+   (checked every cycle; never while a live recording holds the user).
 3. **Purge** — 30 days after the trash, the DB rows are deleted. (This also
    forgets dedup memory — re-adding the user later could re-upload old bytes.)
 
@@ -358,7 +357,7 @@ archiver deleting                               # status + purge countdown
 archiver deleting cancel --platform x --user someone
 ```
 `cancel` before the trash restores the user completely; after the trash it
-stops the row purge (recover the folder from the Recycle Bin yourself).
+stops the row purge (recover the folder from the trash yourself).
 
 ## Inspecting & fixing the queue
 

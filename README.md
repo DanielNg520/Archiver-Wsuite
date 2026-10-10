@@ -154,9 +154,8 @@ sessions, cookies, logs, and locks all live in `<repo>/.config` (git-ignored),
 so the checkout carries its own state and nothing lands in `~/.config`. Set
 `ARCHIVER_CONFIG_HOME` to relocate it; `XDG_CONFIG_HOME` is intentionally *not*
 consulted (it would defeat self-containment). `$CONFIG` below means
-`<repo>/.config`. (On Windows the equivalent self-contained root is
-`~/.archive/.config`; see `core.platform.paths`.) **This machine overrides it:**
-the `com.duy.*` units' `10-env.conf` drop-ins and the login shell set
+`<repo>/.config`. **This machine overrides it:** the `com.duy.*` units'
+`10-env.conf` drop-ins and the login shell set
 `ARCHIVER_CONFIG_HOME=~/.archive/.config`, so `$CONFIG` below is `~/.archive/.config`.
 
 | What | Where (this machine) |
