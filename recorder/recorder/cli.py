@@ -138,9 +138,8 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     if args.daemon:
         # Backgrounding is the service manager's job (see `ops install`), not a
-        # hand-rolled double-fork — which POSIX-forked and did not exist on
-        # Windows at all. Kept as an accepted no-op so old invocations/scripts
-        # don't break; it just runs in the foreground.
+        # hand-rolled double-fork. Kept as an accepted no-op so old
+        # invocations/scripts don't break; it just runs in the foreground.
         log.warning("--daemon is a no-op; use `ops install` + `ops load` to run "
                     "the recorder under the OS service manager. Running in "
                     "foreground.")

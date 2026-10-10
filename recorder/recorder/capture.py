@@ -221,16 +221,11 @@ class StreamCapture:
         # ffmpeg — it keeps the recording file open and writing, and a remux that
         # then unlinks the source drains live footage into a deleted inode (silent
         # data loss, observed in prod). The OS-specific spawn flag (POSIX
-        # start_new_session / Windows CREATE_NEW_PROCESS_GROUP) comes from the
-        # core.platform.procgroup adapter.
+        # start_new_session) comes from the core.platform.procgroup adapter.
         # Pin the child's working directory to this run's own output dir (always
         # under output_dir on the internal drive, and just created above) rather
-        # than inheriting the launcher's cwd. A stale inherited cwd — e.g. a
-        # shell or service started on a drive that was later removed/formatted
-        # (D:\ post-migration) — makes CreateProcess fail with
-        # `[WinError 3] cannot find the path specified: 'D:\\'` before yt-dlp
-        # ever runs. _run_dir is guaranteed to exist, so this can't reintroduce
-        # the same failure.
+        # than inheriting the launcher's cwd. _run_dir is guaranteed to exist,
+        # so this can't reintroduce a stale-cwd failure.
         self._proc = subprocess.Popen(
             cmd, stdout=self._log_fh, stderr=subprocess.STDOUT,
             cwd=self._run_dir,
@@ -307,8 +302,8 @@ class StreamCapture:
         is what guarantees the ffmpeg downloader dies with yt-dlp instead of being
         orphaned and left writing the recording file (see start()). Falls back to
         acting on the lone pid if the group can't be reached (already gone). The
-        OS-specific signalling (POSIX SIGTERM/SIGKILL to the group, Windows
-        CTRL_BREAK then taskkill /T /F) lives in core.platform.procgroup."""
+        OS-specific signalling (POSIX SIGTERM/SIGKILL to the group) lives in
+        core.platform.procgroup."""
         if self._proc is None:
             return
         if not _procgroup.terminate(self._proc):

@@ -25,14 +25,14 @@ those rows would go "file missing" → failed → GC'd, silently losing uploads.
 Same-drive guarantee: quarantine lives under `output_dir`, so the move is always
 an atomic `os.rename` on one volume — never a cross-drive copy. This stays true
 after the two-root storage split (Refactor 2): quarantine tracks `output_dir`,
-which stays on the internal drive; only the chat_id route folders move to D:.
+which stays on the internal drive; only the chat_id route folders move to the
+other drive.
 
 Live-recording safety: TikTok's actively-recorded user must never be moved out
 from under a running capture (memory: live-recording-sweep-protection). We gate
 on core.recorder_lock and skip (not fail) if the target is being recorded; the
-roster entry still stands. A rename refused by the OS (Windows: any open handle
-inside the folder — e.g. the dispatcher mid-upload — blocks a dir rename) is
-treated the same way: deferred, never a crash.
+roster entry still stands. A rename refused by the OS is treated the same way:
+deferred, never a crash.
 """
 from __future__ import annotations
 
@@ -137,9 +137,8 @@ def quarantine_user(output_dir: str | Path, platform: str, username: str,
     try:
         src.rename(dest)  # same-drive, atomic
     except OSError as e:
-        # Windows refuses a dir rename while ANY file inside has an open
-        # handle (dispatcher mid-upload is the expected case). Defer — the
-        # roster entry stands; a later re-detection retries the move.
+        # The OS refused the rename. Defer — the roster entry stands; a later
+        # re-detection retries the move.
         log.warning("quarantine: could not move %s (%s) — deferred", src, e)
         return LOCKED_SKIPPED
     n = _repoint_rows(db, username, src, dest)

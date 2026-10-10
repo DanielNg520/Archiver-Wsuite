@@ -37,9 +37,8 @@ from .platform import process as _process
 def pid_alive(pid: int) -> bool:
     """Is `pid` a live process? The suite's one liveness primitive (used by
     read_live and by the recorder's pid-file checks). The actual probe is
-    platform-specific — signal 0 on POSIX, OpenProcess on Windows (where
-    os.kill(pid, 0) would *terminate* the target) — and lives in
-    core.platform.process. A non-int / gone pid is dead."""
+    signal 0 on POSIX and lives in core.platform.process. A non-int / gone
+    pid is dead."""
     return _process.pid_alive(pid)
 
 

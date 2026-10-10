@@ -165,9 +165,9 @@ def _argv_pid(name: str) -> int | None:
 
 def worker_pid(name: str) -> tuple[int | None, str]:
     """Return a worker PID and whether the service manager or a shell owns it.
-    On Windows the service manager exposes no PID, so ownership is decided by
-    the task state: a live process while the task reports 'running' is the
-    task's action (Task Scheduler owns it, restart-on-failure active)."""
+    When the service manager reports no PID, ownership is decided by the job
+    state: a live argv-matched process while the job reports 'running' counts
+    as the service's."""
     managed = _service.running_pid(LABELS[name])
     if managed is not None:
         return managed, "service"
@@ -192,8 +192,8 @@ def foreground_pid(name: str) -> int | None:
 
 
 def proc_stats(pid: int) -> str | None:
-    """'up 1:10:15, cpu 10.6%, mem 110MB' (POSIX) / 'mem …' (Windows), or None if
-    the process vanished. OS-specific probe lives in core.platform.process."""
+    """'up 1:10:15, cpu 10.6%, mem 110MB', or None if the process vanished.
+    OS-specific probe lives in core.platform.process."""
     return _process.proc_stats(pid)
 
 
@@ -686,11 +686,9 @@ def _disk_fields(path: str = "/") -> tuple[str, float] | None:
 # while `ops watch` and an interactive `ops health` get the full palette. The
 # box-drawing glyphs and bars are plain Unicode, so they survive even uncoloured.
 #
-# The gate is core.termui.color_enabled() — ONE definition suite-wide. It also
-# flips the Windows console into VT mode and, crucially, does NOT require TERM:
-# PowerShell/Windows Terminal leave TERM unset (unlike every macOS shell), and
-# the old `TERM not in ("", "dumb")` check silently monochromed the entire
-# dashboard on this box after the migration.
+# The gate is core.termui.color_enabled() — ONE definition suite-wide. It
+# deliberately does NOT require TERM: the old `TERM not in ("", "dumb")` check
+# silently monochromed the entire dashboard.
 from core.termui import color_enabled as _color_enabled
 
 _USE_COLOR = _color_enabled()

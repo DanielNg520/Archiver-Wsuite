@@ -12,8 +12,8 @@ Why an advisory file lock, not a PID file: the kernel releases the lock
 automatically when the holder exits OR crashes (even SIGKILL / power loss), so
 there is no stale-lock problem and no unreliable PID-liveness heuristic. The PID
 written into the file is diagnostics only — it tells a human/ops WHICH process
-holds it. The lock mechanism itself (fcntl on POSIX, msvcrt on Windows) lives
-behind core.platform.filelock so this module stays platform-blind.
+holds it. The lock mechanism itself (fcntl) lives behind core.platform.filelock
+so this module stays platform-blind.
 
 PLACEMENT: the path resolves to a fixed config dir, never CWD-relative, so a
 launchd-started worker (CWD /) and a manually started one (CWD ~) contend for

@@ -101,9 +101,7 @@ async def _run_drain(config: DispatcherConfig) -> None:
         stop_event.set()
 
     loop = asyncio.get_running_loop()
-    # add_signal_handler is POSIX-only (raises on Windows loops); the adapter
-    # falls back to signal.signal + call_soon_threadsafe there, and registers
-    # SIGBREAK instead of the never-delivered SIGTERM.
+    # Signal wiring is delegated to core.platform.signals.
     _signals.install_async(loop, _on_signal)
 
     async with TelethonSendStrategy(

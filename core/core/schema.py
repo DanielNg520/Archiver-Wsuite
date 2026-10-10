@@ -38,12 +38,12 @@ from core.platform import paths as _osp
 
 # Default location. Override with $ARCHIVER_DB for tests / alternate setups.
 # This literal is the POSIX spelling kept for docs/back-compat; the resolved
-# path goes through default_db_path() so Windows lands under %APPDATA%.
+# path goes through default_db_path().
 DEFAULT_DB_PATH = "~/.config/archiver-suite/suite.db"
 
 
 def default_db_path() -> Path:
-    """OS-correct default DB location (POSIX ~/.config, Windows %APPDATA%)."""
+    """OS-correct default DB location (POSIX ~/.config)."""
     return _osp.config_dir(_osp.SUITE) / "suite.db"
 
 

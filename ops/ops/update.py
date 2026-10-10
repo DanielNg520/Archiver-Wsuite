@@ -251,13 +251,12 @@ def _uv_tool_argv(step: list[str], repo_root: Path) -> list[str]:
 def wait_processes_down(pids, timeout_s: float = 20.0,
                         settle_s: float = 3.0) -> bool:
     """After an unload, block until none of `pids` is alive (or `timeout_s`
-    elapses), then wait a short `settle_s`. This guards the classic Windows
-    `WinError 32` ("file is being used by another process") that pipx hits on
-    `.local\\bin\\<app>.exe`: `taskkill`/`schtasks /End` return BEFORE the OS
-    drops the running image's lock on the exe, so a reinstall fired immediately
-    after unload can find the shim still held. Returns True iff every pid was
-    confirmed gone (the settle still runs either way — the image-handle release
-    lags the pid's disappearance)."""
+    elapses), then wait a short `settle_s`. This guards a reinstall against a
+    worker process that has not fully exited after unload: the unload may
+    return before the process releases the image, so a reinstall fired
+    immediately after unload can find the shim still held. Returns True iff
+    every pid was confirmed gone (the settle still runs either way — the
+    image-handle release lags the pid's disappearance)."""
     alive = [p for p in pids if p]
     deadline = time.monotonic() + max(0.0, timeout_s)
     while alive and time.monotonic() < deadline:
@@ -275,11 +274,11 @@ def run_reinstall(repo_root: Path, packages: "set[str] | frozenset[str]", *,
     pointless) and returns that step's exit code; 0 iff every step succeeded
     (and 0 for an empty set — nothing to reinstall).
 
-    Each step is retried a few times on failure: the dominant failure mode on
-    this box is a TRANSIENT Windows exe lock (the worker's shim still held for a
-    beat after unload), which clears on its own within seconds — so a short
-    wait-and-retry turns a spurious abort into a clean install. A genuinely
-    broken step just exhausts the attempts and returns its code as before."""
+    Each step is retried a few times on failure: a transient failure can occur
+    right after unload (the worker's shim still held for a beat), which clears
+    on its own within seconds — so a short wait-and-retry turns a spurious
+    abort into a clean install. A genuinely broken step just exhausts the
+    attempts and returns its code as before."""
     for step in reinstall_steps(packages):
         argv = _uv_tool_argv(step, repo_root)
         print(f"\n$ {' '.join(argv)}", flush=True)
