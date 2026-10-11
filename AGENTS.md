@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F4 [medium · 3 · 2026-10-02→2026-10-08] `dispatcher/cli.py`: SIGTERM waits for a wedged send; systemd 45s stop timeout SIGABRTs it (core dump, rows left 'sending') (verified)
+- None open.
 
 ## Commands
 
@@ -140,6 +140,7 @@ Last audit: 2026-10-10 (through 0c2bc7d).
 - 2026-10-10: `scenario_cmd_run` case 1 stubs `build_platforms` and asserts no call (TriAPI `archiver_cli_e1_guard`); guard mutant exits 1 at the stub.
 - 2026-10-10: `queue_health` docstring no longer claims indexed queries (TriAPI `archiver_qh_docstring`).
 - F4 cause: Fedora `10-timeout-abort.conf` (`TimeoutStopFailureMode=abort`); all 3 aborts were shutdowns with an upload in flight (restart watchdog reset 1-2 rows).
-- F4 fix design: `_drain_with_stop_grace` in `dispatcher/cli.py`: 30s grace after stop, then cancel drain, `reset_stuck_sending(0)`, return; `ops update` stop-flag unchanged.
-- F4 dispatch WALL: `tasks/archiver_stop_grace` t1/t1r/t1r2 all rejected (orphaned task, no grace, `raise None`); nothing applied. Options: agy, hand fix, defer.
-- Next session: StoragEDGE remount ~2026-10-16; F4 fix + `dispatcher/_selftest_stop_grace.py` (hang, normal exit, drain-raised TimeoutError, outer cancel).
+- 2026-10-10: F4 fixed: `dispatcher/cli.py` `_drain_with_stop_grace`, 30s grace then cancel + `reset_stuck_sending(0)` (agy, after 3 DeepSeek rejects).
+- 2026-10-10: `dispatcher/_selftest_stop_grace.py` 9 checks; 4/4 helper mutants caught; 303 seams; dispatcher restarted, clean 2s stop. Grace path not yet seen live.
+- Trap: `apply_dispatch --new` needs the reply in one ```python fence; a raw reply fails "No fenced code block found".
+- Next session: StoragEDGE remount ~2026-10-16; watch for `stop grace of` in `dispatcher.out.log` on a wedged-send shutdown.

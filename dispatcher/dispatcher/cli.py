@@ -22,7 +22,9 @@ Design notes:
     Running in foreground means logs go to stdout/stderr, which launchd
     redirects to files. Don't reinvent.
   - Signal handling: SIGINT/SIGTERM sets stop_event, drain exits cleanly
-    between rows. Telethon disconnects via context manager exit.
+    between rows. A send still running _STOP_GRACE_S after the signal is
+    cancelled and its rows reverted to pending. Telethon disconnects via
+    context manager exit.
 """
 
 from __future__ import annotations
@@ -53,6 +55,54 @@ from .send import TelethonSendStrategy, SessionUnauthorized
 from .tg_router import TelegramRouter, Destination
 
 log = logging.getLogger(__name__)
+
+_STOP_GRACE_S = 30.0  # must stay below systemd's 45 s default stop timeout
+
+
+async def _drain_with_stop_grace(
+    drain,
+    stop_event: asyncio.Event,
+    store,
+    grace_s: float,
+) -> None:
+    """Run drain, allowing grace_s after stop before cancelling it."""
+    drain_task = asyncio.create_task(drain)
+    stop_task = asyncio.create_task(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {drain_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if drain_task not in done:
+            done, _ = await asyncio.wait({drain_task}, timeout=grace_s)
+            if drain_task not in done:
+                drain_task.cancel()
+                try:
+                    await drain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                reverted = store.reset_stuck_sending(older_than_minutes=0)
+                log.warning(
+                    "stop grace of %.1fs expired; reverted %d rows",
+                    grace_s,
+                    reverted,
+                    extra={"ev": "stop"},
+                )
+                return
+        await drain_task
+    finally:
+        if not stop_task.done():
+            stop_task.cancel()
+            try:
+                await stop_task
+            except asyncio.CancelledError:
+                pass
+        if not drain_task.done():
+            drain_task.cancel()
+            try:
+                await drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ── Logging ───────────────────────────────────────────────────────────────
@@ -126,17 +176,22 @@ async def _run_drain(config: DispatcherConfig) -> None:
         connect_stagger_s = config.fast_upload_connect_stagger_s,
     ) as send_strategy:
         try:
-            await drain_forever(
-                config=config,
-                store=store,
-                send_strategy=send_strategy,
-                router=router,
-                delete_policy=delete_policy,
-                recorder_delete_policy=recorder_delete_policy,
-                batch_policy=batch_policy,
-                guard=guard,
-                stop_event=stop_event,
-                stop_flag_path=core_paths.dispatcher_stop_flag(),
+            await _drain_with_stop_grace(
+                drain_forever(
+                    config=config,
+                    store=store,
+                    send_strategy=send_strategy,
+                    router=router,
+                    delete_policy=delete_policy,
+                    recorder_delete_policy=recorder_delete_policy,
+                    batch_policy=batch_policy,
+                    guard=guard,
+                    stop_event=stop_event,
+                    stop_flag_path=core_paths.dispatcher_stop_flag(),
+                ),
+                stop_event,
+                store,
+                _STOP_GRACE_S,
             )
         except SessionUnauthorized:
             # Session died mid-run. The drain is serial, so the only rows in
