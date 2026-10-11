@@ -101,7 +101,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 Last audit: 2026-10-10 (through f0255ab).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
-- 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
+- 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
 - During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
 - Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
@@ -149,6 +149,9 @@ Last audit: 2026-10-10 (through f0255ab).
 - 2026-10-10: `send.py` `__aexit__` disconnects bounded at `_DISCONNECT_TIMEOUT_S`=5s (agy, `tasks/archiver_aexit_bound`); hung-disconnect sim exits 0.40s; 303 seams.
 - 2026-10-10: shutdown disconnect logs: grep `disconnect timed out after` (primary/burner) or `burner disconnect failed: <Type>:` in `dispatcher.out.log`.
 - Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
-- Audit 2bb8cc9..f0255ab: `_force_reconnect` disconnect/reconnect `failed: %s` logs print empty on `TimeoutError` (same root cause as `__aexit__`, unfixed).
 - Audit: `__aexit__` primary non-timeout error still propagates and skips burner disconnect (pre-existing, shutdown-only, low impact).
-- Next session: investigate disconnect timeouts (grep above + journal stop/ABRT); fix empty-reason logs at every `wait_for` handler; StoragEDGE remount ~2026-10-16.
+- 2026-10-10: empty-reason logs fixed (TriAPI `archiver_empty_reason_logs`): `_force_reconnect` warnings, tiktok `is_live`/`_safe_close` debug now log `<Type>: msg`.
+- Test `ForceReconnectStallWarningTests` in `test_dispatcher_stall_backoff.py`; fails on old `send.py`. 303 seams, all selftests; dispatcher+recorder restarted.
+- Disconnect timeouts: none logged and no ABRT since f0255ab (6 stops, all ≤2s). Watch-only; grep above.
+- Trap: `ops restart` takes exactly one worker per call.
+- Next session: StoragEDGE remount ~2026-10-16 (owner, polkit).

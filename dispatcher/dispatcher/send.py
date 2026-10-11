@@ -385,12 +385,20 @@ class TelethonSendStrategy(SendStrategy):
         try:
             await asyncio.wait_for(client.disconnect(), timeout=30)
         except Exception as e:
-            log.warning("telethon: disconnect after stall failed: %s", e)
+            log.warning(
+                "telethon: disconnect after stall failed: %s: %s",
+                type(e).__name__,
+                e,
+            )
         try:
             await asyncio.wait_for(client.connect(), timeout=30)
             log.info("telethon: reconnected after stall")
         except Exception as e:
-            log.warning("telethon: reconnect after stall failed: %s", e)
+            log.warning(
+                "telethon: reconnect after stall failed: %s: %s",
+                type(e).__name__,
+                e,
+            )
 
     def _build_client(self, session_name: str, api_id: int, api_hash: str) -> TelegramClient:
         # auto_reconnect=False is LOAD-BEARING. This dispatcher already owns

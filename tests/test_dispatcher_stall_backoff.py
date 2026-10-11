@@ -309,6 +309,32 @@ class _DummyClient:
         return None
 
 
+class ForceReconnectStallWarningTests(unittest.TestCase):
+    def test_timeout_error_name_in_warning(self):
+        from dispatcher.send import TelethonSendStrategy
+
+        class _TimeoutClient:
+            async def disconnect(self):
+                raise TimeoutError()
+
+            async def connect(self):
+                raise TimeoutError()
+
+        strat = TelethonSendStrategy(
+            api_id=1, api_hash="x", phone="+10000000000",
+            session_name="/tmp/not-a-real-session",
+            max_retries=1,
+            stall_base_timeout_s=0.05,
+            stall_min_rate_kib_s=1_000_000.0,
+        )
+        strat._client = _TimeoutClient()
+        with self.assertLogs("dispatcher.send", level="WARNING") as cm:
+            asyncio.run(strat._force_reconnect())
+        self.assertEqual(len(cm.output), 2)
+        for record in cm.output:
+            self.assertIn("TimeoutError", record)
+
+
 # ── 4. DispatcherConfig — five new fields, exact defaults when unset ──────
 
 class DispatcherConfigDefaultsTests(unittest.TestCase):

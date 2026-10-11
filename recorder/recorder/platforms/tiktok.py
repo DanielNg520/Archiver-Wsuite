@@ -81,7 +81,12 @@ class TikTokLivePlatform:
         try:
             return asyncio.run(self._is_live_async(uid))
         except Exception as e:
-            log.debug("is_live(%s) failed (treated as not-live): %s", uid, e)
+            log.debug(
+                "is_live(%s) failed (treated as not-live): %s: %s",
+                uid,
+                type(e).__name__,
+                e,
+            )
             return False
 
     def stream_url(self, username: str) -> str:
@@ -184,7 +189,11 @@ class TikTokLivePlatform:
         try:
             await asyncio.wait_for(client.close(), _CLOSE_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 — best-effort cleanup
-            log.debug("tiktok: client close failed/timed out (ignored): %s", e)
+            log.debug(
+                "tiktok: client close failed/timed out (ignored): %s: %s",
+                type(e).__name__,
+                e,
+            )
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
