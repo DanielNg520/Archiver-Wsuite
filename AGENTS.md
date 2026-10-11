@@ -99,7 +99,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through f0255ab).
+Last audit: 2026-10-11 (through 39f0eea + state.py stream_url log).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -154,5 +154,6 @@ Last audit: 2026-10-10 (through f0255ab).
 - Trap: `ops restart` takes exactly one worker per call.
 - 2026-10-11: `__aexit__` primary non-timeout disconnect error now logged, burner still disconnected; test `DisconnectExceptionHandlingTests`, fails on old code.
 - 2026-10-11: `_selftest_orchestrator.py` section D: stories auth stops lane, gone account continues; both mutants caught.
+- 2026-10-11 audit: `state.py` `stream_url(%s) failed` error log had the same empty-reason bug; fixed (TriAPI t7), recorder restarted.
 - 2026-10-11: one-off `ConnectionError` never reaches drain backoff: `_send_with_retries` retries 4x with reconnect first.
 - Next session: StoragEDGE remount ~2026-10-16 (owner, polkit).

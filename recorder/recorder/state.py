@@ -387,7 +387,8 @@ class StateMachine:
             if isinstance(e, CookiesRequiredError):
                 self._deactivate_user(username, "no usable TikTok cookies")
                 return False
-            log.error("recorder: stream_url(%s) failed: %s", username, e)
+            log.error("recorder: stream_url(%s) failed: %s: %s",
+                      username, type(e).__name__, e)
             self._note_start_failure(username)
             return False
         try:
