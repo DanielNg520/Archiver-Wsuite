@@ -335,6 +335,33 @@ class ForceReconnectStallWarningTests(unittest.TestCase):
             self.assertIn("TimeoutError", record)
 
 
+class DisconnectExceptionHandlingTests(unittest.TestCase):
+    """__aexit__ logs a WARNING on disconnect failure, still disconnects
+    the burner, and never lets the exception escape."""
+
+    def test_aexit_logs_disconnect_failure_and_disconnects_burner(self):
+        class RaisingClient:
+            async def disconnect(self):
+                raise RuntimeError("boom")
+
+        class RecordingClient:
+            def __init__(self):
+                self.disconnected = False
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        maker = SendWithRetriesStallIntegrationTests()
+        strat = maker._make_strategy()
+        burner = RecordingClient()
+        strat._client = RaisingClient()
+        strat._burner_client = burner
+        with self.assertLogs("dispatcher.send", level="WARNING") as cm:
+            asyncio.run(strat.__aexit__(None, None, None))
+        self.assertTrue(any("RuntimeError" in rec for rec in cm.output))
+        self.assertTrue(burner.disconnected)
+
+
 # ── 4. DispatcherConfig — five new fields, exact defaults when unset ──────
 
 class DispatcherConfigDefaultsTests(unittest.TestCase):

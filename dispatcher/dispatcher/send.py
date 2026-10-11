@@ -530,6 +530,12 @@ class TelethonSendStrategy(SendStrategy):
                     "telethon: disconnect timed out after %ss — shutting down",
                     _DISCONNECT_TIMEOUT_S,
                 )
+            except Exception as e:  # best-effort; burner still must disconnect
+                log.warning(
+                    "telethon: disconnect failed: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
         # Disconnect the burner only if it was ever lazily built (Phase 3).
         if self._burner_client is not None:
             try:

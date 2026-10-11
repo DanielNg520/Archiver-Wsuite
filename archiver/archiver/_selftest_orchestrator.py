@@ -306,6 +306,76 @@ def main() -> int:
           == ("alice", "erin"),
           "absent platform dir yields sorted roster only")
 
+    # ── D. Stories lane auth backoff ────────────────────────────────────────
+    tmp_d = Path(tempfile.mkdtemp())
+    _, arch_d, _, _ = _tmp_archiver(tmp_d)
+    arch_d.config.instagram = types.SimpleNamespace(stories_interval=1)
+    arch_d.download_policy = types.SimpleNamespace(
+        enabled_for=lambda _platform: True)
+
+    async def fake_healthy(_platform):
+        return True
+
+    arch_d._ensure_platform_healthy = fake_healthy
+
+    import archiver.platforms as ap
+    real_ig_cls = ap.InstagramPlatform
+    calls_d = []
+    scripts = [("u1", "ok", 2), ("u2", "auth", None), ("u3", "ok", 1)]
+
+    class FakeStoriesPlatform:
+        def __init__(self, config):
+            self.config = config
+            self.users = ("u1", "u2", "u3")
+
+        @staticmethod
+        def stories_inter_user_delay():
+            return 0
+
+        def download_stories(self, username, db):
+            calls_d.append(username)
+            for name, kind, count in scripts:
+                if name == username:
+                    if kind == "auth":
+                        raise AuthError("checkpoint")
+                    return count
+            return 0
+
+    try:
+        ap.InstagramPlatform = FakeStoriesPlatform
+        res_d1 = _run(arch_d.run_stories())
+        check(res_d1["instagram/u1 (stories)"]["status"] == "ok",
+              "stories first user ok")
+        check(res_d1["instagram/u1 (stories)"]["downloaded"] == 2,
+              "stories first user downloaded 2")
+        check(res_d1["instagram/u2 (stories)"]["status"] == "auth-failed",
+              "stories second user auth-failed stops lane")
+        check("instagram/u3 (stories)" not in res_d1,
+              "stories third user skipped after auth failure")
+        check(len(calls_d) == 2, "stories lane stops after auth failure")
+
+        calls_d.clear()
+        scripts[1] = ("u2", "gone", None)
+
+        class FakeGoneStoriesPlatform(FakeStoriesPlatform):
+            def download_stories(self, username, db):
+                calls_d.append(username)
+                for name, kind, count in scripts:
+                    if name == username:
+                        if kind == "gone":
+                            raise AccountGoneError("gone")
+                        return count
+                return 0
+
+        ap.InstagramPlatform = FakeGoneStoriesPlatform
+        res_d2 = _run(arch_d.run_stories())
+        check(res_d2["instagram/u2 (stories)"]["status"] == "gone",
+              "stories gone account marked gone")
+        check(res_d2["instagram/u3 (stories)"]["status"] == "ok",
+              "stories lane continues after gone account")
+    finally:
+        ap.InstagramPlatform = real_ig_cls
+
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

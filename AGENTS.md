@@ -60,7 +60,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Known tech debt
 
-- [ ] `archiver/` coverage: `run_stories` auth backoff untested (deferred by owner).
 - [ ] Split candidates on size: `archiver/archiver/cli.py`, `dispatcher/dispatcher/send.py`; only if touched again.
 
 ## Decisions
@@ -81,7 +80,8 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Bound `TelethonSendStrategy.__aexit__` disconnects to 5s each so shutdown fits 45s (owner, 2026-10-10).
 - Shutdown disconnect problems are log-only, no Telegram notify: the dispatcher is the sole sender and already disconnected (owner delegated, 2026-10-10).
 - Disconnect-timeout investigation deferred to a new session (owner, 2026-10-10).
-- Orchestrator selftests cover disk-full purge, auth circuit, reconcile users; stories auth backoff deferred (owner, 2026-10-10).
+- Orchestrator selftests cover disk-full purge, auth circuit, reconcile users, stories auth backoff (owner, 2026-10-11).
+- Fix every known open problem in-session; no deferred "still open" lists (owner, 2026-10-11).
 
 ## Ask owner
 
@@ -113,7 +113,6 @@ Last audit: 2026-10-10 (through f0255ab).
 - 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
 - 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
-- Open: drain backoff throughput cost on one-off `ConnectionError`s, unverified until a live send failure.
 - DONE 2026-10-09: single-OS cleanup via TriAPI (`tasks/archiver_windows_rest`, 8dcb9c5..484912a); 303 seams + all selftests; workers restarted, health green.
 - `termui.ensure_vt` deleted; `recover_suite_db` verified by read-only `--force` dry run on live DB (156,491 rows); `migrate_split_roots --src` now required.
 - Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
@@ -149,9 +148,11 @@ Last audit: 2026-10-10 (through f0255ab).
 - 2026-10-10: `send.py` `__aexit__` disconnects bounded at `_DISCONNECT_TIMEOUT_S`=5s (agy, `tasks/archiver_aexit_bound`); hung-disconnect sim exits 0.40s; 303 seams.
 - 2026-10-10: shutdown disconnect logs: grep `disconnect timed out after` (primary/burner) or `burner disconnect failed: <Type>:` in `dispatcher.out.log`.
 - Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
-- Audit: `__aexit__` primary non-timeout error still propagates and skips burner disconnect (pre-existing, shutdown-only, low impact).
 - 2026-10-10: empty-reason logs fixed (TriAPI `archiver_empty_reason_logs`): `_force_reconnect` warnings, tiktok `is_live`/`_safe_close` debug now log `<Type>: msg`.
 - Test `ForceReconnectStallWarningTests` in `test_dispatcher_stall_backoff.py`; fails on old `send.py`. 303 seams, all selftests; dispatcher+recorder restarted.
 - Disconnect timeouts: none logged and no ABRT since f0255ab (6 stops, all ≤2s). Watch-only; grep above.
 - Trap: `ops restart` takes exactly one worker per call.
+- 2026-10-11: `__aexit__` primary non-timeout disconnect error now logged, burner still disconnected; test `DisconnectExceptionHandlingTests`, fails on old code.
+- 2026-10-11: `_selftest_orchestrator.py` section D: stories auth stops lane, gone account continues; both mutants caught.
+- 2026-10-11: one-off `ConnectionError` never reaches drain backoff: `_send_with_retries` retries 4x with reconnect first.
 - Next session: StoragEDGE remount ~2026-10-16 (owner, polkit).
