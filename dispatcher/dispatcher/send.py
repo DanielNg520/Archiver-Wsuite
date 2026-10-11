@@ -80,6 +80,9 @@ from .progress import ProgressReporter
 
 log = logging.getLogger(__name__)
 
+# Bound disconnect to 5s to fit within the dispatcher's 45s shutdown budget.
+_DISCONNECT_TIMEOUT_S = 5.0
+
 
 def _append_filetype_tag(caption: str | None, file_path: str) -> str | None:
     """Append a `#<ext>` hashtag (e.g. `#mkv`) for a file shipped as a document,
@@ -508,12 +511,21 @@ class TelethonSendStrategy(SendStrategy):
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._progress_done()
         if self._client is not None:
-            await self._client.disconnect()
-            log.info("telethon: disconnected")
+            try:
+                await asyncio.wait_for(
+                    self._client.disconnect(),
+                    timeout=_DISCONNECT_TIMEOUT_S,
+                )
+                log.info("telethon: disconnected")
+            except (TimeoutError, asyncio.TimeoutError):
+                log.warning("telethon: disconnect timed out")
         # Disconnect the burner only if it was ever lazily built (Phase 3).
         if self._burner_client is not None:
             try:
-                await self._burner_client.disconnect()
+                await asyncio.wait_for(
+                    self._burner_client.disconnect(),
+                    timeout=_DISCONNECT_TIMEOUT_S,
+                )
                 log.info("telethon: burner disconnected")
             except Exception as e:  # best-effort; primary already down
                 log.warning("telethon: burner disconnect failed: %s", e)
