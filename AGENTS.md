@@ -82,7 +82,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Ask owner
 
-- None open.
+- Apply the 5s `__aexit__` disconnect bound (Carryover proposal)? Apply was rejected mid-wrap-up 2026-10-10; intent unclear.
 
 ## Index
 
@@ -96,7 +96,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through 0c2bc7d).
+Last audit: 2026-10-10 (through 2bb8cc9).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -143,4 +143,7 @@ Last audit: 2026-10-10 (through 0c2bc7d).
 - 2026-10-10: F4 fixed: `dispatcher/cli.py` `_drain_with_stop_grace`, 30s grace then cancel + `reset_stuck_sending(0)` (agy, after 3 DeepSeek rejects).
 - 2026-10-10: `dispatcher/_selftest_stop_grace.py` 9 checks; 4/4 helper mutants caught; 303 seams; dispatcher restarted, clean 2s stop. Grace path not yet seen live.
 - Trap: `apply_dispatch --new` needs the reply in one ```python fence; a raw reply fails "No fenced code block found".
-- Next session: StoragEDGE remount ~2026-10-16; watch for `stop grace of` in `dispatcher.out.log` on a wedged-send shutdown.
+- Audit 0c2bc7d..2bb8cc9: helper sound; send-path `finally` blocks only clean temps. Gap: `send.py` `__aexit__` `disconnect()` unbounded, can eat the 15s left (suspected).
+- Proposal (apply not approved by owner): bound both `__aexit__` disconnects to 5s; reviewed agy response `TriAPI rebuild/logs/responses/cc0828b18d2fa8c395896e910838c1f457af89892e1b72b076e03b3bc376f09b.txt` (`tasks/archiver_aexit_bound`).
+- Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
+- Next session: StoragEDGE remount ~2026-10-16; apply the disconnect bound if approved; watch for `stop grace of` in `dispatcher.out.log` on a wedged-send shutdown.
