@@ -518,7 +518,10 @@ class TelethonSendStrategy(SendStrategy):
                 )
                 log.info("telethon: disconnected")
             except (TimeoutError, asyncio.TimeoutError):
-                log.warning("telethon: disconnect timed out")
+                log.warning(
+                    "telethon: disconnect timed out after %ss — shutting down",
+                    _DISCONNECT_TIMEOUT_S,
+                )
         # Disconnect the burner only if it was ever lazily built (Phase 3).
         if self._burner_client is not None:
             try:
@@ -527,8 +530,18 @@ class TelethonSendStrategy(SendStrategy):
                     timeout=_DISCONNECT_TIMEOUT_S,
                 )
                 log.info("telethon: burner disconnected")
+            except (TimeoutError, asyncio.TimeoutError):
+                log.warning(
+                    "telethon: burner disconnect timed out after %ss — shutting "
+                    "down",
+                    _DISCONNECT_TIMEOUT_S,
+                )
             except Exception as e:  # best-effort; primary already down
-                log.warning("telethon: burner disconnect failed: %s", e)
+                log.warning(
+                    "telethon: burner disconnect failed: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
 
     async def check_destination(
         self, *, peer: Any, topic_id: int | None = None,

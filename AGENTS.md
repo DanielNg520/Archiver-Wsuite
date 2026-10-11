@@ -145,5 +145,6 @@ Last audit: 2026-10-10 (through 2bb8cc9).
 - 2026-10-10: `dispatcher/_selftest_stop_grace.py` 9 checks; 4/4 helper mutants caught; 303 seams; dispatcher restarted, clean 2s stop. Grace path not yet seen live.
 - Trap: `apply_dispatch --new` needs the reply in one ```python fence; a raw reply fails "No fenced code block found".
 - 2026-10-10: `send.py` `__aexit__` disconnects bounded at `_DISCONNECT_TIMEOUT_S`=5s (agy, `tasks/archiver_aexit_bound`); hung-disconnect sim exits 0.40s; 303 seams.
+- 2026-10-10: shutdown disconnect logs: grep `disconnect timed out after` (primary/burner) or `burner disconnect failed: <Type>:` in `dispatcher.out.log`.
 - Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
 - Next session: StoragEDGE remount ~2026-10-16; watch for `stop grace of` in `dispatcher.out.log` on a wedged-send shutdown.
