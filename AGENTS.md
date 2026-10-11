@@ -79,6 +79,8 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
 - Anything Windows-only can be removed: CRLF → LF renormalize, trash `miki_status.py` + its `.gitignore` lines (owner, 2026-10-10).
 - Bound `TelethonSendStrategy.__aexit__` disconnects to 5s each so shutdown fits 45s (owner, 2026-10-10).
+- Shutdown disconnect problems are log-only, no Telegram notify: the dispatcher is the sole sender and already disconnected (owner delegated, 2026-10-10).
+- Disconnect-timeout investigation deferred to a new session (owner, 2026-10-10).
 - Orchestrator selftests cover disk-full purge, auth circuit, reconcile users; stories auth backoff deferred (owner, 2026-10-10).
 
 ## Ask owner
@@ -97,7 +99,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-10 (through 2bb8cc9).
+Last audit: 2026-10-10 (through f0255ab).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder archiver`); recorder startup sweep logs both roots.
 - OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
@@ -147,4 +149,6 @@ Last audit: 2026-10-10 (through 2bb8cc9).
 - 2026-10-10: `send.py` `__aexit__` disconnects bounded at `_DISCONNECT_TIMEOUT_S`=5s (agy, `tasks/archiver_aexit_bound`); hung-disconnect sim exits 0.40s; 303 seams.
 - 2026-10-10: shutdown disconnect logs: grep `disconnect timed out after` (primary/burner) or `burner disconnect failed: <Type>:` in `dispatcher.out.log`.
 - Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
-- Next session: StoragEDGE remount ~2026-10-16; watch for `stop grace of` in `dispatcher.out.log` on a wedged-send shutdown.
+- Audit 2bb8cc9..f0255ab: `_force_reconnect` disconnect/reconnect `failed: %s` logs print empty on `TimeoutError` (same root cause as `__aexit__`, unfixed).
+- Audit: `__aexit__` primary non-timeout error still propagates and skips burner disconnect (pre-existing, shutdown-only, low impact).
+- Next session: investigate disconnect timeouts (grep above + journal stop/ABRT); fix empty-reason logs at every `wait_for` handler; StoragEDGE remount ~2026-10-16.
