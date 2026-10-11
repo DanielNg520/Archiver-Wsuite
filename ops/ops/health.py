@@ -468,8 +468,7 @@ def queue_health() -> dict | None:
     """Early-warning signals the counts alone don't show: how long the oldest
     pending row has waited, whether anything is wedged in 'sending', and how
     many unsent rows are invisible to the dedup guarantee (NULL content_hash).
-    All
-    read-only, all single indexed queries."""
+    Read-only, one query per signal."""
     conn = _connect_ro(SUITE_DB)
     if conn is None:
         return None

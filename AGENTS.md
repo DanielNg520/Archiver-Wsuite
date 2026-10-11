@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open.
+- F4 [medium · 3 · 2026-10-02→2026-10-08] `dispatcher/cli.py`: SIGTERM waits for a wedged send; systemd 45s stop timeout SIGABRTs it (core dump, rows left 'sending') (verified)
 
 ## Commands
 
@@ -105,10 +105,8 @@ Last audit: 2026-10-10 (through 0c2bc7d).
 - 2026-10-09 17:11-17:22 recorder service stopped; @daviddieal recorded meanwhile by a non-service run into `~/.recorder`, sent 17:23, deleted.
 - End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
-- Suspected only: 4 `com.duy.dispatcher` SIGABRTs since 2026-09-19 (2 dumps, first-thread `select_epoll_poll_impl`); not curl_cffi, uninvestigated.
 - 2026-10-09: wrap-up audit: `ItemStore.retry` (manual requeue) now clears `retry_after`; test `test_manual_retry_clears_backoff`. Reset-failed paths need nothing (failed rows never carry `retry_after`).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
-- Proposal: one `_READY` SQL fragment in `store.py` for the four `retry_after` filters plus the gated Python compare.
 - 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
 - 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
 - 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
@@ -138,4 +136,10 @@ Last audit: 2026-10-10 (through 0c2bc7d).
 - 2026-10-10 audit of a47e7c0..1b49c99 clean; `queue_health` docstring "single indexed queries" is inaccurate (both counts scan), cosmetic.
 - 2026-10-10: `_selftest_cli.py` extended (TriAPI `archiver_cli_run_selftest`): run/stories/loop/config/migrate, 106 checks; 15/15 cli mutants caught.
 - 2026-10-10 audit: exhausted `fake_cmd_run` sequence hung the loop test on a crash-count regression; now raises KeyboardInterrupt, mutant fails fast.
-- Next session: StoragEDGE remount ~2026-10-16; optional `_READY` fragment, `queue_health` docstring, patch `build_platforms` in `scenario_cmd_run` E.1 (regressed guard reaches the real one).
+- 2026-10-10: `_READY` fragment proposal dropped: three one-line SQL copies plus a Python compare; a shared `?` fragment adds indirection, no safety.
+- 2026-10-10: `scenario_cmd_run` case 1 stubs `build_platforms` and asserts no call (TriAPI `archiver_cli_e1_guard`); guard mutant exits 1 at the stub.
+- 2026-10-10: `queue_health` docstring no longer claims indexed queries (TriAPI `archiver_qh_docstring`).
+- F4 cause: Fedora `10-timeout-abort.conf` (`TimeoutStopFailureMode=abort`); all 3 aborts were shutdowns with an upload in flight (restart watchdog reset 1-2 rows).
+- F4 fix design: `_drain_with_stop_grace` in `dispatcher/cli.py`: 30s grace after stop, then cancel drain, `reset_stuck_sending(0)`, return; `ops update` stop-flag unchanged.
+- F4 dispatch WALL: `tasks/archiver_stop_grace` t1/t1r/t1r2 all rejected (orphaned task, no grace, `raise None`); nothing applied. Options: agy, hand fix, defer.
+- Next session: StoragEDGE remount ~2026-10-16; F4 fix + `dispatcher/_selftest_stop_grace.py` (hang, normal exit, drain-raised TimeoutError, outer cancel).

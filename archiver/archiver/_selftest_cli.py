@@ -292,14 +292,21 @@ def scenario_cmd_run() -> None:
     try:
         cli.Archiver = FakeArchiver
 
+        orig_build = cli.build_platforms
+
         # 1. full_history=True with no platform and no user
-        args = types.SimpleNamespace(platform=None, user=None, full_history=True)
-        rc = cli.cmd_run(args, config, db)
-        check(rc == 2, "cmd_run: full-history without platform/user returns 2")
-        check(len(calls) == 0, "cmd_run: full-history validation abort constructs no Archiver")
+        build_calls = []
+        cli.build_platforms = lambda config: build_calls.append(config)
+        try:
+            args = types.SimpleNamespace(platform=None, user=None, full_history=True)
+            rc = cli.cmd_run(args, config, db)
+            check(rc == 2, "cmd_run: full-history without platform/user returns 2")
+            check(len(calls) == 0, "cmd_run: full-history validation abort constructs no Archiver")
+            check(len(build_calls) == 0, "cmd_run: full-history validation abort constructs no platforms")
+        finally:
+            cli.build_platforms = orig_build
 
         # 2. full_history=True with platform, re-arms before archiving
-        orig_build = cli.build_platforms
         cli.build_platforms = lambda config: [types.SimpleNamespace(name="x", users=("alice", "bob"))]
         try:
             db.mark_full_history_done("x", "alice")
