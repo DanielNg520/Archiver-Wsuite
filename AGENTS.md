@@ -100,7 +100,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-11 (through 39f0eea + state.py stream_url log).
+Last audit: 2026-10-11 (through e921b6b).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
 - Fallback trial 2026-10-09→10-11 PASSED: 22 `using fallback` starts, all uploaded and deleted; `~/.recorder` holds only `pid`/`unstartable.json`.
