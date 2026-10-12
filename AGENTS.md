@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F3 [medium · 1 · 2026-10-11→2026-10-11] core/core/notify.py: `recorder_done` events pile up in `notify_outbox` (~400 since 2026-09-05); no dispatcher consumer exists (verified).
+- F5 [medium · 1 · 2026-10-11→2026-10-11] core/core/notify.py: `recorder_done` events pile up in `notify_outbox` (~400 since 2026-09-05); no dispatcher consumer exists (verified).
 - Ask owner: wire a dispatcher consumer for `notify_outbox`, or delete `core.notify` + `queue_event` call? Ops Center `vlog_bridge` already broadcasts start/end.
 
 ## Commands
