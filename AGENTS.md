@@ -4,8 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F5 [medium · 1 · 2026-10-11→2026-10-11] core/core/notify.py: `recorder_done` events pile up in `notify_outbox` (~400 since 2026-09-05); no dispatcher consumer exists (verified).
-- Ask owner: wire a dispatcher consumer for `notify_outbox`, or delete `core.notify` + `queue_event` call? Ops Center `vlog_bridge` already broadcasts start/end.
+- None open.
 
 ## Commands
 
@@ -66,6 +65,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Decisions
 
 - Recorder falls back to `~/.recorder/<user>/` when StoragEDGE is absent (owner, 2026-10-09).
+- Delete `core.notify`/`notify_outbox` and the recorder `queue_event`; Ops Center `vlog_bridge` is the only start/end notifier (owner, 2026-10-11).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).

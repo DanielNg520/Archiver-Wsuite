@@ -582,24 +582,6 @@ class TelethonSendStrategy(SendStrategy):
             return False, f"chat OK ({name}) — topic {topic_id} NOT found"
         return True, f"{name} · topic {topic_id}"
 
-    async def send_text(self, peer: "int | str", text: str) -> bool:
-        """Deliver a plain-text admin alert (see core.notify) to `peer` —
-        "me" for Saved Messages, or a chat/user id — on the PRIMARY account,
-        never the burner, since this is an operator notification about the
-        suite's own state, not a routed upload. Returns True on success;
-        failures are logged and swallowed so a notification glitch can never
-        take the drain loop down."""
-        try:
-            await self._client.send_message(peer, text)
-            return True
-        except Exception as e:
-            log.warning("notify: send_text(%r) failed: %s", peer, e)
-            return False
-
-    async def send_text_to_self(self, text: str) -> bool:
-        """Convenience wrapper: send_text to Saved Messages."""
-        return await self.send_text("me", text)
-
     async def send(
         self,
         *,

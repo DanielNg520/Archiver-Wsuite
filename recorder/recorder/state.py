@@ -46,7 +46,6 @@ from typing import Callable
 
 from core import ItemStore
 from core import split_group_key
-from core.notify import queue_event
 from core.store import now_iso
 
 from . import cookie_refresh
@@ -641,23 +640,11 @@ class StateMachine:
                      ui.human_duration(elapsed), len(files),
                      "" if len(files) == 1 else "s", ui.human_size(total),
                      extra_seg, extra={"ev": "rec_end"})
-            notify_text = (f"\U0001f534 recording done: @{user}\n"
-                           f"{session_start_wall} → {session_end_wall} "
-                           f"({ui.human_duration(elapsed)})\n"
-                           f"{len(files)} file{'' if len(files) == 1 else 's'} "
-                           f"· {ui.human_size(total)}{extra_seg}")
         else:
             # rc=-2 dead-stream guard (no bytes ever arrived).
             log.info("@%s ended — %s → %s (%s) · no data (dead stream)",
                      user, session_start_wall, session_end_wall,
                      ui.human_duration(elapsed), extra={"ev": "rec_end"})
-            notify_text = (f"\U0001f534 recording ended: @{user}\n"
-                           f"{session_start_wall} → {session_end_wall} "
-                           f"({ui.human_duration(elapsed)}) · no data (dead stream)")
-        queue_event("recorder_done", notify_text, user=user,
-                    started_at=session_start_wall, ended_at=session_end_wall,
-                    elapsed_s=elapsed, file_count=len(files),
-                    reconnects=reconnects)
         for f in files:
             self._upload_q.put(_Job(username=self.current_user or "",
                                     file_path=f, group_key=session_gk))
