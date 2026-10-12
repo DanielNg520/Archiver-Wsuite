@@ -24,7 +24,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Logs: `~/.local/log/<app>.{out,err}.log`. `$CONFIG/archiver-suite/logs` frozen since 2026-07-28.
 - `OUTPUT_DIR=/home/dyne/.archive`; `ROUTES_DIR=/run/media/dyne/StoragEDGE/.routes`.
 - Recorder `output_dir=/run/media/dyne/StoragEDGE/.records`; fallback root `state_dir` = `~/.recorder` (see below).
-- StoragEDGE (120GB USB, `/dev/sdc2`) can re-enumerate on a USB disconnect storm, leaving a dead mount; remount fixes it.
+- StoragEDGE (120GB USB, NTFS; device letter varies, `sda2` on 2026-10-11, find via `lsblk`) can re-enumerate on a USB disconnect storm, leaving a dead mount; remount fixes it.
 - SanDisk ULTRAFIT stopgap reverted 2026-10-09; an SD card reader is on order as StoragEDGE's permanent connection.
 - Playwright Chromium + headless shell in `~/.cache/ms-playwright` (machine-local); age-restricted browser fallback confirmed resolving URLs.
 
@@ -68,6 +68,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
+- Trial ended early: StoragEDGE replugged and auto-mounted 2026-10-11 15:28 (owner, 2026-10-11).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
 - "Long outdated" means the whole repo: bring docs, deps and layout in line with the current global rules (owner, 2026-10-09).
 - `requirements.txt` deleted; per-package `pyproject.toml` is the only dependency source (owner, 2026-10-09).
@@ -102,11 +103,9 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 Last audit: 2026-10-11 (through 39f0eea + state.py stream_url log).
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
-- OPEN fallback trial: StoragEDGE UNMOUNTED 2026-10-09 (`udisksctl unmount`; power-off needs polkit). Live-config probe chose `~/.recorder/<user>`.
-- During trial: route folders on `ROUTES_DIR` unreachable; drive data untouched (832M records, 3.0G routes).
-- Trial check: `grep 'using fallback' ~/.local/log/recorder.out.log`; recordings in `~/.recorder/<user>/` must upload and get deleted.
+- Fallback trial 2026-10-09→10-11 PASSED: 22 `using fallback` starts, all uploaded and deleted; `~/.recorder` holds only `pid`/`unstartable.json`.
+- 2026-10-11 15:28: StoragEDGE back (`/dev/sda2`, rw, probe write OK), data intact (832M records, 3.0G routes); recorder restarted, sweep covered both roots.
 - 2026-10-09 17:11-17:22 recorder service stopped; @daviddieal recorded meanwhile by a non-service run into `~/.recorder`, sent 17:23, deleted.
-- End trial: remount (`udisksctl mount -b /dev/sdc2`, polkit, owner), `findmnt`; leftovers in `~/.recorder` are swept, no move-back.
 - 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
 - 2026-10-09: wrap-up audit: `ItemStore.retry` (manual requeue) now clears `retry_after`; test `test_manual_retry_clears_backoff`. Reset-failed paths need nothing (failed rows never carry `retry_after`).
 - 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
@@ -156,4 +155,4 @@ Last audit: 2026-10-11 (through 39f0eea + state.py stream_url log).
 - 2026-10-11: `_selftest_orchestrator.py` section D: stories auth stops lane, gone account continues; both mutants caught.
 - 2026-10-11 audit: `state.py` `stream_url(%s) failed` error log had the same empty-reason bug; fixed (TriAPI t7), recorder restarted.
 - 2026-10-11: one-off `ConnectionError` never reaches drain backoff: `_send_with_retries` retries 4x with reconnect first.
-- Next session: StoragEDGE remount ~2026-10-16 (owner, polkit).
+- Next session: confirm the next live recording lands in `StoragEDGE/.records/<user>` (no new `using fallback` after 2026-10-11 15:28).
