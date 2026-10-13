@@ -68,6 +68,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Delete `core.notify`/`notify_outbox` and the recorder `queue_event`; Ops Center `vlog_bridge` is the only start/end notifier (owner, 2026-10-11).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
+- Bot token for @Nothing_is_available_ARC_bot lives in suite `.env` as `RECORDER_BOT_API`, moved from SemAI sops; no suite code reads it (owner, 2026-10-12).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Trial ended early: StoragEDGE replugged and auto-mounted 2026-10-11 15:28 (owner, 2026-10-11).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
@@ -87,7 +88,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Ask owner
 
-- None open.
+- `RECORDER_BOT_API` (@Nothing_is_available_ARC_bot): what should use it? Today nothing does; vlog_bridge has its own bot.
 
 ## Index
 
