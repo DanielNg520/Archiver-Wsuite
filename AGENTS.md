@@ -103,7 +103,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-13 (through b68f04e).
+Last audit: 2026-10-13 (through 32e7c3b).
 - 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
