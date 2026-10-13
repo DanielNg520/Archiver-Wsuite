@@ -68,7 +68,8 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Delete `core.notify`/`notify_outbox` and the recorder `queue_event`; Ops Center `vlog_bridge` is the only start/end notifier (owner, 2026-10-11).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
-- Bot token for @Nothing_is_available_ARC_bot lives in suite `.env` as `RECORDER_BOT_API`, moved from SemAI sops; no suite code reads it (owner, 2026-10-12).
+- Bot token for @Nothing_is_available_ARC_bot lives in suite `.env` as `RECORDER_BOT_API`; its only consumer is Ops Center `vlog_bridge` (reads it via its `config.json` `env_path`) (owner, 2026-10-12).
+- Bot commands: `/record`, `/recstatus`, `/ar_add` (archiver), `/re_add` (recorder), `/remove`, `/list` (recorder); old `/add`, `/addrecord` dropped (owner, 2026-10-13).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Trial ended early: StoragEDGE replugged and auto-mounted 2026-10-11 15:28 (owner, 2026-10-11).
 - Gate this repo's code dirs (dispatch-gate-paths + ledger pre-commit hook), like SemAI/TriAPI (owner, 2026-10-09).
@@ -88,7 +89,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Ask owner
 
-- `RECORDER_BOT_API` (@Nothing_is_available_ARC_bot): what should use it? Today nothing does; vlog_bridge has its own bot.
+- None open.
 
 ## Index
 
@@ -102,7 +103,8 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-11 (through a4c98aa).
+Last audit: 2026-10-13 (through b68f04e).
+- 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
 - Fallback trial 2026-10-09→10-11 PASSED: 22 `using fallback` starts, all uploaded and deleted; `~/.recorder` holds only `pid`/`unstartable.json`.
