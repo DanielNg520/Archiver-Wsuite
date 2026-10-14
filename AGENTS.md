@@ -4,9 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F9 [high · 2 · 2026-10-08→2026-10-14] dispatcher/dispatcher/send.py `_force_reconnect`: Telethon 1.45 `_ping` survives reconnect; stale value kills each reconnected link at 60s. Fix: reset it in reconnect, add test (verified)
-- F10 [medium · 1 · 2026-10-14] ops/ops/health.py:871: "all systems nominal" only checks worker pids; 6h dispatcher stall with 1000+ errors showed green; no stall warning or alert (verified)
-- F11 [low · 1 · 2026-10-14] dispatcher/dispatcher/fast_upload.py:154: every retry draws a new random `file_id`, resending the whole file; long uploads can never resume (verified)
+- None open.
 
 ## Commands
 
@@ -105,10 +103,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-14 wrap-up (audited through `5f2ffb4`; 3 new findings).
-- 2026-10-14: queued recording stuck 6h (19970609bun, rhmn1999): F9. Network, clock, Telegram reachability all fine; videos sent until 03:47. "ops restart dispatcher" cleared it, both uploaded.
-- 2026-10-14 next: F9 root cause found (stale `_ping`); fix F9+F10 via TriAPI, plan first, owner not yet approved. F11 optional.
-- 2026-10-14: recorder health showing foreground was a manual "recorder record --user nicktraining"; service stays stopped until it exits, then reloads itself. Not a fault.
+Last audit: 2026-10-13 (through 32e7c3b).
 - 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
