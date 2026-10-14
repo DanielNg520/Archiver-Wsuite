@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open.
+- F9 [medium · 2 · 2026-10-08→2026-10-14] dispatcher/dispatcher/send.py: dead Telethon connection never recovers; sends raise "Cannot send requests while disconnected"; fix = ops restart dispatcher (verified)
 
 ## Commands
 
@@ -103,7 +103,10 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-13 (through 32e7c3b).
+Last audit: 2026-10-14 wrap-up (audited through `5f2ffb4`; 1 new finding).
+- 2026-10-14: queued recording stuck 6h (19970609bun, rhmn1999): F9. Network, clock, Telegram reachability all fine; videos sent until 03:47. "ops restart dispatcher" cleared it, both uploaded.
+- 2026-10-14 next: F9 code fix via TriAPI (auto-restart or rebuild client after N consecutive disconnected-send failures); owner not yet approved, plan first. Reproduce needs a real dead connection.
+- 2026-10-14: recorder health showing foreground was a manual "recorder record --user nicktraining"; service stays stopped until it exits, then reloads itself. Not a fault.
 - 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
