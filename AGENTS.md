@@ -4,10 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F19 [medium · 1 · 2026-10-15] ops/ops/bot/loop.py `_broadcast`: `_send_with_retry` sleeps up to 15s per chat in-loop, delaying getUpdates and sweep (verified). Fix: one attempt, or retry off-loop.
-- F20 [low · 1 · 2026-10-15] core/core/env.py `read_env_file`: `A="tok" # c` keeps the quotes; consumers `ops/cli.py:426`, bot token (verified). Fix: parse quoted span first, then drop comment.
-- F21 [low · 1 · 2026-10-15] ops/ops/bot/commands.py `parse_command`: invalid handle returns None, so the command is dropped with no reply and untracked (verified). Fix: reply "invalid handle" in `_process_updates`.
-- F22 [low · 1 · 2026-10-15] dispatcher/dispatcher/fast_upload.py `consume` retry: bare `await sender.disconnect()` unbounded, vs the 5s bound decision; a hung dead link stalls the part (suspected). Fix: `asyncio.wait_for(..., 5)`.
+- None open (2026-10-15).
 
 ## Commands
 
@@ -127,10 +124,11 @@ Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
 - Watch: first video upload over 60s after a reconnect must complete; if `Automatic reconnection failed` returns 60s after `reconnected`, F9 is not closed.
 - Incident 2026-10-14: queue stalled 6h (19970609bun, rhmn1999 videos; uploads over 60s failed `Cannot send requests while disconnected`) until `ops restart dispatcher` 13:49; both sent.
 - Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
-- F11-F18 fixed in `05d1362`; dispatcher and bot restarted 2026-10-14 23:08 PDT, healthy.
+- F11-F22 fixed (`05d1362`, `fe5303c`); dispatcher and bot restarted 2026-10-15 06:12 PDT, healthy.
 
 ### ARC bot (P1 live 2026-10-14; next: P2 in a new session)
 - P1 (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
+- Notices: one send per loop pass; failed chats retried next passes, max `BROADCAST_TRIES`=5; `_send_with_retry` is record-waiter only (F19).
 - Ops Center purged (tar `~/.archive/opscenter-2026-10-14.tar.gz`); vlog-bridge disabled. Errors only in `~/.local/log/bot.err.log`; silence = polling fine.
 - Watch: first 24h sweep ~2026-10-15 19:15; tracked messages must vanish from chat and `sent.json`.
 - Trap: OpenRouter fallback (DeepSeek peak) mangled fences/docstrings and invented APIs; agy wrote all bot modules clean. Prefer agy for new files.
@@ -145,6 +143,7 @@ Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
 - Test-writing: DeepSeek failed fake-heavy selftests three rounds; agy wrote all four first try (2026-10-15). Prefer agy for new tests.
 - `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
 - `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path, not the task `.out`; `--new` needs one ```python fence.
+- apply_dispatch has no paired apply: when a fix changes behaviour a test pins, apply code with compile+seams check, then the test with its selftest.
 - agy may write the target file itself and prefix prose; diff the tree after every agy call, before apply.
 - `ops restart` takes exactly one worker per call.
 - `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
