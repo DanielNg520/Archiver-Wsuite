@@ -267,7 +267,7 @@ def execute(
                 message_id,
             )
             return
-        _send_or_edit(
+        started_msg_id = _send_or_edit(
             api,
             state,
             chat_id,
@@ -275,7 +275,24 @@ def execute(
             clock,
             message_id,
         )
-        commands.start_detached([bins[plan.tool], *plan.args], detached_log)
+        try:
+            commands.start_detached(
+                [bins[plan.tool], *plan.args], detached_log
+            )
+        except OSError as err:
+            log.warning("Failed to start detached %s: %s", cmd, err)
+            try:
+                api.edit_message_text(
+                    chat_id,
+                    started_msg_id,
+                    f"✗ failed to start: {cmd}\n{err}",
+                )
+            except TelegramError as edit_err:
+                log.warning(
+                    "Failed to edit start failure in chat %d: %s",
+                    chat_id,
+                    edit_err,
+                )
         return
 
     target_msg_id = _send_or_edit(

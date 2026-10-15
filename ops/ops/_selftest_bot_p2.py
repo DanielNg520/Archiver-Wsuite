@@ -581,6 +581,62 @@ def test_actions() -> None:
            "actions: detached command reply is sent BEFORE process starts")
 
 
+def test_actions_detached_spawn_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bins = {
+            "archiver": "/bin/echo",
+            "recorder": "/bin/echo",
+            "dispatcher": "/bin/echo",
+            "ops": "/bin/echo",
+        }
+        clock = lambda: 1000.0
+        api = FakeBotAPI()
+        state = BotState(Path(tmpdir) / "state_fail.sqlite3")
+        det_log_file = Path(tmpdir) / "detached_fail.log"
+
+        def fake_start_detached(
+            argv: list[str], log_p: Path
+        ) -> subprocess.Popen:
+            raise OSError("boom")
+
+        orig_start_detached = commands.start_detached
+        commands.start_detached = fake_start_detached
+        try:
+            plan_up = catalog.parse("/update")
+            ok(
+                isinstance(plan_up, catalog.Plan),
+                "actions: /update parsed to Plan",
+            )
+            actions.execute(
+                api, state, 123, plan_up, bins, det_log_file, clock
+            )
+        finally:
+            commands.start_detached = orig_start_detached
+
+        sends = api.find_calls("sendMessage")
+        ok(
+            len(sends) == 1 and "started in background" in sends[0]["text"],
+            "actions: detached spawn failure sent initial start message",
+        )
+        started_mid = sends[0]["message_id"]
+
+        edits = [
+            c
+            for c in api.find_calls("editMessageText")
+            if c["message_id"] == started_mid
+        ]
+        ok(
+            len(edits) == 1,
+            "actions: detached spawn failure edited initial message once",
+        )
+        edit_text = edits[0]["text"]
+        ok(
+            edit_text.startswith("✗ failed to start:")
+            and "boom" in edit_text,
+            "actions: detached spawn failure edit has error marker and boom",
+        )
+
+
 class FakeLoopBotAPI(FakeBotAPI):
     def __init__(self) -> None:
         super().__init__()
@@ -675,6 +731,7 @@ def main() -> int:
     test_bot_api_additions()
     test_commands_start_detached()
     test_actions()
+    test_actions_detached_spawn_failure()
     test_loop_run()
     print(f"\nAll {_checks} checks passed.")
     return 0

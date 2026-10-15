@@ -9,7 +9,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Commands
 
 - Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (303 checks).
-- Ops selftests: `PYTHONPATH=core:ops PYTHONUTF8=1 .venv-test/bin/python3 -m ops._selftest_bot` (also `_selftest_health`); not in `test_seams.py`.
+- Ops selftests: `PYTHONPATH=core:ops PYTHONUTF8=1 .venv-test/bin/python3 -m ops._selftest_bot` (also `_selftest_bot_p2`, `_selftest_health`); not in `test_seams.py`.
 - Selftests: `PYTHONPATH=core:recorder PYTHONUTF8=1 .venv-test/bin/python3 -m recorder._selftest_<name>`; same pattern per package.
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
@@ -109,7 +109,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - `archiver/` media-archiver: scheduled platform scans (X, TikTok, Instagram) via gallery-dl/yt-dlp, reconcile, orphaned routes.
 - `dispatcher/` sole Telethon media sender (`ops bot` sends only control messages via Bot API): claim/drain/send, fast upload, delete-after-upload.
 - `recorder/` TikTok live recorder: `state.py` loop, `capture.py` yt-dlp, `platforms/` URL resolve + browser fallback, `startup_sweep.py`.
-- `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate/bot; `bot/` ARC Telegram bot; `RUNBOOK.md`.
+- `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate/bot; `bot/` ARC Telegram bot (`catalog` command table, `actions` confirm/run, `loop`, `telegram`, `state`); `RUNBOOK.md`.
 - `tests/` `tests/test_seams.py` is the seams runner over `tests/seams/` (topic modules + `_harness.py`), plus the dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
@@ -126,18 +126,19 @@ Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
 - Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
 - F11-F22 fixed (`05d1362`, `fe5303c`); dispatcher and bot restarted 2026-10-15 06:12 PDT, healthy.
 
-### ARC bot (P1 live 2026-10-14; next: P2 in a new session)
+### ARC bot (P1 live 2026-10-14, P2 live 2026-10-15 in 5aaa19a)
 - P1 (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
 - Notices: one send per loop pass; failed chats retried next passes, max `BROADCAST_TRIES`=5; `_send_with_retry` is record-waiter only (F19).
 - Ops Center purged (tar `~/.archive/opscenter-2026-10-14.tar.gz`); vlog-bridge disabled. Errors only in `~/.local/log/bot.err.log`; silence = polling fine.
 - Watch: first 24h sweep ~2026-10-15 19:15; tracked messages must vanish from chat and `sent.json`.
 - Trap: OpenRouter fallback (DeepSeek peak) mangled fences/docstrings and invented APIs; agy wrote all bot modules clean. Prefer agy for new files.
-- P2 reuse: `commands.run_cli` + `bins`, loop `_handle_command`; add `callback_query` handling for confirm buttons.
-- P2 (full CLI): shorthand alias table (data, not code per command) plus `/a /r /d /o <raw args>` passthrough for every other command.
-- P2: daemon/interactive verbs (`start`, `loop`, `watch`, `tui`) blocked; `record` stays async; per-entry timeout (ops update needs minutes).
-- P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No, 60s expiry.
-- P2: graceful status: post "running <argv>", then edit to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
-- P2 trap: `ops restart bot`/`ops unload bot`/`ops update` from the bot kills or restarts itself mid-reply; reply first, then exec.
+- P2 commands: aliases `/health /qstatus /stats /rstatus /queue /restart /update`; `/a /r /d /o <args>` pass through to archiver, recorder, dispatcher, ops.
+- P2 classification lives in `catalog.py` tables: refused daemon/interactive verbs, `_SAFE_PREFIXES` and `_SHOW_ONLY_VERBS` run directly, everything else gets Yes/No.
+- Confirmations are in memory (`actions.Pending`, 60s); a bot restart drops open prompts, and stale buttons answer "expired".
+- Non-detached runs post `running: <cmd>`, then a thread edits it to ✓/✗ with exit code and output tail; timeouts 120s, 600s, 3600s per verb.
+- Self-affecting ops verbs (install, uninstall, update, load/unload all or bot, restart bot) reply first, then detach; output in `~/.local/log/bot-detached.log`.
+- `ops update --no-watch` exists for the bot; `/update` always appends it.
+- Watch: owner live test in chat not yet done: `/health`, `/a reset all` then No, `/restart bot` then Yes.
 
 ### Standing traps
 - Test-writing: DeepSeek failed fake-heavy selftests three rounds; agy wrote all four first try (2026-10-15). Prefer agy for new tests.
