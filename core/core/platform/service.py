@@ -42,6 +42,7 @@ class JobSpec:
     args: list[str] = field(default_factory=list)
     kind: str = "daemon"             # "daemon" | "calendar"
     calendar: "tuple[int, int] | None" = None   # (hour, minute) for calendar
+    keep_children: bool = False      # daemon only: leave children running
 
     @property
     def tag(self) -> str:
@@ -78,6 +79,7 @@ if sys.platform == "darwin":                          # ── macOS / launchd �
             )
             env_block = ""
             workdir_block = ""
+            abandon_block = ""
         else:
             schedule = (
                 "    <key>RunAtLoad</key>\n    <true/>\n"
@@ -98,6 +100,10 @@ if sys.platform == "darwin":                          # ── macOS / launchd �
                 "    <key>WorkingDirectory</key>\n"
                 f"    <string>{Path.home()}</string>\n"
             )
+            abandon_block = (
+                "    <key>AbandonProcessGroup</key>\n"
+                "    <true/>\n"
+            ) if spec.keep_children else ""
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -117,6 +123,7 @@ if sys.platform == "darwin":                          # ── macOS / launchd �
             "    <key>StandardErrorPath</key>\n"
             f"    <string>{err}</string>\n"
             f"{workdir_block}"
+            f"{abandon_block}"
             "    <key>ProcessType</key>\n"
             "    <string>Background</string>\n"
             "</dict>\n"
@@ -216,6 +223,10 @@ else:                                                 # ── Linux / systemd �
         else:
             restart_block = "Restart=always\nRestartSec=30\n"
 
+        keep_children_block = ""
+        if spec.kind != "calendar" and spec.keep_children:
+            keep_children_block = "KillMode=process\n"
+
         return (
             "[Unit]\n"
             f"Description=archiver-suite {spec.tag}\n"
@@ -224,6 +235,7 @@ else:                                                 # ── Linux / systemd �
             "[Service]\n"
             f"ExecStart={args_str}\n"
             f"{restart_block}"
+            f"{keep_children_block}"
             f"StandardOutput=append:{out}\n"
             f"StandardError=append:{err}\n"
             "\n"

@@ -1,7 +1,7 @@
 """
 ops.cli
 ───────
-  ops install          register the three service definitions + logrotate job
+  ops install          register the services + logrotate job
   ops uninstall        unload + remove the definitions
   ops health           one-shot system health report
   ops watch            health report refreshed every few seconds
@@ -13,6 +13,7 @@ ops.cli
   ops update           on a codebase change: drain the dispatcher cleanly,
                        uv-tool-reinstall the changed packages, reload + watch
   ops logrotate        copytruncate-rotate oversized worker logs (gzip history)
+  ops bot              run the Telegram control bot (service: com.duy.bot)
 
 install/load/unload/restart are thin wrappers over the OS service manager
 (systemd on Linux, launchd on macOS) via core.platform.service, so you
@@ -52,11 +53,13 @@ LOGROTATE_LABEL = "com.duy.logrotate"
 
 # service name → (CLI command on PATH, subcommand args). Mirrors what each
 # launchd job should run: the dispatcher/recorder drain/listen continuously,
-# the archiver loops `run` on a random interval.
+# the archiver loops `run` on a random interval; the bot runs `ops bot`
+# and must keep its child recorders alive across restarts.
 _SERVICE_CMD: dict[str, tuple[str, list[str]]] = {
     "dispatcher": ("dispatcher", ["start"]),
     "recorder":   ("recorder",   ["start"]),
     "archiver":   ("archiver",   ["loop"]),
+    "bot":        ("ops",        ["bot"]),
 }
 
 
@@ -132,7 +135,7 @@ def cmd_logrotate(args: argparse.Namespace) -> int:
 
 
 def cmd_install(_args: argparse.Namespace) -> int:
-    """Register the OS service definitions for this machine: the three services
+    """Register the OS service definitions for this machine: the services
     + the daily logrotate calendar job. Idempotent — re-running overwrites with
     fresh paths. Run `ops load` afterward to start them (and at every login)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -147,8 +150,10 @@ def cmd_install(_args: argparse.Namespace) -> int:
             rc = 1
             continue
         try:
+            keep_children = (name == "bot")
             _service.install(JobSpec(label=label, program=program,
-                                     args=sub_args, kind="daemon"))
+                                     args=sub_args, kind="daemon",
+                                     keep_children=keep_children))
         except (OSError, RuntimeError) as e:
             print(f"{name}: install FAILED — {e}")
             rc = 1
@@ -290,6 +295,13 @@ def _drain_worker(name: str, args: argparse.Namespace) -> int | None:
     return pid
 
 
+def _restart_bot_if_stale(changed: set[str], force: bool) -> None:
+    """Restart bot service when ops or core code changed."""
+    if force or "ops" in changed or "core" in changed:
+        if _service.definition_exists(LABELS["bot"]):
+            cmd_restart(argparse.Namespace(service="bot"))
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     """Detect a codebase change and deploy it with the MINIMUM disruption: only
     the workers actually affected are restarted, and each is brought to a
@@ -299,6 +311,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     Package logic (see update.update_plan):
       • only `ops` changed  → editable, already live: nothing to restart.
+      • `ops` or `core` changed  → restart bot if its service exists.
       • only `core` changed  → restart all workers (no reinstall — editable core).
       • a worker changed     → reinstall + restart just that worker.
       • `--force`            → reinstall + restart everything.
@@ -331,6 +344,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         _termui.field("update", "only ops changed — editable, already live; "
                       "no reinstall or worker restart needed", accent="green")
         _update.write_fingerprints(current)
+        _restart_bot_if_stale(changed, args.force)
         _termui.field("update", "done — entering watch (Ctrl-C to exit)",
                       accent="green")
         time.sleep(1.0)
@@ -386,11 +400,81 @@ def cmd_update(args: argparse.Namespace) -> int:
     for name in order:
         cmd_load(argparse.Namespace(service=name))
 
+    _restart_bot_if_stale(changed, args.force)
+
     # Hand off to watch.
     _termui.field("update", "done — entering watch (Ctrl-C to exit)",
                   accent="green")
     time.sleep(1.0)
     return cmd_watch(argparse.Namespace(interval=args.interval))
+
+
+def cmd_bot(_args: argparse.Namespace) -> int:
+    """Run the Telegram control bot."""
+    import logging
+
+    from core import env as _env
+    from core.platform import paths as _platform_paths
+    from ops.bot import loop as _bot_loop
+    from ops.bot.state import BotState
+    from ops.bot.telegram import BotAPI
+
+    cfg_dir = _platform_paths.config_dir()
+    env_vars = _env.read_env_file(cfg_dir / ".env")
+
+    token = env_vars.get("RECORDER_BOT_API", "").strip()
+    if not token:
+        print("ops bot: RECORDER_BOT_API missing in .env", file=sys.stderr)
+        return 2
+
+    raw_ids = env_vars.get("ARC_BOT_ALLOWED_IDS", "").strip()
+    if not raw_ids:
+        print("ops bot: ARC_BOT_ALLOWED_IDS missing in .env", file=sys.stderr)
+        return 2
+
+    ids: list[int] = []
+    for item in raw_ids.split(","):
+        s = item.strip()
+        if not s:
+            continue
+        try:
+            ids.append(int(s))
+        except ValueError:
+            print("ops bot: non-integer id in ARC_BOT_ALLOWED_IDS",
+                  file=sys.stderr)
+            return 2
+
+    if not ids:
+        print("ops bot: ARC_BOT_ALLOWED_IDS has no valid ids",
+              file=sys.stderr)
+        return 2
+
+    rec_bin = _resolve_bin("recorder")
+    if rec_bin is None:
+        print("ops bot: recorder CLI not found", file=sys.stderr)
+        return 2
+
+    arc_bin = _resolve_bin("archiver")
+    if arc_bin is None:
+        print("ops bot: archiver CLI not found", file=sys.stderr)
+        return 2
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
+
+    try:
+        _bot_loop.run(
+            BotAPI(token),
+            BotState(cfg_dir / "bot"),
+            allowed=frozenset(ids),
+            lock_path=_paths.tiktok_lock(),
+            bins={"recorder": rec_bin, "archiver": arc_bin},
+        )
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -444,6 +528,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="rotate logs larger than this many MiB")
     lr.add_argument("--keep", type=int, default=DEFAULT_KEEP,
                     help="compressed generations to keep per log")
+    sub.add_parser(
+        "bot",
+        help="run the Telegram control bot (service: com.duy.bot)",
+    )
     return p
 
 
@@ -457,6 +545,7 @@ _DISPATCH = {
     "restart":   cmd_restart,
     "update":    cmd_update,
     "logrotate": cmd_logrotate,
+    "bot":       cmd_bot,
 }
 
 

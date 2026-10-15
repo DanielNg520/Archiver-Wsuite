@@ -83,6 +83,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - ARC bot deletes its own messages and the owner's commands 24h after sending (owner, 2026-10-14; Bot API caps deletes at 48h).
 - ARC bot destructive commands need an inline Yes/No confirm, 60s expiry; read-only and additive run directly (owner, 2026-10-14).
 - Fix dispatcher reconnect wedge (stale Telethon `_ping` kills each reconnect at 60s) and add an `ops health` stall warning (owner, 2026-10-14).
+- ARC bot allowed ids live in suite `.env` as `ARC_BOT_ALLOWED_IDS` (comma list), next to `RECORDER_BOT_API` (owner, 2026-10-14).
 - ARC bot lives in `ops` as `ops bot`, unit `com.duy.bot`, stdlib HTTP only, ops keeps zero deps (owner, 2026-10-14).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).

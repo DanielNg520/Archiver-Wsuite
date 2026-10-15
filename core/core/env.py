@@ -84,3 +84,30 @@ def opt_bool(key: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
+    """Parse a dotenv-style file without external dependencies.
+
+    Used by dependency-free packages such as ops.
+    """
+    result: dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if (value.startswith('"') and value.endswith('"')) or (
+                    value.startswith("'") and value.endswith("'")
+                ):
+                    value = value[1:-1]
+                result[key] = value
+    except OSError:
+        return {}
+    return result

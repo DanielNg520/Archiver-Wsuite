@@ -72,11 +72,8 @@ LABELS = {
     "dispatcher": "com.duy.dispatcher",
     "recorder":   "com.duy.recorder",
     "archiver":   "com.duy.archiver",
+    "bot":        "com.duy.bot",
 }
-
-# NOTE: Miki monitoring was decoupled out of this archiver dashboard into the
-# standalone "Ops Center" (~/Documents/Coding/Ops Center), which shows every
-# worker on the box as a peer. `ops health` here is archiver-suite only again.
 
 
 # ── data-refresh memoization (ops watch) ────────────────────────────────────
@@ -155,11 +152,14 @@ def _recorder_pidfile_pid() -> int | None:
 
 def _argv_pid(name: str) -> int | None:
     """Find a worker in the process table by its argv, independent of the
-    service manager. Not used for the recorder — see _recorder_pidfile_pid."""
+    service manager. Not used for the recorder — see _recorder_pidfile_pid.
+    For "bot", matches argv ["ops", "bot"]."""
     if name == "recorder":
         return _recorder_pidfile_pid()
     if name == "archiver":
         return _process.find_worker_pid(name, "loop")
+    if name == "bot":
+        return _process.find_worker_pid("ops", "bot")
     return _process.find_worker_pid(name, "start")
 
 
@@ -891,7 +891,7 @@ def render(anim: "int | None" = None) -> str:
     out: list[str] = []
 
     # ── header: title · live status · clock (+ spinner in watch mode) ──
-    live = {n: worker_pid(n) for n in ("dispatcher", "recorder", "archiver")}
+    live = {n: worker_pid(n) for n in LABELS}
     down = [n for n, (pid, _) in live.items() if not pid]
     title = _c("ARCHIVER SUITE", _TITLE, bold=True) + "  " + _c("health", _LABEL)
     spin = _spin(anim)
