@@ -138,7 +138,7 @@ Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
 - Non-detached runs post `running: <cmd>`, then a thread edits it to ✓/✗ with exit code and output tail; timeouts 120s, 600s, 3600s per verb.
 - Self-affecting ops verbs (install, uninstall, update, load/unload all or bot, restart bot) reply first, then detach; output in `~/.local/log/bot-detached.log`.
 - `ops update --no-watch` exists for the bot; `/update` always appends it.
-- Watch: owner live test in chat not yet done: `/health`, `/a reset all` then No, `/restart bot` then Yes.
+- P2 live chat test passed: `/health`, `/a reset all` then No, `/restart bot` then Yes (owner, 2026-10-15).
 
 ### Standing traps
 - Test-writing: DeepSeek failed fake-heavy selftests three rounds; agy wrote all four first try (2026-10-15). Prefer agy for new tests.
