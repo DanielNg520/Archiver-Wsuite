@@ -4,11 +4,19 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open.
+- F13 [medium · 1 · 2026-10-14] ops/ops/cli.py `_restart_bot_if_stale`: restarts if unit file exists, resurrecting an unloaded bot (suspected). Fix: only if `job_state("bot")=="running"`.
+- F11 [low · 2 · 2026-10-14] dispatcher/dispatcher/fast_upload.py:154: `file_id` drawn once per attempt, no part retry; one failed part re-uploads whole file serially (verified; design).
+- F12 [low · 1 · 2026-10-14] ops/ops/health.py `LABELS`: includes `bot`, but header treats labels as workers; unloaded bot reads red, no row (verified). Fix: separate WORKERS.
+- F14 [low · 1 · 2026-10-14] ops/ops/bot/loop.py `_broadcast`: swallows TelegramError yet `run` advances `prev_user`, so a transient failure loses the notice; restart while recording re-announces (verified).
+- F15 [low · 1 · 2026-10-14] ops/ops/bot/commands.py `parse_command`: handle unvalidated, passed to CLI argv (leading `-`, spaces); allowlisted ids only (suspected). Fix: regex `[A-Za-z0-9_.]+`.
+- F16 [low · 1 · 2026-10-14] core/core/env.py `read_env_file`: no `export` prefix or inline-comment handling, unlike `dotenv_values` used on the same `.env` elsewhere (suspected).
+- F17 [low · 1 · 2026-10-14] dispatcher/dispatcher/send.py:396: `hasattr` guard silently skips the `_ping` reset if Telethon renames internals; wedge would return unlogged (suspected). Fix: warn once when missing.
+- F18 [low · 1 · 2026-10-14] stale "three services/workers" wording: ops/ops/health.py:4, ops/ops/cli.py:50,181, AUTOMATION.md:146 (verified, cosmetic).
 
 ## Commands
 
 - Tests: `python tools/setup_test_venv.py` once, then `PYTHONPATH="core:archiver:recorder:dispatcher:ops" PYTHONUTF8=1 .venv-test/bin/python3 tests/test_seams.py` (303 checks).
+- Ops selftests: `PYTHONPATH=core:ops PYTHONUTF8=1 .venv-test/bin/python3 -m ops._selftest_bot` (also `_selftest_health`); not in `test_seams.py`.
 - Selftests: `PYTHONPATH=core:recorder PYTHONUTF8=1 .venv-test/bin/python3 -m recorder._selftest_<name>`; same pattern per package.
 - Deploy: all tools are editable `uv tool` installs; `ops restart <worker>` makes source edits live. `ops health` before and after.
 - Reinstall (deps/entry points only): `uv tool install --force --editable ./<pkg> --with-editable ./core`; verify `core.__path__` from `/tmp`.
@@ -19,7 +27,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Live deployment (this machine, Fedora)
 
-- Units `com.duy.{archiver,dispatcher,recorder}.service` + `com.duy.logrotate.timer`: enabled, `Restart=always`, linger on. Must stay always-on (owner, 2026-10-09).
+- Units `com.duy.{archiver,dispatcher,recorder,bot}.service` + `com.duy.logrotate.timer`: enabled, `Restart=always`, linger on. Must stay always-on (owner, 2026-10-09).
 - Config root `~/.archive/.config` via `ARCHIVER_CONFIG_HOME` (unit drop-ins `10-env.conf` + shell). Without it, code falls back to `<repo>/.config`.
 - Logs: `~/.local/log/<app>.{out,err}.log`. `$CONFIG/archiver-suite/logs` frozen since 2026-07-28.
 - `OUTPUT_DIR=/home/dyne/.archive`; `ROUTES_DIR=/run/media/dyne/StoragEDGE/.routes`.
@@ -93,6 +101,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Disconnect-timeout investigation deferred to a new session (owner, 2026-10-10).
 - Orchestrator selftests cover disk-full purge, auth circuit, reconcile users, stories auth backoff (owner, 2026-10-11).
 - Fix every known open problem in-session; no deferred "still open" lists (owner, 2026-10-11).
+- Ops Center references removed from Hivemind (memory + inventory) and TriAPI AGENTS.md, pushed (owner, 2026-10-14).
 
 ## Ask owner
 
@@ -102,7 +111,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 - `core/core/` shared library: store/schema (`suite.db`), ingest, dedup, quarantine, media_prep, `platform/` OS seam.
 - `archiver/` media-archiver: scheduled platform scans (X, TikTok, Instagram) via gallery-dl/yt-dlp, reconcile, orphaned routes.
-- `dispatcher/` sole Telegram sender: claim/drain/send, fast upload, delete-after-upload.
+- `dispatcher/` sole Telethon media sender (`ops bot` sends only control messages via Bot API): claim/drain/send, fast upload, delete-after-upload.
 - `recorder/` TikTok live recorder: `state.py` loop, `capture.py` yt-dlp, `platforms/` URL resolve + browser fallback, `startup_sweep.py`.
 - `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate/bot; `bot/` ARC Telegram bot; `RUNBOOK.md`.
 - `tests/` `tests/test_seams.py` is the seams runner over `tests/seams/` (topic modules + `_harness.py`), plus the dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
@@ -110,77 +119,32 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-13 (through 32e7c3b).
+Last audit: 2026-10-14 wrap-up (audited through `46f5d90`; 8 new findings).
 
-- 2026-10-14: reconnect wedge fixed (TriAPI `archiver_reconnect_ping`): `_force_reconnect` clears `client._sender._ping` before connect; 2 tests, mutant caught; dispatcher restarted 18:09.
-- 2026-10-14: `ops health` amber stall header via `recorder_stall_warning` (recorder row pending ≥30 min; TriAPI `archiver_health_stall`); selftest extended, mutant caught; 303 seams.
+- Audit 2026-10-14 (65ba6fb..HEAD): reconnect wedge and stall-header fixes verified; F11-F18 logged above; fast_upload "new file_id per retry" refuted as stated.
+- Telethon-internal auto-reconnect re-sends the pending ping, so only the manual `_force_reconnect` path needed the `_ping` reset (source read, Telethon 1.45).
+- Reconnect wedge fixed (TriAPI `archiver_reconnect_ping`); `ops health` amber stall header via `recorder_stall_warning` (`archiver_health_stall`); 303 seams.
 - Watch: after a network drop, `reconnected after stall` must NOT be followed by `Automatic reconnection failed` 60s later; not yet seen live.
+- Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
 
-### ARC bot (P1 done 2026-10-14; next: P2 in a new session)
-- P1 shipped (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
-- P1 live 19:11; owner verified `/recstatus` + `/list`; vlog offset/report seeded; vlog-bridge disabled; Ops Center purged (tar `~/.archive/opscenter-2026-10-14.tar.gz`).
-- Bot only logs errors: `~/.local/log/bot.err.log`; silence = polling fine. `ops update` restarts it when ops/core change.
+### ARC bot (P1 live 2026-10-14; next: P2 in a new session)
+- P1 (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
+- Ops Center purged (tar `~/.archive/opscenter-2026-10-14.tar.gz`); vlog-bridge disabled. Errors only in `~/.local/log/bot.err.log`; silence = polling fine.
 - Watch: first 24h sweep ~2026-10-15 19:15; tracked messages must vanish from chat and `sent.json`.
-- Traps: OpenRouter fallback (DeepSeek peak) mangled fences/docstrings and invented APIs; agy wrote all bot modules clean. Prefer agy for new files.
-- P2 reuse: `commands.run_cli` + `bins`, loop `_handle_command`; add `callback_query` to `get_updates` handling for confirm buttons.
-- P2 (full CLI): shorthand alias table (data, not code per command) for common verbs, plus `/a /r /d /o <raw args>` passthrough for every other command.
+- Trap: OpenRouter fallback (DeepSeek peak) mangled fences/docstrings and invented APIs; agy wrote all bot modules clean. Prefer agy for new files.
+- P2 reuse: `commands.run_cli` + `bins`, loop `_handle_command`; add `callback_query` handling for confirm buttons.
+- P2 (full CLI): shorthand alias table (data, not code per command) plus `/a /r /d /o <raw args>` passthrough for every other command.
 - P2: daemon/interactive verbs (`start`, `loop`, `watch`, `tui`) blocked; `record` stays async; per-entry timeout (ops update needs minutes).
-- P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No `callback_query`, 60s expiry.
-- P2: graceful status: post "running <argv>", then edit it to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
-- P2 trap: `ops restart bot` / `ops unload bot` from the bot kills itself mid-reply; reply first, then exec.
-- 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
-- 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
-- Fallback trial 2026-10-09→10-11 PASSED: 22 `using fallback` starts, all uploaded and deleted; `~/.recorder` holds only `pid`/`unstartable.json`.
-- 2026-10-11 15:28: StoragEDGE back (`/dev/sda2`, rw, probe write OK), data intact (832M records, 3.0G routes); recorder restarted, sweep covered both roots.
-- 2026-10-09 17:11-17:22 recorder service stopped; @daviddieal recorded meanwhile by a non-service run into `~/.recorder`, sent 17:23, deleted.
-- 2026-10-09: F1 re-verified FIXED (e1fcab4): every saved core had curl_cffi 0.14.0 loaded; zero crashes since 0.16.3 reinstall (2026-10-08 23:55).
-- 2026-10-09: wrap-up audit: `ItemStore.retry` (manual requeue) now clears `retry_after`; test `test_manual_retry_clears_backoff`. Reset-failed paths need nothing (failed rows never carry `retry_after`).
-- 2026-10-09: F2 shipped (ce26403, `claim_batch` honors `retry_after`); 303 seams; dispatcher restarted. Live backoff not yet observed (needs a real send failure).
-- 2026-10-09: `_selftest_reconnect.test_terminal_rcs_never_reconnect` covers rc -1/-2/-3 terminal without stop (TriAPI `archiver_terminal_rc`); mutant rc -3 caught.
-- 2026-10-09: rules sanitation (6c87351): `.venv-test` rebuilt on curl-cffi 0.16.3 (was CVE-range 0.14.0); 303 seams.
-- 2026-10-09: `setup_test_venv.py` passes `uv venv --clear` (TriAPI `archiver_venv_clear`); re-run verified.
-- DONE 2026-10-09: single-OS cleanup via TriAPI (`tasks/archiver_windows_rest`, 8dcb9c5..484912a); 303 seams + all selftests; workers restarted, health green.
-- `termui.ensure_vt` deleted; `recover_suite_db` verified by read-only `--force` dry run on live DB (156,491 rows); `migrate_split_roots --src` now required.
+- P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No, 60s expiry.
+- P2: graceful status: post "running <argv>", then edit to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
+- P2 trap: `ops restart bot`/`ops unload bot`/`ops update` from the bot kills or restarts itself mid-reply; reply first, then exec. Fix F12, F13, F15 first.
+
+### Standing traps
+- `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
+- `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path, not the task `.out`; `--new` needs one ```python fence.
+- agy may write the target file itself and prefix prose; diff the tree after every agy call, before apply.
+- `ops restart` takes exactly one worker per call.
+- `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
 - Exempt from the end grep: `ban_check.py`/`capture.py` browser UA strings, gallery-dl fingerprint `firefox:windows` (`config.py`, USER-GUIDE).
-- Trap: `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
-- Trial 2026-10-10: service fallback EXERCISED (04:39+): @thinh_kobe20 6 segments → `~/.recorder`, all `sent`, mp4s deleted; DEADSTREAM/ytdlp logs remain.
-- Trial 2026-10-10: @19970609bun 861MB recorded into `~/.recorder`, sent 08:37, deleted. Fallback trial confirmed end to end.
-- 2026-10-10: audit of 8dcb9c5..484912a clean except two `Task Scheduler` docstrings; fixed with F3.
-- 2026-10-10: F3 fixed via TriAPI (`tasks/archiver_stale_tooling`, 8 files): `pipx`/Task Scheduler wording → `uv tool`/`ops update`/systemd.
-- 2026-10-10: 121 CRLF files renormalized to LF; `miki_status.py` trashed. 303 seams, all selftests, stall-backoff pass.
-- Trap: `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path (from `call_deepseek` stderr), not the task `.out` copy.
-- Expect: first `ops update` after 6fc7a6b sees every package changed (EOL-only fingerprint shift) and does one full drain/reinstall/restart; safe.
-- 2026-10-10: `cookie_refresh.py` writes atomically (`_write_atomic`) and keeps `#HttpOnly_` (TriAPI `archiver_cookie_atomic`); selftest 23 checks, both mutants caught; recorder restarted.
-- 2026-10-10: seams split (TriAPI `archiver_seams_split`): byte-range splitter moved 44 tests into `tests/seams/`; defs verbatim except two edits; 303 checks, output-diff identical.
-- Trap: `.venv-test` installs all packages editable, so subprocess cwd in seams can't fail a test; `locks.py` `parents[2]` unprovable by mutant.
-- 2026-10-10: `orchestrator.py:370` stories `on_user` swallow now carries the sibling comment (TriAPI `archiver_hook_comment`); 3 hook-guard sites, all commented.
-- 2026-10-10: `archiver/_selftest_orchestrator.py` (TriAPI `archiver_orch_selftest`): 34 checks; 7/7 orchestrator mutants caught.
-- 2026-10-10: fixed `_download_with_recovery`: `AccountGoneError` on the auth/ENOSPC retry now bans (was uncaught/`disk-full-unresolved`); B.6/B.7 fail on old code.
-- 2026-10-10: all three workers restarted after `c5f215a`; health nominal. `archiver.err.log` malloc lines are pre-F1-fix (2026-10-08), not new.
-- 2026-10-10 audit: `b8d7a9e` `#HttpOnly_` prefix broke `tiktok._parse_netscape_cookies` (dormant until next refresh); now delegates to `_netscape_to_playwright` (a47e7c0); recorder restarted.
-- 2026-10-10: pending-age verified benign: every group under min batch 10 per media bucket; @ynxio218623 claimed at exactly 168h (20:46:42Z), sent 20:50:59Z.
-- 2026-10-10: `ops health` null_hash counts unsent rows only (7c20ed4, TriAPI `archiver_nullhash_unsent`); 84 legacy sent rows with deleted files can't be hashed.
-- 2026-10-10: `archiver/_selftest_cli.py` (bdfd7f7, TriAPI `archiver_cli_selftest`): 39 checks; 8/9 mutants caught, survivor equivalent (`DeletionGuard.delete` re-checks safebrake).
-- 2026-10-10 audit of a47e7c0..1b49c99 clean; `queue_health` docstring "single indexed queries" is inaccurate (both counts scan), cosmetic.
-- 2026-10-10: `_selftest_cli.py` extended (TriAPI `archiver_cli_run_selftest`): run/stories/loop/config/migrate, 106 checks; 15/15 cli mutants caught.
-- 2026-10-10 audit: exhausted `fake_cmd_run` sequence hung the loop test on a crash-count regression; now raises KeyboardInterrupt, mutant fails fast.
-- 2026-10-10: `_READY` fragment proposal dropped: three one-line SQL copies plus a Python compare; a shared `?` fragment adds indirection, no safety.
-- 2026-10-10: `scenario_cmd_run` case 1 stubs `build_platforms` and asserts no call (TriAPI `archiver_cli_e1_guard`); guard mutant exits 1 at the stub.
-- 2026-10-10: `queue_health` docstring no longer claims indexed queries (TriAPI `archiver_qh_docstring`).
-- F4 cause: Fedora `10-timeout-abort.conf` (`TimeoutStopFailureMode=abort`); all 3 aborts were shutdowns with an upload in flight (restart watchdog reset 1-2 rows).
-- 2026-10-10: F4 fixed: `dispatcher/cli.py` `_drain_with_stop_grace`, 30s grace then cancel + `reset_stuck_sending(0)` (agy, after 3 DeepSeek rejects).
-- 2026-10-10: `dispatcher/_selftest_stop_grace.py` 9 checks; 4/4 helper mutants caught; 303 seams; dispatcher restarted, clean 2s stop. Grace path not yet seen live.
-- Trap: `apply_dispatch --new` needs the reply in one ```python fence; a raw reply fails "No fenced code block found".
-- 2026-10-10: `send.py` `__aexit__` disconnects bounded at `_DISCONNECT_TIMEOUT_S`=5s (agy, `tasks/archiver_aexit_bound`); hung-disconnect sim exits 0.40s; 303 seams.
-- 2026-10-10: shutdown disconnect logs: grep `disconnect timed out after` (primary/burner) or `burner disconnect failed: <Type>:` in `dispatcher.out.log`.
-- Trap: agy may write the target file itself and prefix prose ("tests launched"); diff the tree after every agy call, before apply.
-- 2026-10-10: empty-reason logs fixed (TriAPI `archiver_empty_reason_logs`): `_force_reconnect` warnings, tiktok `is_live`/`_safe_close` debug now log `<Type>: msg`.
-- Test `ForceReconnectStallWarningTests` in `test_dispatcher_stall_backoff.py`; fails on old `send.py`. 303 seams, all selftests; dispatcher+recorder restarted.
-- Disconnect timeouts: none logged and no ABRT since f0255ab (6 stops, all ≤2s). Watch-only; grep above.
-- Trap: `ops restart` takes exactly one worker per call.
-- 2026-10-11: `__aexit__` primary non-timeout disconnect error now logged, burner still disconnected; test `DisconnectExceptionHandlingTests`, fails on old code.
-- 2026-10-11: `_selftest_orchestrator.py` section D: stories auth stops lane, gone account continues; both mutants caught.
-- 2026-10-11 audit: `state.py` `stream_url(%s) failed` error log had the same empty-reason bug; fixed (TriAPI t7), recorder restarted.
-- 2026-10-11: one-off `ConnectionError` never reaches drain backoff: `_send_with_retries` retries 4x with reconnect first.
-- 2026-10-11 20:25: first post-trial recording (@vandaihoang4) landed on `StoragEDGE/.records`; primary path verified live.
-- 2026-10-11: `core.notify` deleted (a4c98aa, TriAPI `archiver_drop_notify`); 303 seams, recorder selftests pass; recorder+dispatcher restarted 20:49; outbox (355 files) trashed.
+- Fallback trial 2026-10-09→10-11 PASSED; StoragEDGE back 2026-10-11 15:28 (`/dev/sda2`), primary path verified live 20:25.
+- `recover_suite_db` verified by read-only `--force` dry run on live DB; `migrate_split_roots --src` is required.
