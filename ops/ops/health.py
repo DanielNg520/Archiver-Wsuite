@@ -466,15 +466,18 @@ def _humanize_eta(seconds: float | None) -> str:
 @_memo()
 def queue_health() -> dict | None:
     """Early-warning signals the counts alone don't show: how long the oldest
-    pending row has waited, whether anything is wedged in 'sending', and how
-    many unsent rows are invisible to the dedup guarantee (NULL content_hash).
-    Read-only, one query per signal."""
+    pending row has waited, whether anything is wedged in 'sending', how many
+    unsent rows are invisible to the dedup guarantee (NULL content_hash), and
+    the age of the oldest pending recorder row. Read-only, one query per signal."""
     conn = _connect_ro(SUITE_DB)
     if conn is None:
         return None
     try:
         oldest_pending = conn.execute(
             "SELECT MIN(discovered_at) AS m FROM items WHERE status='pending'"
+        ).fetchone()["m"]
+        oldest_recorder_pending = conn.execute(
+            "SELECT MIN(discovered_at) AS m FROM items WHERE status='pending' AND source='recorder'"
         ).fetchone()["m"]
         oldest_sending = conn.execute(
             "SELECT MIN(claimed_at) AS m FROM items WHERE status='sending'"
@@ -495,6 +498,7 @@ def queue_health() -> dict | None:
         ).fetchone()["m"]
         return {
             "oldest_pending": oldest_pending,
+            "oldest_recorder_pending": oldest_recorder_pending,
             "oldest_sending": oldest_sending,
             "null_hash": null_hash,
             "last_sent": last_sent,
@@ -503,6 +507,38 @@ def queue_health() -> dict | None:
         return None
     finally:
         conn.close()
+
+
+# Stall threshold for recorder queue in seconds (30 minutes)
+RECORDER_STALL_THRESHOLD_SEC = 30 * 60
+
+
+def recorder_stall_warning(qh: dict | None, now: datetime | None = None) -> str | None:
+    """Return a warning if the oldest recorder pending exceeds the stall threshold."""
+    if qh is None:
+        return None
+    oldest = qh.get("oldest_recorder_pending")
+    if not oldest:
+        return None
+    if now is None:
+        now = datetime.now(timezone.utc)
+    try:
+        ts = oldest.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age_secs = (now - dt).total_seconds()
+    except (ValueError, TypeError):
+        return None
+    if age_secs < RECORDER_STALL_THRESHOLD_SEC:
+        return None
+    last_sent = qh.get("last_sent")
+    last_send_str = _humanize_age(last_sent) if last_sent else "never"
+    if age_secs < 3600:
+        waited = f"{int(age_secs // 60)}m"
+    else:
+        waited = f"{int(age_secs // 3600)}h"
+    return f"oldest recording waiting {waited}, last send {last_send_str}"
 
 
 @_memo(min_ttl=60.0)
@@ -863,17 +899,22 @@ def render(anim: "int | None" = None) -> str:
         + _c(time.strftime("%H:%M:%S"), _WHITE)
     gap = max(2, width - _vlen(title) - _vlen(clock) - 1)
     out.append(" " + title + " " * gap + clock)
+    qh = queue_health()
+
     if down:
         # Pulse the alarm dot so a down worker is impossible to miss in watch.
         dot = _c("●", _RED, bold=True) if _beat(anim) else _c("○", _RED)
         status = dot + _c(f" {len(down)} down: {', '.join(down)}", _RED)
     else:
-        status = _c("●", _GREEN) + _c(" all systems nominal", _GREEN)
+        warn = recorder_stall_warning(qh)
+        if warn:
+            dot = _c("●", _AMBER, bold=True) if _beat(anim) else _c("○", _AMBER)
+            status = dot + _c(f" {warn}", _AMBER)
+        else:
+            status = _c("●", _GREEN) + _c(" all systems nominal", _GREEN)
     out.append(" " + status)
     out.append(_c("─" * width, _RULE))
     out.append("")
-
-    qh = queue_health()
 
     # ── dispatcher ──
     pid, owner = live["dispatcher"]

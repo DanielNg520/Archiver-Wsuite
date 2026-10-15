@@ -2,7 +2,7 @@
 ops._selftest_health
 ─────────────────────
 Regression coverage for `ops.health`'s pure/lightly-coupled logic:
-drain_eta_fields, _humanize_eta, queue_health, _same_volume, _disk_fields.
+drain_eta_fields, _humanize_eta, queue_health, recorder_stall_warning, _same_volume, _disk_fields.
 Found untested in the 2026-09-19 codebase-wide gap audit (AGENTS.md's
 "Repo audit backlog") -- this is the tool every restart/deploy go/no-go
 call in the suite runs through, and had zero coverage anywhere.
@@ -134,9 +134,52 @@ def main() -> int:
         qh = h.queue_health()
         ok(qh["oldest_sending"] is not None,
            "queue_health: oldest_sending set once a row is claimed")
+        # recorder_pending is None before any recorder row exists
+        ok(h.queue_health()["oldest_recorder_pending"] is None,
+           "queue_health: oldest_recorder_pending None before recorder row")
+        # add a pending recorder row
+        db.add_item(
+            source="recorder",
+            platform="tiktok",
+            username="testuser",
+            identifier="rec123",
+            file_path=str(tmp / "recorder_test.mp4"),
+            file_size_bytes=1024,
+        )
+        # now oldest_recorder_pending should be set
+        qh2 = h.queue_health()
+        ok(qh2["oldest_recorder_pending"] is not None,
+           "queue_health: oldest_recorder_pending set after recorder row")
     finally:
         db.close()
         h.SUITE_DB = real_suite_db
+
+    # recorder_stall_warning pure checks
+    now = datetime.now(timezone.utc)
+    # qh=None
+    ok(h.recorder_stall_warning(None, now=now) is None,
+       "recorder_stall_warning: None for qh=None")
+    # 10 minutes old -> no warning
+    ten_min_ago = _iso(now - timedelta(minutes=10))
+    ok(h.recorder_stall_warning({"oldest_recorder_pending": ten_min_ago},
+           now=now) is None,
+       "recorder_stall_warning: None for 10min old pending")
+    # 2 hours old, last_sent=None -> warning
+    two_hours_ago = _iso(now - timedelta(hours=2))
+    warn = h.recorder_stall_warning({"oldest_recorder_pending": two_hours_ago},
+             now=now)
+    ok(warn is not None and warn != "",
+       "recorder_stall_warning: non-empty for 2hr old pending, last_sent=None")
+    # 2 hours old, with last_sent timestamp -> warning
+    qh_with_last = {"oldest_recorder_pending": two_hours_ago,
+                    "last_sent": _iso(now - timedelta(hours=1))}
+    warn2 = h.recorder_stall_warning(qh_with_last, now=now)
+    ok(warn2 is not None and warn2 != "",
+       "recorder_stall_warning: non-empty for 2hr old pending with last_sent")
+    # unparseable timestamp -> None
+    ok(h.recorder_stall_warning({"oldest_recorder_pending": "not-a-date"},
+           now=now) is None,
+       "recorder_stall_warning: None for unparseable timestamp")
 
     print(f"\nALL PASS ({_checks} checks)")
     return 0

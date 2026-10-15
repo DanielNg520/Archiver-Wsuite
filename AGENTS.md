@@ -82,6 +82,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - ARC bot scope: every suite CLI command via shorthand, graceful per-command status reply, record start/stop messages (owner, 2026-10-14).
 - ARC bot deletes its own messages and the owner's commands 24h after sending (owner, 2026-10-14; Bot API caps deletes at 48h).
 - ARC bot destructive commands need an inline Yes/No confirm, 60s expiry; read-only and additive run directly (owner, 2026-10-14).
+- Fix dispatcher reconnect wedge (stale Telethon `_ping` kills each reconnect at 60s) and add an `ops health` stall warning (owner, 2026-10-14).
 - ARC bot lives in `ops` as `ops bot`, unit `com.duy.bot`, stdlib HTTP only, ops keeps zero deps (owner, 2026-10-14).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
@@ -109,6 +110,10 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Carryover
 
 Last audit: 2026-10-13 (through 32e7c3b).
+
+- 2026-10-14: reconnect wedge fixed (TriAPI `archiver_reconnect_ping`): `_force_reconnect` clears `client._sender._ping` before connect; 2 tests, mutant caught; dispatcher restarted 18:09.
+- 2026-10-14: `ops health` amber stall header via `recorder_stall_warning` (recorder row pending ≥30 min; TriAPI `archiver_health_stall`); selftest extended, mutant caught; 303 seams.
+- Watch: after a network drop, `reconnected after stall` must NOT be followed by `Automatic reconnection failed` 60s later; not yet seen live.
 
 ### ARC bot absorb plan (2026-10-14; P0 design done, next: P1 in a new session)
 - Source: `~/Documents/Coding/Ops Center/vlog_bridge/` (7 files, ~390 lines, not git-tracked); unit `vlog-bridge.service`; owner rules in Decisions above.

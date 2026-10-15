@@ -130,7 +130,9 @@ dedup (never re-upload) · delete gate re-reads sent + safebrake · album MediaE
 circuit breaker (systemic) · **fail-fast SessionUnauthorized** (no spin-loop/no
 interactive hang) · **single reconnect authority** (Telethon `auto_reconnect=False`
 + client/fast_upload; `_force_reconnect` on stall AND network error — kills the
-dual-authority `'NoneType'.connect` race that hung the drain) · **TCP keepalive**
+dual-authority `'NoneType'.connect` race that hung the drain; it also clears
+Telethon's stale keep-alive `_sender._ping`, which otherwise killed every
+reconnected link ~60s later) · **TCP keepalive**
 (`dispatcher.keepalive`, 20/5/3) resets a half-open MTProto socket in ~35s →
 ConnectionError → `_force_reconnect`, instead of an infinite silent hang (dead
 VPN/Tailscale exit, sleep/wake; macOS default keepidle is 2h) · **stale

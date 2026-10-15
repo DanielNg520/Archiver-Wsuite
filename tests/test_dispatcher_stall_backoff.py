@@ -335,6 +335,73 @@ class ForceReconnectStallWarningTests(unittest.TestCase):
             self.assertIn("TimeoutError", record)
 
 
+class ForceReconnectStalePingTests(unittest.TestCase):
+    def test_stale_ping_reset_before_connect(self):
+        from dispatcher.send import TelethonSendStrategy
+        strat = TelethonSendStrategy(
+            api_id=1, api_hash="x", phone="+10000000000",
+            session_name="/tmp/not-a-real-session",
+            max_retries=1,
+            stall_base_timeout_s=0.05,
+            stall_min_rate_kib_s=1_000_000.0,
+        )
+
+        class _PingClient:
+            def __init__(self):
+                self._sender = type("_Sender", (), {"_ping": "stale"})()
+                self._connect_ping = None
+                self.disconnect_called = False
+
+            async def disconnect(self):
+                self.disconnect_called = True
+
+            async def connect(self):
+                self._connect_ping = self._sender._ping
+
+        client = _PingClient()
+        strat._client = client
+
+        asyncio.run(strat._force_reconnect())
+
+        self.assertIsNone(client._connect_ping)
+        self.assertIsNone(client._sender._ping)
+        self.assertTrue(client.disconnect_called)
+
+    def test_stale_ping_reset_before_connect_on_disconnect_error(self):
+        from dispatcher.send import TelethonSendStrategy
+        strat = TelethonSendStrategy(
+            api_id=1, api_hash="x", phone="+10000000000",
+            session_name="/tmp/not-a-real-session",
+            max_retries=1,
+            stall_base_timeout_s=0.05,
+            stall_min_rate_kib_s=1_000_000.0,
+        )
+
+        class _PingClient:
+            def __init__(self):
+                self._sender = type("_Sender", (), {"_ping": "stale"})()
+                self._connect_ping = None
+                self.disconnect_called = False
+
+            async def disconnect(self):
+                self.disconnect_called = True
+                raise TimeoutError("disconnect timeout")
+
+            async def connect(self):
+                self._connect_ping = self._sender._ping
+
+        client = _PingClient()
+        strat._client = client
+
+        with self.assertLogs("dispatcher.send", level="WARNING") as cm:
+            asyncio.run(strat._force_reconnect())
+
+        self.assertIsNone(client._connect_ping)
+        self.assertIsNone(client._sender._ping)
+        self.assertTrue(client.disconnect_called)
+        self.assertTrue(any("TimeoutError" in record for record in cm.output))
+
+
 class DisconnectExceptionHandlingTests(unittest.TestCase):
     """__aexit__ logs a WARNING on disconnect failure, still disconnects
     the burner, and never lets the exception escape."""

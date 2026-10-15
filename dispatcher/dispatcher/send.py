@@ -380,7 +380,8 @@ class TelethonSendStrategy(SendStrategy):
         that loops back here until it reconnects or the retry budget runs out.
 
         Operates on _sender so a reconnect during a burner-routed send re-homes
-        the burner's socket, not the primary's."""
+        the burner's socket, not the primary's. Also resets any stale keep-alive
+        ping id that would otherwise kill the fresh link ~60 s later."""
         client = self._sender
         try:
             await asyncio.wait_for(client.disconnect(), timeout=30)
@@ -390,6 +391,10 @@ class TelethonSendStrategy(SendStrategy):
                 type(e).__name__,
                 e,
             )
+        # Reset stale Telethon keep-alive ping id — survives disconnect and kills
+        # each fresh link ~60 s later (Telethon 1.45).
+        if hasattr(client, '_sender') and hasattr(client._sender, '_ping'):
+            client._sender._ping = None
         try:
             await asyncio.wait_for(client.connect(), timeout=30)
             log.info("telethon: reconnected after stall")

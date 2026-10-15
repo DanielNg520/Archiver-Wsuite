@@ -125,6 +125,19 @@ Then reload whichever service(s) changed (`ops restart <service>`, or
 
 ---
 
+## Dispatcher alive but not uploading (stall)
+
+Symptom: `ops health` header turns amber with a "oldest recording waiting ..., last send ..."
+warning, shown when a recorder row has been pending 30+ minutes while all workers run.
+The dispatcher log loops `reconnected after stall` followed ~60s later by
+`Automatic reconnection failed 0 time(s)`.
+
+What to do: check `~/.local/log/dispatcher.out.log` for that loop or for auth errors
+(then see the next section); `ops restart dispatcher` rebuilds the connection; the queue
+is durable, nothing is lost.
+
+---
+
 ## Telegram session died (dispatcher can't send)
 
 Symptom: `ops health` shows dispatcher running but queue `pending` only climbs,
