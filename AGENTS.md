@@ -103,6 +103,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Orchestrator selftests cover disk-full purge, auth circuit, reconcile users, stories auth backoff (owner, 2026-10-11).
 - Fix every known open problem in-session; no deferred "still open" lists (owner, 2026-10-11).
 - Ops Center references removed from Hivemind (memory + inventory) and TriAPI AGENTS.md, pushed (owner, 2026-10-14).
+- Archiver stack is Fedora-only: Mac repo copies, config dirs and Gemini project state deleted; Fedora is the sole deployment (owner, 2026-10-14).
 
 ## Ask owner
 
@@ -126,6 +127,8 @@ Last audit: 2026-10-14 wrap-up (audited through `c953383`; 0 new findings, light
 - Telethon-internal auto-reconnect re-sends the pending ping, so only the manual `_force_reconnect` path needed the `_ping` reset (source read, Telethon 1.45).
 - Reconnect wedge fixed (TriAPI `archiver_reconnect_ping`); `ops health` amber stall header via `recorder_stall_warning` (`archiver_health_stall`); 303 seams.
 - Watch: after a network drop, `reconnected after stall` must NOT be followed by `Automatic reconnection failed` 60s later; not yet seen live.
+- Watch: first video upload over 60s after a reconnect must complete; if `Automatic reconnection failed` returns 60s after `reconnected`, F9 is not closed.
+- Incident 2026-10-14: queue stalled 6h (19970609bun, rhmn1999 videos; uploads over 60s failed `Cannot send requests while disconnected`) until `ops restart dispatcher` 13:49; both sent.
 - Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
 
 ### F11-F18 fixes (paused 2026-10-14; resume off-peak, before P2)
