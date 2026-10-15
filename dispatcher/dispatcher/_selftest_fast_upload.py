@@ -291,6 +291,70 @@ def test_part_retry_persistent(tmp: Path) -> None:
     check(attempts == 3, "failed part was attempted exactly 3 times")
 
 
+def test_part_retry_hung_disconnect(tmp: Path) -> None:
+    print("\n── hung disconnect on retry → timeout drops sender, succeeds ──")
+    size = 11 * 1024 * 1024 + 777
+    data = _make_file(tmp / "hung.bin", size)
+    client = _FakeClient()
+
+    failed = False
+    senders: list[_FakeSender] = []
+
+    class _HungSender(_FakeSender):
+        def __init__(self):
+            super().__init__()
+            self.hung = False
+            self.disconnect_calls = 0
+
+        async def send(self, req):
+            nonlocal failed
+            if req.file_part == 2 and not failed:
+                failed = True
+                self.hung = True
+                raise ConnectionError("simulated transient failure")
+            return await super().send(req)
+
+        async def disconnect(self):
+            self.disconnect_calls += 1
+            if self.hung and self.disconnect_calls == 1:
+                await asyncio.Event().wait()
+            await super().disconnect()
+
+    orig_connect = fast_upload._connect_sender
+    orig_timeout = fast_upload._DISCONNECT_TIMEOUT_S
+
+    async def _fake_connect(_client, *, connect_timeout=None, retries=None):
+        s = _HungSender()
+        senders.append(s)
+        return s
+
+    fast_upload._connect_sender = _fake_connect
+    fast_upload._DISCONNECT_TIMEOUT_S = 0.05
+    try:
+        handle = asyncio.run(
+            asyncio.wait_for(
+                fast_upload.upload_file(
+                    client, tmp / "hung.bin", connections=4
+                ),
+                10,
+            )
+        )
+    finally:
+        fast_upload._connect_sender = orig_connect
+        fast_upload._DISCONNECT_TIMEOUT_S = orig_timeout
+
+    check(isinstance(handle, types.InputFileBig),
+          "returns an InputFileBig handle")
+    check(not client.serial_calls, "the serial uploader was NOT used")
+    expected = (size + fast_upload.PART_SIZE - 1) // fast_upload.PART_SIZE
+    all_parts = [p for s in senders for p in s.parts]
+    indices = sorted(i for i, _ in all_parts)
+    check(indices == list(range(expected)),
+          "every part index sent exactly once")
+    check(_reassemble(senders) == data,
+          "reassembled bytes are identical to the source file")
+
+
 def main() -> int:
     print("dispatcher.fast_upload self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -302,6 +366,7 @@ def main() -> int:
         test_part_failure_falls_back(tmp)
         test_part_retry_transient(tmp)
         test_part_retry_persistent(tmp)
+        test_part_retry_hung_disconnect(tmp)
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

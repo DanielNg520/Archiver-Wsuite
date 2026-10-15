@@ -17,6 +17,8 @@ from . import commands
 from .telegram import BotAPI, TelegramError
 
 DELETE_AFTER_S = 24 * 3600
+# Retried once per loop pass so a Telegram outage never blocks polling.
+BROADCAST_TRIES = 5
 
 log = logging.getLogger(__name__)
 
@@ -193,11 +195,16 @@ def _process_updates(
         if not isinstance(sender, dict) or sender.get("id") not in allowed:
             continue
         text = message.get("text", "")
-        parsed = commands.parse_command(text)
-        if parsed is None:
-            continue
         chat_id = message["chat"]["id"]
         message_id = message["message_id"]
+        parsed = commands.parse_command(text)
+        if parsed is None:
+            hint = commands.usage_hint(text)
+            if hint is None:
+                continue
+            state.track(chat_id, message_id, float(message["date"]))
+            _send_and_track(api, state, chat_id, hint, clock)
+            continue
         state.track(chat_id, message_id, float(message["date"]))
         cmd_name, arg = parsed
         _handle_command(
@@ -208,14 +215,15 @@ def _process_updates(
 def _broadcast(
     api: Any,
     state: Any,
-    allowed: frozenset[int],
+    chats: frozenset[int],
     current_user: str | None,
     prev_user: str | None,
     clock: Callable[[], float],
-) -> None:
+) -> frozenset[int]:
+    failed: set[int] = set()
     if current_user is not None:
         text = f"\U0001F534 recording started: @{current_user}"
-        for chat_id in allowed:
+        for chat_id in chats:
             try:
                 prev_msg_id = state.get_report(chat_id)
                 if prev_msg_id is not None:
@@ -224,28 +232,31 @@ def _broadcast(
                     except TelegramError:
                         pass
                     state.forget(chat_id, prev_msg_id)
-                msg_id = _send_with_retry(
+                msg_id = _send_and_track(
                     api, state, chat_id, text, clock
                 )
                 if msg_id is not None:
                     state.set_report(chat_id, msg_id)
             except TelegramError as err:
+                failed.add(chat_id)
                 log.warning(
                     "Broadcast start failed for chat %d: %s", chat_id, err
                 )
     elif prev_user is not None:
         text = f"⚪ recording ended: @{prev_user}"
-        for chat_id in allowed:
+        for chat_id in chats:
             try:
-                msg_id = _send_with_retry(
+                msg_id = _send_and_track(
                     api, state, chat_id, text, clock
                 )
                 if msg_id is not None:
                     state.set_report(chat_id, msg_id)
             except TelegramError as err:
+                failed.add(chat_id)
                 log.warning(
                     "Broadcast end failed for chat %d: %s", chat_id, err
                 )
+    return frozenset(failed)
 
 
 def _sweep_deletions(
@@ -275,6 +286,8 @@ def run(
 ) -> None:
     prev_user: str | None = None
     last_sweep: float | None = None
+    pending: tuple[str | None, str | None, frozenset[int]] | None = None
+    pending_tries = 0
 
     while not should_stop():
         try:
@@ -287,10 +300,24 @@ def run(
                 else None
             )
             if current_user != prev_user:
-                _broadcast(
-                    api, state, allowed, current_user, prev_user, clock
-                )
+                pending = (current_user, prev_user, allowed)
+                pending_tries = 0
                 prev_user = current_user
+
+            if pending is not None:
+                pending_tries += 1
+                failed = _broadcast(
+                    api, state, pending[2], pending[0], pending[1], clock
+                )
+                if failed and pending_tries < BROADCAST_TRIES:
+                    pending = (pending[0], pending[1], failed)
+                else:
+                    if failed:
+                        log.warning(
+                            "Broadcast gave up for chats: %s",
+                            sorted(failed),
+                        )
+                    pending = None
 
             now = clock()
             if last_sweep is None or now - last_sweep >= 60.0:

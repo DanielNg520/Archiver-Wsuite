@@ -87,7 +87,9 @@ def opt_bool(key: str, default: bool) -> bool:
 
 
 def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
-    """Parse a dotenv file: export prefix, unquoted inline comments."""
+    """Parse a dotenv file: export prefix, unquoted inline comments, and
+    quoted values with a trailing comment.
+    """
     result: dict[str, str] = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -102,10 +104,11 @@ def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
                 if key.startswith("export "):
                     key = key[len("export "):].strip()
                 value = value.strip()
-                if (value.startswith('"') and value.endswith('"')) or (
-                    value.startswith("'") and value.endswith("'")
-                ):
-                    value = value[1:-1]
+                q = value[0] if value.startswith(('"', "'")) else ""
+                j = value.find(q, 1) if q else -1
+                remainder = value[j + 1:].strip() if j != -1 else ""
+                if j != -1 and (not remainder or remainder.startswith("#")):
+                    value = value[1:j]
                 else:
                     for i, ch in enumerate(value):
                         if ch == "#" and i > 0 and value[i - 1].isspace():

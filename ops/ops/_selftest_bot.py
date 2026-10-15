@@ -482,7 +482,11 @@ def test_read_env_file_export_and_comments() -> None:
             "export KEY=v\n"
             "A=val # comment\n"
             "B=a#b\n"
-            'C="x # y"\n',
+            'C="x # y"\n'
+            'D="tok" # c\n'
+            "E='x' # c\n"
+            'F="abc\n'
+            'G="a"b\n',
             encoding="utf-8",
         )
         res = read_env_file(env_path)
@@ -494,6 +498,14 @@ def test_read_env_file_export_and_comments() -> None:
            "read_env_file: hash without space kept")
         ok(res.get("C") == "x # y",
            "read_env_file: quoted hash kept")
+        ok(res.get("D") == "tok",
+           "read_env_file: double-quoted value with comment stripped")
+        ok(res.get("E") == "x",
+           "read_env_file: single-quoted value with comment stripped")
+        ok(res.get("F") == '"abc',
+           "read_env_file: unterminated quote kept")
+        ok(res.get("G") == '"a"b',
+           "read_env_file: quote followed by text kept")
 
 
 def test_broadcast_retry() -> None:
@@ -513,8 +525,13 @@ def test_broadcast_retry() -> None:
         def send_message(self, chat_id: int, text: str) -> int:
             raise TelegramError("always fails")
 
+    class WorkingBotAPI:
+        def send_message(self, chat_id: int, text: str) -> int:
+            return 601
+
+    sleep_calls: list[float] = []
     orig_sleep = loop.time.sleep
-    loop.time.sleep = lambda _sec: None
+    loop.time.sleep = lambda sec: sleep_calls.append(sec)
     try:
         chat = 12345
         allowed = frozenset([chat])
@@ -522,7 +539,7 @@ def test_broadcast_retry() -> None:
         with tempfile.TemporaryDirectory() as td:
             state = BotState(Path(td))
             api = FlakyBotAPI()
-            loop._broadcast(
+            failed = loop._broadcast(
                 api,
                 state,
                 allowed,
@@ -530,6 +547,27 @@ def test_broadcast_retry() -> None:
                 prev_user=None,
                 clock=lambda: 1000.0,
             )
+            ok(
+                failed == frozenset([chat]),
+                "broadcast retry: flaky returns failed chat on first call",
+            )
+            ok(api.calls == 1,
+               "broadcast retry: exactly one send attempt made")
+            ok(state.get_report(chat) is None,
+               "broadcast retry: report is None after failure")
+            ok(len(sleep_calls) == 0,
+               "broadcast retry: loop.time.sleep is never called")
+
+            failed2 = loop._broadcast(
+                api,
+                state,
+                frozenset([chat]),
+                current_user="alice",
+                prev_user=None,
+                clock=lambda: 1000.0,
+            )
+            ok(failed2 == frozenset(),
+               "broadcast retry: second call returns empty frozenset")
             ok(
                 api.sent_id is not None
                 and state.get_report(chat) == api.sent_id,
@@ -539,7 +577,7 @@ def test_broadcast_retry() -> None:
         with tempfile.TemporaryDirectory() as td:
             state = BotState(Path(td))
             api_fail = FailingBotAPI()
-            loop._broadcast(
+            failed_fail = loop._broadcast(
                 api_fail,
                 state,
                 allowed,
@@ -548,11 +586,180 @@ def test_broadcast_retry() -> None:
                 clock=lambda: 1000.0,
             )
             ok(
+                failed_fail == frozenset([chat]),
+                "broadcast retry: persistent failure returns failed chat",
+            )
+            ok(
                 state.get_report(chat) is None,
                 "broadcast retry: persistent failure leaves report None",
             )
+
+        with tempfile.TemporaryDirectory() as td:
+            state = BotState(Path(td))
+            api_work = WorkingBotAPI()
+            failed_end = loop._broadcast(
+                api_work,
+                state,
+                allowed,
+                current_user=None,
+                prev_user="alice",
+                clock=lambda: 1000.0,
+            )
+            ok(
+                failed_end == frozenset(),
+                "broadcast retry: end notice returns empty frozenset",
+            )
     finally:
         loop.time.sleep = orig_sleep
+
+
+def test_loop_broadcast_retry_nonblocking() -> None:
+    class FakeBotAPI:
+        def __init__(self) -> None:
+            self.send_calls = 0
+            self.updates_calls = 0
+            self.sent: list[tuple[int, str]] = []
+
+        def get_updates(
+            self, offset: int, timeout: int = 30
+        ) -> list[dict[str, Any]]:
+            self.updates_calls += 1
+            return []
+
+        def send_message(self, chat_id: int, text: str) -> int:
+            self.send_calls += 1
+            if self.send_calls <= 2:
+                raise TelegramError("first two calls fail")
+            self.sent.append((chat_id, text))
+            return 999
+
+    sleep_calls: list[float] = []
+    orig_sleep = loop.time.sleep
+    loop.time.sleep = lambda sec: sleep_calls.append(sec)
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = BotState(root / "state")
+            lock_path = root / "tiktok.lock"
+            bins = {"recorder": "/bin/echo", "archiver": "/bin/echo"}
+            core.heartbeat.write_atomic(
+                lock_path, {"pid": os.getpid(), "username": "alice"}
+            )
+            api = FakeBotAPI()
+            passes = 0
+
+            def should_stop() -> bool:
+                nonlocal passes
+                if passes >= 5:
+                    return True
+                passes += 1
+                return False
+
+            loop.run(
+                api,  # type: ignore
+                state,
+                allowed=frozenset([111]),
+                lock_path=lock_path,
+                bins=bins,
+                poll_interval_s=0,
+                clock=lambda: 1000.0,
+                should_stop=should_stop,
+            )
+
+            ok(
+                len(api.sent) == 1,
+                "loop nonblocking: start notice sent exactly once",
+            )
+            ok(
+                state.get_report(111) == 999,
+                "loop nonblocking: report was set",
+            )
+            ok(
+                api.updates_calls == 5,
+                "loop nonblocking: get_updates called on every pass",
+            )
+            ok(
+                not any(sec > 0 for sec in sleep_calls),
+                "loop nonblocking: sleep never called with positive value",
+            )
+    finally:
+        loop.time.sleep = orig_sleep
+
+
+def test_usage_hint() -> None:
+    hint_rec = "Usage: /record <handle> (letters, digits, _ or ., max 64)"
+    hint_ar = "Usage: /ar_add <handle> (letters, digits, _ or ., max 64)"
+    hint_rem = "Usage: /remove <handle> (letters, digits, _ or ., max 64)"
+
+    ok(commands.usage_hint("/record -rf") == hint_rec,
+       "usage_hint: /record -rf returns record usage hint")
+    ok(commands.usage_hint("/record") == hint_rec,
+       "usage_hint: /record returns record usage hint")
+    ok(commands.usage_hint("/ar-add @") == hint_ar,
+       "usage_hint: /ar-add @ returns ar_add usage hint")
+    ok(commands.usage_hint("/remove a b") == hint_rem,
+       "usage_hint: /remove a b returns remove usage hint")
+    ok(commands.usage_hint("/record alice") is None,
+       "usage_hint: /record alice returns None")
+    ok(commands.usage_hint("/list") is None,
+       "usage_hint: /list returns None")
+    ok(commands.usage_hint("/foo") is None,
+       "usage_hint: /foo returns None")
+    ok(commands.usage_hint("hello") is None,
+       "usage_hint: hello returns None")
+
+    class FakeBotAPI:
+        def __init__(self, updates: list[dict[str, Any]]) -> None:
+            self.updates = list(updates)
+            self.sent: list[tuple[int, str]] = []
+            self.next_id = 200
+
+        def get_updates(
+            self, offset: int, timeout: int = 30
+        ) -> list[dict[str, Any]]:
+            res = self.updates
+            self.updates = []
+            return res
+
+        def send_message(self, chat_id: int, text: str) -> int:
+            self.next_id += 1
+            self.sent.append((chat_id, text))
+            return self.next_id
+
+    update_msg = {
+        "update_id": 1,
+        "message": {
+            "message_id": 77,
+            "from": {"id": 111},
+            "chat": {"id": 111},
+            "text": "/record -rf",
+            "date": 1000,
+        },
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        state = BotState(root / "state")
+        lock_path = root / "tiktok.lock"
+        bins = {"recorder": "/bin/echo", "archiver": "/bin/echo"}
+        api = FakeBotAPI([update_msg])
+        loop._process_updates(
+            api,
+            state,
+            allowed=frozenset([111]),
+            bins=bins,
+            lock_path=lock_path,
+            clock=lambda: 1000.0,
+        )
+        ok(
+            len(api.sent) == 1
+            and api.sent[0][1].startswith("Usage: /record"),
+            "usage_hint: sent hint starting with Usage: /record",
+        )
+        ok(
+            any(c == 111 and m == 77 for c, m, _ in state.due(1000.0, 0.0)),
+            "usage_hint: update message id tracked in state",
+        )
 
 
 def main() -> int:
@@ -567,6 +774,8 @@ def main() -> int:
     test_parse_command_handles()
     test_read_env_file_export_and_comments()
     test_broadcast_retry()
+    test_loop_broadcast_retry_nonblocking()
+    test_usage_hint()
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

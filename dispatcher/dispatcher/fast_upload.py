@@ -47,6 +47,8 @@ log = logging.getLogger(__name__)
 PART_SIZE = 512 * 1024                 # Telegram's hard maximum per part
 _BIG_THRESHOLD = 10 * 1024 * 1024      # >10 MiB ⇒ SaveBigFilePart (no md5)
 MAX_CONNECTIONS = 8                    # diminishing returns / politeness past this
+_DISCONNECT_TIMEOUT_S = 5.0            # bound on dropping a broken per-part
+                                       # sender; dead link must not stall retry
 
 ProgressCb = Callable[[int, int], Any]
 
@@ -202,7 +204,10 @@ async def _parallel_upload(
                         e,
                     )
                     try:
-                        await sender.disconnect()
+                        await asyncio.wait_for(
+                            sender.disconnect(),
+                            _DISCONNECT_TIMEOUT_S,
+                        )
                     except Exception:
                         pass
                     await asyncio.sleep(1.0 if attempt == 1 else 2.0)

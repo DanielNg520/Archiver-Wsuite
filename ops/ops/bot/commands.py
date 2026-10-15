@@ -49,6 +49,19 @@ def parse_command(text: str) -> tuple[str, str | None] | None:
     return None
 
 
+def usage_hint(text: str) -> str | None:
+    """Return a usage hint for malformed handle commands, or None."""
+    if parse_command(text) is not None:
+        return None
+    match = _CMD_RE.match(text.strip())
+    if not match:
+        return None
+    cmd = match.group(1).lower().replace("-", "_")
+    if cmd not in ("record", "ar_add", "re_add", "remove"):
+        return None
+    return f"Usage: /{cmd} <handle> (letters, digits, _ or ., max 64)"
+
+
 def run_cli(
     argv: list[str], timeout_s: float = 30.0
 ) -> tuple[int, str]:
