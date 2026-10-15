@@ -78,6 +78,11 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - `PROJECT_MAP.md` folded and deleted under the current rules (owner, 2026-10-09).
 - Historical plan docs folded in and deleted; git history keeps them; `<repo>/.config` leftover trashed (owner, 2026-10-09).
 - Linux (systemd) and macOS (launchd) are the only supported platforms (owner, 2026-10-09).
+- Absorb `vlog_bridge` (ARC bot) into the suite; purge Ops Center completely after a tarball to `~/.archive` (owner, 2026-10-14).
+- ARC bot scope: every suite CLI command via shorthand, graceful per-command status reply, record start/stop messages (owner, 2026-10-14).
+- ARC bot deletes its own messages and the owner's commands 24h after sending (owner, 2026-10-14; Bot API caps deletes at 48h).
+- ARC bot destructive commands need an inline Yes/No confirm, 60s expiry; read-only and additive run directly (owner, 2026-10-14).
+- ARC bot lives in `ops` as `ops bot`, unit `com.duy.bot`, stdlib HTTP only, ops keeps zero deps (owner, 2026-10-14).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
 - Anything Windows-only can be removed: CRLF → LF renormalize, trash `miki_status.py` + its `.gitignore` lines (owner, 2026-10-10).
@@ -104,6 +109,26 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Carryover
 
 Last audit: 2026-10-13 (through 32e7c3b).
+
+### ARC bot absorb plan (2026-10-14; P0 design done, next: P1 in a new session)
+- Source: `~/Documents/Coding/Ops Center/vlog_bridge/` (7 files, ~390 lines, not git-tracked); unit `vlog-bridge.service`; owner rules in Decisions above.
+- Read its `AGENTS.md` Carryover before porting: lock-diff broadcast, supersede, `KillMode=process`, token redaction, dead-pid lock = None.
+- Target: `ops/ops/bot/` package, `ops bot` subcommand, `com.duy.bot` added to `ops/cli.py` `_SERVICE_CMD` and `health.LABELS`.
+- Reuse: `core.env` for `RECORDER_BOT_API` + new `ARC_BOT_ALLOWED_IDS`; `core.heartbeat.write_atomic` for state; recorder lock path via suite `locks_dir()`.
+- Env gap (verified): core and ops lack dotenv; only archiver/recorder/dispatcher `config.py` call `load_dotenv`. Add a stdlib `.env` reader to `core.env` (port vlog `load_env_value`).
+- State dir: `$ARCHIVER_CONFIG_HOME/archiver-suite/bot/` (offset, report_state, sent-message ledger); seed offset from vlog `offset.json` to avoid replays.
+- CLIs run as subprocess via `ops/cli.py` `_resolve_bin` (separate uv venvs); never import archiver/recorder/dispatcher from ops.
+- P1 (parity + purge): stdlib Bot API client, the 6 existing commands, lock-diff start/stop broadcast, 24h delete sweep (own replies, broadcasts, owner commands).
+- P1 tests: `ops/ops/_selftest_bot.py` for parser, lock diff, supersede, 24h sweep (fake clock, fake HTTP); seams + ops selftests pass.
+- P1 swap: only when lock shows no recording; `ops install`, stop+disable vlog-bridge, `ops load bot`; one getUpdates consumer per token.
+- P1 verify: owner sends `/recstatus` and `/list`; offset advances; a reply disappears after 24h (check next session).
+- P1 purge, last: tar Ops Center to `~/.archive/opscenter-2026-10-14.tar.gz`, verify tar lists, `uv tool uninstall opscenter`, rm unit file, `rm -rf` folder.
+- P1 docs: amend Decisions lines naming Ops Center/vlog_bridge, `ops/health.py:78` comment, `AUTOMATION.md:254`, CLAUDE.md (bot is Bot API, not the sole-sender dispatcher).
+- P2 (full CLI): shorthand alias table (data, not code per command) for common verbs, plus `/a /r /d /o <raw args>` passthrough for every other command.
+- P2: daemon/interactive verbs (`start`, `loop`, `watch`, `tui`) blocked; `record` stays async; per-entry timeout (ops update needs minutes).
+- P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No `callback_query`, 60s expiry.
+- P2: graceful status: post "running <argv>", then edit it to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
+- P2 trap: `ops restart bot` / `ops unload bot` from the bot kills itself mid-reply; reply first, then exec.
 - 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
