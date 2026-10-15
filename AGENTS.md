@@ -92,6 +92,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - ARC bot destructive commands need an inline Yes/No confirm, 60s expiry; read-only and additive run directly (owner, 2026-10-14).
 - Fix dispatcher reconnect wedge (stale Telethon `_ping` kills each reconnect at 60s) and add an `ops health` stall warning (owner, 2026-10-14).
 - ARC bot allowed ids live in suite `.env` as `ARC_BOT_ALLOWED_IDS` (comma list), next to `RECORDER_BOT_API` (owner, 2026-10-14).
+- Fix all F11-F18 via dispatch; paused 2026-10-14 for DeepSeek peak hours, agy judged unreliable; resume off-peak (owner, 2026-10-14).
 - ARC bot lives in `ops` as `ops bot`, unit `com.duy.bot`, stdlib HTTP only, ops keeps zero deps (owner, 2026-10-14).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
@@ -119,13 +120,20 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-14 wrap-up (audited through `46f5d90`; 8 new findings).
+Last audit: 2026-10-14 wrap-up (audited through `c953383`; 0 new findings, light path).
 
 - Audit 2026-10-14 (65ba6fb..HEAD): reconnect wedge and stall-header fixes verified; F11-F18 logged above; fast_upload "new file_id per retry" refuted as stated.
 - Telethon-internal auto-reconnect re-sends the pending ping, so only the manual `_force_reconnect` path needed the `_ping` reset (source read, Telethon 1.45).
 - Reconnect wedge fixed (TriAPI `archiver_reconnect_ping`); `ops health` amber stall header via `recorder_stall_warning` (`archiver_health_stall`); 303 seams.
 - Watch: after a network drop, `reconnected after stall` must NOT be followed by `Automatic reconnection failed` 60s later; not yet seen live.
 - Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
+
+### F11-F18 fixes (paused 2026-10-14; resume off-peak, before P2)
+- Prompts: TriAPI `rebuild/tasks/archiver_findings_f11_f18/`; re-run `build.py` first (extracts current function source via ast), then dispatch c1-c7.
+- c1 (F11 per-part retry) reply reviewed OK: `logs/responses/da6cce677a5250fd4f8042821a70cbcd54971be35e0e7b917a1f11ff6a4f3fda.txt`; diff tree, then apply. c2-c7 not dispatched.
+- Map: c2 F17 warn, c3 F13+F18 cli, c4 F12+F18 health `down_services`, c5 F14 `_send_with_retry`, c6 F15 handle regex, c7 F16 env.
+- After apply: selftests for each (F17 pin `_ping` in Telethon source, F11 transient part); dispatcher restart gated on idle; `ops restart bot`.
+- F18 `AUTOMATION.md` done. Use DeepSeek off-peak (00:30-08:30 Beijing); agy runs tests itself despite instructions, always diff.
 
 ### ARC bot (P1 live 2026-10-14; next: P2 in a new session)
 - P1 (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).

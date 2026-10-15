@@ -143,7 +143,7 @@ ops watch               # watch the dispatcher drain them
 ops health
 ```
 
-Expect all three workers `running`, queue `pending` trending toward 0,
+Expect all three workers and the bot `running`, queue `pending` trending toward 0,
 `tiktok.lock` `not held` (unless recording), disk healthy. Then `ops watch` and
 leave it open through one archiver cycle: archiver enqueues → dispatcher sends →
 rows go `sent`.
