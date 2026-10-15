@@ -4,14 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F13 [medium · 1 · 2026-10-14] ops/ops/cli.py `_restart_bot_if_stale`: restarts if unit file exists, resurrecting an unloaded bot (suspected). Fix: only if `job_state("bot")=="running"`.
-- F11 [low · 2 · 2026-10-14] dispatcher/dispatcher/fast_upload.py:154: `file_id` drawn once per attempt, no part retry; one failed part re-uploads whole file serially (verified; design).
-- F12 [low · 1 · 2026-10-14] ops/ops/health.py `LABELS`: includes `bot`, but header treats labels as workers; unloaded bot reads red, no row (verified). Fix: separate WORKERS.
-- F14 [low · 1 · 2026-10-14] ops/ops/bot/loop.py `_broadcast`: swallows TelegramError yet `run` advances `prev_user`, so a transient failure loses the notice; restart while recording re-announces (verified).
-- F15 [low · 1 · 2026-10-14] ops/ops/bot/commands.py `parse_command`: handle unvalidated, passed to CLI argv (leading `-`, spaces); allowlisted ids only (suspected). Fix: regex `[A-Za-z0-9_.]+`.
-- F16 [low · 1 · 2026-10-14] core/core/env.py `read_env_file`: no `export` prefix or inline-comment handling, unlike `dotenv_values` used on the same `.env` elsewhere (suspected).
-- F17 [low · 1 · 2026-10-14] dispatcher/dispatcher/send.py:396: `hasattr` guard silently skips the `_ping` reset if Telethon renames internals; wedge would return unlogged (suspected). Fix: warn once when missing.
-- F18 [low · 1 · 2026-10-14] stale "three services/workers" wording: ops/ops/health.py:4, ops/ops/cli.py:50,181, AUTOMATION.md:146 (verified, cosmetic).
+- None open.
 
 ## Commands
 
@@ -92,7 +85,8 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - ARC bot destructive commands need an inline Yes/No confirm, 60s expiry; read-only and additive run directly (owner, 2026-10-14).
 - Fix dispatcher reconnect wedge (stale Telethon `_ping` kills each reconnect at 60s) and add an `ops health` stall warning (owner, 2026-10-14).
 - ARC bot allowed ids live in suite `.env` as `ARC_BOT_ALLOWED_IDS` (comma list), next to `RECORDER_BOT_API` (owner, 2026-10-14).
-- Fix all F11-F18 via dispatch; paused 2026-10-14 for DeepSeek peak hours, agy judged unreliable; resume off-peak (owner, 2026-10-14).
+- Fix all F11-F18 via dispatch (owner, 2026-10-14); done in `05d1362` (2026-10-15).
+- During DeepSeek peak (01:00-04:00, 06:00-10:00 UTC weekdays), dispatch falls back to OpenRouter instead of pausing (owner, 2026-10-15).
 - ARC bot lives in `ops` as `ops bot`, unit `com.duy.bot`, stdlib HTTP only, ops keeps zero deps (owner, 2026-10-14).
 - `tools/recover_suite_db.py` is a generic recover/verify/swap; no backup-merge step (owner, 2026-10-09).
 - Three already-applied one-shot path/config migration scripts deleted (owner, 2026-10-09).
@@ -130,13 +124,7 @@ Last audit: 2026-10-14 wrap-up (audited through `c953383`; 0 new findings, light
 - Watch: first video upload over 60s after a reconnect must complete; if `Automatic reconnection failed` returns 60s after `reconnected`, F9 is not closed.
 - Incident 2026-10-14: queue stalled 6h (19970609bun, rhmn1999 videos; uploads over 60s failed `Cannot send requests while disconnected`) until `ops restart dispatcher` 13:49; both sent.
 - Watch: `_drain_with_stop_grace` and live `retry_after` backoff not yet seen live; shutdown disconnect logs: grep `disconnect timed out after` in `dispatcher.out.log`.
-
-### F11-F18 fixes (paused 2026-10-14; resume off-peak, before P2)
-- Prompts: TriAPI `rebuild/tasks/archiver_findings_f11_f18/`; re-run `build.py` first (extracts current function source via ast), then dispatch c1-c7.
-- c1 (F11 per-part retry) reply reviewed OK: `logs/responses/da6cce677a5250fd4f8042821a70cbcd54971be35e0e7b917a1f11ff6a4f3fda.txt`; diff tree, then apply. c2-c7 not dispatched.
-- Map: c2 F17 warn, c3 F13+F18 cli, c4 F12+F18 health `down_services`, c5 F14 `_send_with_retry`, c6 F15 handle regex, c7 F16 env.
-- After apply: selftests for each (F17 pin `_ping` in Telethon source, F11 transient part); dispatcher restart gated on idle; `ops restart bot`.
-- F18 `AUTOMATION.md` done. Use DeepSeek off-peak (00:30-08:30 Beijing); agy runs tests itself despite instructions, always diff.
+- F11-F18 fixed in `05d1362`; dispatcher and bot restarted 2026-10-14 23:08 PDT, healthy.
 
 ### ARC bot (P1 live 2026-10-14; next: P2 in a new session)
 - P1 (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
@@ -148,9 +136,10 @@ Last audit: 2026-10-14 wrap-up (audited through `c953383`; 0 new findings, light
 - P2: daemon/interactive verbs (`start`, `loop`, `watch`, `tui`) blocked; `record` stays async; per-entry timeout (ops update needs minutes).
 - P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No, 60s expiry.
 - P2: graceful status: post "running <argv>", then edit to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
-- P2 trap: `ops restart bot`/`ops unload bot`/`ops update` from the bot kills or restarts itself mid-reply; reply first, then exec. Fix F12, F13, F15 first.
+- P2 trap: `ops restart bot`/`ops unload bot`/`ops update` from the bot kills or restarts itself mid-reply; reply first, then exec.
 
 ### Standing traps
+- Test-writing: DeepSeek failed fake-heavy selftests three rounds; agy wrote all four first try (2026-10-15). Prefer agy for new tests.
 - `apply_dispatch` check timeout is 120s; the full suite (~124s) exceeds it. Check with seams + the file's selftests (~75s), full run after.
 - `apply_dispatch --response` takes the stored `logs/responses/<sha>.txt` path, not the task `.out`; `--new` needs one ```python fence.
 - agy may write the target file itself and prefix prose; diff the tree after every agy call, before apply.
