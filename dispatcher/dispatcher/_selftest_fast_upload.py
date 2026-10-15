@@ -188,6 +188,109 @@ def test_part_failure_falls_back(tmp: Path) -> None:
           "every connected sender is disconnected even when a part fails")
 
 
+def test_part_retry_transient(tmp: Path) -> None:
+    print("\n── transient part failure → retried on new sender, succeeds ──")
+    size = 11 * 1024 * 1024 + 777
+    data = _make_file(tmp / "transient.bin", size)
+    client = _FakeClient()
+
+    failed = False
+    senders: list[_FakeSender] = []
+
+    class _TransientSender(_FakeSender):
+        async def send(self, req):
+            nonlocal failed
+            if req.file_part == 2 and not failed:
+                failed = True
+                raise ConnectionError("simulated transient failure")
+            return await super().send(req)
+
+    orig_connect = fast_upload._connect_sender
+    orig_sleep = fast_upload.asyncio.sleep
+
+    async def _fake_connect(_client, *, connect_timeout=None, retries=None):
+        s = _TransientSender()
+        senders.append(s)
+        return s
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    fast_upload._connect_sender = _fake_connect
+    fast_upload.asyncio.sleep = _instant_sleep
+    try:
+        progress: list[tuple[int, int]] = []
+        handle = asyncio.run(fast_upload.upload_file(
+            client, tmp / "transient.bin", connections=4,
+            progress_callback=lambda c, t: progress.append((c, t))))
+    finally:
+        fast_upload._connect_sender = orig_connect
+        fast_upload.asyncio.sleep = orig_sleep
+
+    check(failed, "transient ConnectionError was triggered")
+    check(not client.serial_calls, "the serial uploader was NOT used")
+    check(isinstance(handle, types.InputFileBig),
+          "returns an InputFileBig handle")
+    expected = (size + fast_upload.PART_SIZE - 1) // fast_upload.PART_SIZE
+    all_parts = [p for s in senders for p in s.parts]
+    indices = sorted(i for i, _ in all_parts)
+    check(indices == list(range(expected)),
+          "every part index sent exactly once")
+    check(_reassemble(senders) == data,
+          "reassembled bytes are identical to the source file")
+    check(progress and progress[-1] == (size, size),
+          "progress callback ends at 100% (sent == total)")
+    check(senders and all(s.disconnected for s in senders),
+          "every created sender disconnected")
+
+
+def test_part_retry_persistent(tmp: Path) -> None:
+    print("\n── persistent part failure → raises after 3 attempts ──")
+    size = 11 * 1024 * 1024 + 777
+    _make_file(tmp / "persistent.bin", size)
+    client = _FakeClient()
+
+    attempts = 0
+    senders: list[_FakeSender] = []
+
+    class _PersistentSender(_FakeSender):
+        async def send(self, req):
+            nonlocal attempts
+            if req.file_part == 2:
+                attempts += 1
+                raise ConnectionError("simulated persistent failure")
+            return await super().send(req)
+
+    orig_connect = fast_upload._connect_sender
+    orig_sleep = fast_upload.asyncio.sleep
+
+    async def _fake_connect(_client, *, connect_timeout=None, retries=None):
+        s = _PersistentSender()
+        senders.append(s)
+        return s
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    fast_upload._connect_sender = _fake_connect
+    fast_upload.asyncio.sleep = _instant_sleep
+    raised = False
+    try:
+        try:
+            asyncio.run(fast_upload._parallel_upload(
+                client, tmp / "persistent.bin", size, 4,
+                fast_upload.PART_SIZE, "persistent.bin", None,
+            ))
+        except ConnectionError:
+            raised = True
+    finally:
+        fast_upload._connect_sender = orig_connect
+        fast_upload.asyncio.sleep = orig_sleep
+
+    check(raised, "parallel upload raised ConnectionError on failure")
+    check(attempts == 3, "failed part was attempted exactly 3 times")
+
+
 def main() -> int:
     print("dispatcher.fast_upload self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -197,6 +300,8 @@ def main() -> int:
         test_connections_one_is_serial(tmp)
         test_missing_internals_serial(tmp)
         test_part_failure_falls_back(tmp)
+        test_part_retry_transient(tmp)
+        test_part_retry_persistent(tmp)
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

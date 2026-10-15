@@ -47,7 +47,7 @@ from .logrotate import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_logs
 LOG_DIR = _service.log_dir()
 
 # Calendar job (not a daemon): rotates the workers' captured logs daily so
-# history survives reboots/truncation. Installed/removed alongside the three
+# history survives reboots/truncation. Installed/removed alongside the
 # service definitions but never health-checked — it has no liveness.
 LOGROTATE_LABEL = "com.duy.logrotate"
 
@@ -178,7 +178,7 @@ def cmd_install(_args: argparse.Namespace) -> int:
 
 
 def _all_jobs() -> list[tuple[str, str]]:
-    """(display name, launchd label) for every plist ops manages: the three
+    """(display name, launchd label) for every plist ops manages: the
     services plus the logrotate calendar job."""
     return [*LABELS.items(), ("logrotate", LOGROTATE_LABEL)]
 
@@ -296,9 +296,12 @@ def _drain_worker(name: str, args: argparse.Namespace) -> int | None:
 
 
 def _restart_bot_if_stale(changed: set[str], force: bool) -> None:
-    """Restart bot service when ops or core code changed."""
+    """Restart bot service when ops or core code changed and it is
+    running."""
     if force or "ops" in changed or "core" in changed:
-        if _service.definition_exists(LABELS["bot"]):
+        if _health.job_state("bot") == "running" and _service.definition_exists(
+            LABELS["bot"]
+        ):
             cmd_restart(argparse.Namespace(service="bot"))
 
 

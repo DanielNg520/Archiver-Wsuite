@@ -79,6 +79,7 @@ from .media_meta import make_thumbnail, probe_video
 from .progress import ProgressReporter
 
 log = logging.getLogger(__name__)
+_stale_ping_reset_unavailable_warned = False
 
 # Bound disconnect to 5s to fit within the dispatcher's 45s shutdown budget.
 _DISCONNECT_TIMEOUT_S = 5.0
@@ -395,6 +396,14 @@ class TelethonSendStrategy(SendStrategy):
         # each fresh link ~60 s later (Telethon 1.45).
         if hasattr(client, '_sender') and hasattr(client._sender, '_ping'):
             client._sender._ping = None
+        elif hasattr(client, '_sender'):
+            global _stale_ping_reset_unavailable_warned
+            if not _stale_ping_reset_unavailable_warned:
+                log.warning(
+                    "telethon: stale-ping reset unavailable; reconnect wedge "
+                    "fix inactive (Telethon internals changed)"
+                )
+                _stale_ping_reset_unavailable_warned = True
         try:
             await asyncio.wait_for(client.connect(), timeout=30)
             log.info("telethon: reconnected after stall")

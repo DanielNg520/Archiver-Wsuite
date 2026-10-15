@@ -57,11 +57,20 @@ def _wait_record_thread(
     else:
         reply = _format_failure("record", rc, out)
 
+    _send_with_retry(api, state, chat_id, reply, clock)
+
+
+def _send_with_retry(
+    api: Any,
+    state: Any,
+    chat_id: int,
+    text: str,
+    clock: Callable[[], float],
+) -> int | None:
     delay = 1.0
     for attempt in range(5):
         try:
-            _send_and_track(api, state, chat_id, reply, clock)
-            return
+            return _send_and_track(api, state, chat_id, text, clock)
         except TelegramError as err:
             log.warning(
                 "Record waiter send failed (attempt %d/5): %s",
@@ -71,6 +80,7 @@ def _wait_record_thread(
             if attempt < 4:
                 time.sleep(min(delay, 30.0))
                 delay *= 2.0
+    return None
 
 
 def _handle_command(
@@ -214,8 +224,11 @@ def _broadcast(
                     except TelegramError:
                         pass
                     state.forget(chat_id, prev_msg_id)
-                msg_id = _send_and_track(api, state, chat_id, text, clock)
-                state.set_report(chat_id, msg_id)
+                msg_id = _send_with_retry(
+                    api, state, chat_id, text, clock
+                )
+                if msg_id is not None:
+                    state.set_report(chat_id, msg_id)
             except TelegramError as err:
                 log.warning(
                     "Broadcast start failed for chat %d: %s", chat_id, err
@@ -224,8 +237,11 @@ def _broadcast(
         text = f"⚪ recording ended: @{prev_user}"
         for chat_id in allowed:
             try:
-                msg_id = _send_and_track(api, state, chat_id, text, clock)
-                state.set_report(chat_id, msg_id)
+                msg_id = _send_with_retry(
+                    api, state, chat_id, text, clock
+                )
+                if msg_id is not None:
+                    state.set_report(chat_id, msg_id)
             except TelegramError as err:
                 log.warning(
                     "Broadcast end failed for chat %d: %s", chat_id, err

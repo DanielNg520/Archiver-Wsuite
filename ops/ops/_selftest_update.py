@@ -24,8 +24,10 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from . import update as u
+from . import cli
 
 _checks = 0
 
@@ -151,6 +153,35 @@ def main() -> int:
             ok(True, "clearing an absent flag is a no-op")
         finally:
             os.environ.pop("ARCHIVER_CONFIG_HOME", None)
+
+    # ── _restart_bot_if_stale: restart only when ops/core changed + bot
+    #    is actually running ─────────────────────────────────────────────
+    with mock.patch.object(cli._health, "job_state", return_value="running"), \
+         mock.patch.object(cli._service, "definition_exists", return_value=True), \
+         mock.patch.object(cli, "cmd_restart") as restart:
+        cli._restart_bot_if_stale({"ops"}, force=False)
+        ok(restart.call_count == 1,
+           "ops changed + bot running → cmd_restart called once")
+        ok(restart.call_args.args[0].service == "bot",
+           "cmd_restart is called for service 'bot'")
+        restart.reset_mock()
+        cli._restart_bot_if_stale({"core"}, force=False)
+        ok(restart.call_count == 1,
+           "core changed + bot running → cmd_restart called once")
+
+        restart.reset_mock()
+        for state in ("disabled", "enabled", None):
+            with mock.patch.object(cli._health, "job_state", return_value=state):
+                cli._restart_bot_if_stale({"ops"}, force=False)
+            ok(restart.call_count == 0,
+               f"bot job_state={state!r} → no restart")
+
+    with mock.patch.object(cli._health, "job_state", return_value="running"), \
+         mock.patch.object(cli._service, "definition_exists", return_value=True), \
+         mock.patch.object(cli, "cmd_restart") as restart:
+        cli._restart_bot_if_stale(set(), force=False)
+        ok(restart.call_count == 0,
+           "no ops/core change + force=False → no restart")
 
     # ── default_repo_root: real environment, not the temp fixture ──────
     # ops is always installed editable, so this must resolve to the actual

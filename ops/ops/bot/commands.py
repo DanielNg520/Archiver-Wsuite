@@ -17,6 +17,9 @@ _CMD_PATTERN = (
 _CMD_RE = re.compile(_CMD_PATTERN, re.IGNORECASE)
 
 
+_VALID_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.]{1,64}$")
+
+
 def parse_command(text: str) -> tuple[str, str | None] | None:
     match = _CMD_RE.match(text.strip())
     if not match:
@@ -34,7 +37,9 @@ def parse_command(text: str) -> tuple[str, str | None] | None:
         handle = args.strip()
         if handle.startswith("@"):
             handle = handle[1:]
-        return (cmd, handle) if handle else None
+        if not _VALID_HANDLE_RE.match(handle):
+            return None
+        return (cmd, handle)
 
     if cmd == "list":
         return ("list", None)

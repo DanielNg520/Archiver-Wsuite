@@ -402,6 +402,87 @@ class ForceReconnectStalePingTests(unittest.TestCase):
         self.assertTrue(any("TimeoutError" in record for record in cm.output))
 
 
+class ForceReconnectStalePingWarnTests(unittest.TestCase):
+    def test_missing_ping_warns_once_across_two_calls(self):
+        import dispatcher.send as send_mod
+
+        class _NoPingSenderClient:
+            def __init__(self):
+                self._sender = type("_Sender", (), {})()
+
+            async def disconnect(self):
+                pass
+
+            async def connect(self):
+                pass
+
+        send_mod._stale_ping_reset_unavailable_warned = False
+        self.addCleanup(
+            setattr,
+            send_mod,
+            "_stale_ping_reset_unavailable_warned",
+            False,
+        )
+        strat = send_mod.TelethonSendStrategy(
+            api_id=1,
+            api_hash="x",
+            phone="+10000000000",
+            session_name="/tmp/not-a-real-session",
+            max_retries=1,
+            stall_base_timeout_s=0.05,
+            stall_min_rate_kib_s=1_000_000.0,
+        )
+        strat._client = _NoPingSenderClient()
+
+        with self.assertLogs("dispatcher.send", level="WARNING") as cm:
+            asyncio.run(strat._force_reconnect())
+            asyncio.run(strat._force_reconnect())
+        stale_warnings = [
+            record
+            for record in cm.output
+            if "stale-ping reset unavailable" in record
+        ]
+        self.assertEqual(len(stale_warnings), 1)
+
+    def test_no_sender_logs_no_stale_ping_warning(self):
+        import dispatcher.send as send_mod
+
+        class _NoSenderClient:
+            async def disconnect(self):
+                pass
+
+            async def connect(self):
+                pass
+
+        send_mod._stale_ping_reset_unavailable_warned = False
+        self.addCleanup(
+            setattr,
+            send_mod,
+            "_stale_ping_reset_unavailable_warned",
+            False,
+        )
+        strat = send_mod.TelethonSendStrategy(
+            api_id=1,
+            api_hash="x",
+            phone="+10000000000",
+            session_name="/tmp/not-a-real-session",
+            max_retries=1,
+            stall_base_timeout_s=0.05,
+            stall_min_rate_kib_s=1_000_000.0,
+        )
+        strat._client = _NoSenderClient()
+
+        with self.assertNoLogs("dispatcher.send", level="WARNING"):
+            asyncio.run(strat._force_reconnect())
+
+    def test_telethon_sender_still_sets_ping_attr(self):
+        import inspect
+
+        from telethon.network import MTProtoSender
+
+        self.assertIn("_ping", inspect.getsource(MTProtoSender.__init__))
+
+
 class DisconnectExceptionHandlingTests(unittest.TestCase):
     """__aexit__ logs a WARNING on disconnect failure, still disconnects
     the burner, and never lets the exception escape."""

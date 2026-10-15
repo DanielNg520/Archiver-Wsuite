@@ -1,7 +1,7 @@
 """
 ops.health
 ──────────
-Standalone health check for the three-process system. Imports NOTHING
+Standalone health check for the archiver-suite services. Imports NOTHING
 from dispatcher / recorder / archiver — it only reads their on-disk
 artifacts and OS process state. This keeps
 ops installable and runnable even if one of the services is broken or
@@ -884,6 +884,19 @@ def _cont(value: str) -> str:
     return f"   {' ' * 9} {value}"
 
 
+def down_services(
+    live: dict[str, tuple[int | None, str]], bot_job: str | None
+) -> list[str]:
+    """Return names whose pid is None, with bot gated on its job state."""
+    down = []
+    for name, (pid, _) in live.items():
+        if not pid:
+            if name == "bot" and bot_job not in ("running", "enabled"):
+                continue
+            down.append(name)
+    return down
+
+
 def render(anim: "int | None" = None) -> str:
     cols = shutil.get_terminal_size((80, 24)).columns
     width = min(cols, _WIDTH)
@@ -892,7 +905,7 @@ def render(anim: "int | None" = None) -> str:
 
     # ── header: title · live status · clock (+ spinner in watch mode) ──
     live = {n: worker_pid(n) for n in LABELS}
-    down = [n for n, (pid, _) in live.items() if not pid]
+    down = down_services(live, job_state("bot"))
     title = _c("ARCHIVER SUITE", _TITLE, bold=True) + "  " + _c("health", _LABEL)
     spin = _spin(anim)
     clock = ((_c(spin, _CYAN) + " ") if spin else "") \

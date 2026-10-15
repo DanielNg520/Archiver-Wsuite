@@ -461,6 +461,100 @@ def test_service_unit() -> None:
     )
 
 
+def test_parse_command_handles() -> None:
+    ok(commands.parse_command("/record -rf") is None,
+       "parse_command: rejects handle with -rf")
+    ok(commands.parse_command("/record a b") is None,
+       "parse_command: rejects handle with space")
+    ok(commands.parse_command("/re_add @") is None,
+       "parse_command: rejects bare @ handle")
+    ok(commands.parse_command("/record " + "a" * 65) is None,
+       "parse_command: rejects 65-char handle")
+    ok(commands.parse_command("/record @some.user_1") == (
+           "record", "some.user_1"),
+       "parse_command: accepts valid @some.user_1")
+
+
+def test_read_env_file_export_and_comments() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        env_path = Path(td) / "test.env"
+        env_path.write_text(
+            "export KEY=v\n"
+            "A=val # comment\n"
+            "B=a#b\n"
+            'C="x # y"\n',
+            encoding="utf-8",
+        )
+        res = read_env_file(env_path)
+        ok(res.get("KEY") == "v",
+           "read_env_file: export KEY=v stripped")
+        ok(res.get("A") == "val",
+           "read_env_file: inline comment stripped")
+        ok(res.get("B") == "a#b",
+           "read_env_file: hash without space kept")
+        ok(res.get("C") == "x # y",
+           "read_env_file: quoted hash kept")
+
+
+def test_broadcast_retry() -> None:
+    class FlakyBotAPI:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.sent_id: int | None = None
+
+        def send_message(self, chat_id: int, text: str) -> int:
+            self.calls += 1
+            if self.calls == 1:
+                raise TelegramError("first call transient failure")
+            self.sent_id = 501
+            return self.sent_id
+
+    class FailingBotAPI:
+        def send_message(self, chat_id: int, text: str) -> int:
+            raise TelegramError("always fails")
+
+    orig_sleep = loop.time.sleep
+    loop.time.sleep = lambda _sec: None
+    try:
+        chat = 12345
+        allowed = frozenset([chat])
+
+        with tempfile.TemporaryDirectory() as td:
+            state = BotState(Path(td))
+            api = FlakyBotAPI()
+            loop._broadcast(
+                api,
+                state,
+                allowed,
+                current_user="alice",
+                prev_user=None,
+                clock=lambda: 1000.0,
+            )
+            ok(
+                api.sent_id is not None
+                and state.get_report(chat) == api.sent_id,
+                "broadcast retry: successful attempt updates report",
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            state = BotState(Path(td))
+            api_fail = FailingBotAPI()
+            loop._broadcast(
+                api_fail,
+                state,
+                allowed,
+                current_user="alice",
+                prev_user=None,
+                clock=lambda: 1000.0,
+            )
+            ok(
+                state.get_report(chat) is None,
+                "broadcast retry: persistent failure leaves report None",
+            )
+    finally:
+        loop.time.sleep = orig_sleep
+
+
 def main() -> int:
     print("ops.bot selftest")
     test_parse_command()
@@ -470,6 +564,9 @@ def main() -> int:
     test_loop_run()
     test_read_env_file()
     test_service_unit()
+    test_parse_command_handles()
+    test_read_env_file_export_and_comments()
+    test_broadcast_retry()
     print(f"\nALL PASS ({_checks} checks)")
     return 0
 

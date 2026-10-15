@@ -87,10 +87,7 @@ def opt_bool(key: str, default: bool) -> bool:
 
 
 def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
-    """Parse a dotenv-style file without external dependencies.
-
-    Used by dependency-free packages such as ops.
-    """
+    """Parse a dotenv file: export prefix, unquoted inline comments."""
     result: dict[str, str] = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -102,11 +99,18 @@ def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
                     continue
                 key, value = line.split("=", 1)
                 key = key.strip()
+                if key.startswith("export "):
+                    key = key[len("export "):].strip()
                 value = value.strip()
                 if (value.startswith('"') and value.endswith('"')) or (
                     value.startswith("'") and value.endswith("'")
                 ):
                     value = value[1:-1]
+                else:
+                    for i, ch in enumerate(value):
+                        if ch == "#" and i > 0 and value[i - 1].isspace():
+                            value = value[:i].rstrip()
+                            break
                 result[key] = value
     except OSError:
         return {}

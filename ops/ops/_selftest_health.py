@@ -154,6 +154,28 @@ def main() -> int:
         db.close()
         h.SUITE_DB = real_suite_db
 
+    # ── down_services ────────────────────────────────────────────────────
+    live = {"archiver": (1234, "running"), "bot": (None, "idle"),
+            "recorder": (None, "running"), "subtitle": (5678, "running")}
+    ok(h.down_services(live, "running") == ["bot", "recorder"],
+       "down_services: pid None -> down, bot running -> down; order = input")
+    ok(h.down_services(live, "enabled") == ["bot", "recorder"],
+       "down_services: bot enabled -> down")
+    ok(h.down_services(live, "disabled") == ["recorder"],
+       "down_services: bot disabled -> not down")
+    ok(h.down_services(live, None) == ["recorder"],
+       "down_services: bot_job None -> bot not down")
+    ok(h.down_services({"bot": (None, "idle")}, "enabled") == ["bot"],
+       "down_services: only bot, enabled -> down")
+    ok(h.down_services({"bot": (None, "idle")}, "disabled") == [],
+       "down_services: only bot, disabled -> not down")
+    ok(h.down_services({"archiver": (1234, "running")}, "running") == [],
+       "down_services: live pid -> not down")
+    order_live = {"third": (None, "x"), "first": (None, "x"),
+                  "second": (None, "x")}
+    ok(h.down_services(order_live, "disabled") == ["third", "first", "second"],
+       "down_services: output order follows input dict order")
+
     # recorder_stall_warning pure checks
     now = datetime.now(timezone.utc)
     # qh=None

@@ -172,15 +172,46 @@ async def _parallel_upload(
 
     async def consume(sender: Any) -> None:
         nonlocal sent_bytes
+        max_attempts = 3
         while True:
             item = await queue.get()
             if item is None:
                 return
             index, chunk = item
-            ok = await sender.send(functions.upload.SaveBigFilePartRequest(
-                file_id, index, part_count, chunk))
-            if not ok:
-                raise IOError(f"part {index}/{part_count} rejected by Telegram")
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    ok = await sender.send(
+                        functions.upload.SaveBigFilePartRequest(
+                            file_id, index, part_count, chunk
+                        )
+                    )
+                    if not ok:
+                        raise IOError(
+                            f"part {index}/{part_count} rejected by Telegram"
+                        )
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except (ConnectionError, OSError, asyncio.TimeoutError) as e:
+                    if attempt == max_attempts:
+                        raise
+                    log.warning(
+                        "fast_upload: part %d failed (%s: %s) — retrying",
+                        index,
+                        type(e).__name__,
+                        e,
+                    )
+                    try:
+                        await sender.disconnect()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1.0 if attempt == 1 else 2.0)
+                    sender = await _connect_sender(
+                        client,
+                        connect_timeout=connect_timeout,
+                        retries=retries,
+                    )
+                    stack.push_async_callback(sender.disconnect)
             sent_bytes += len(chunk)
             if progress_callback is not None:
                 res = progress_callback(sent_bytes, size)
