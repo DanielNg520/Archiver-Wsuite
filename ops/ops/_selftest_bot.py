@@ -232,6 +232,9 @@ def test_loop_run() -> None:
                 return self.batches.pop(0)
             return []
 
+        def set_my_commands(self, commands: Any) -> None:
+            return None
+
         def send_message(self, chat_id: int, text: str) -> int:
             self.next_id += 1
             self.sent.append((chat_id, text))
@@ -625,6 +628,9 @@ def test_loop_broadcast_retry_nonblocking() -> None:
         ) -> list[dict[str, Any]]:
             self.updates_calls += 1
             return []
+
+        def set_my_commands(self, commands: Any) -> None:
+            return None
 
         def send_message(self, chat_id: int, text: str) -> int:
             self.send_calls += 1

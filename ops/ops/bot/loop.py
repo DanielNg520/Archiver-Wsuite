@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import core.heartbeat
-from . import commands
+from . import actions, catalog, commands
+from .actions import send_and_track as _send_and_track
 from .telegram import BotAPI, TelegramError
 
 DELETE_AFTER_S = 24 * 3600
@@ -21,18 +22,6 @@ DELETE_AFTER_S = 24 * 3600
 BROADCAST_TRIES = 5
 
 log = logging.getLogger(__name__)
-
-
-def _send_and_track(
-    api: Any,
-    state: Any,
-    chat_id: int,
-    text: str,
-    clock: Callable[[], float],
-) -> int:
-    msg_id = api.send_message(chat_id, text)
-    state.track(chat_id, msg_id, clock())
-    return msg_id
 
 
 def _format_failure(action: str, rc: int, out: str) -> str:
@@ -182,12 +171,28 @@ def _process_updates(
     bins: dict[str, str],
     lock_path: Path,
     clock: Callable[[], float],
+    pending: "actions.Pending | None" = None,
+    detached_log: Path | None = None,
 ) -> None:
     updates = api.get_updates(state.get_offset())
     for update in updates:
         update_id = update.get("update_id")
         if update_id is not None:
             state.set_offset(update_id + 1)
+        callback = update.get("callback_query")
+        if isinstance(callback, dict):
+            if pending is not None:
+                actions.handle_callback(
+                    api,
+                    state,
+                    pending,
+                    callback,
+                    allowed,
+                    bins,
+                    detached_log,
+                    clock,
+                )
+            continue
         message = update.get("message")
         if not isinstance(message, dict):
             continue
@@ -201,6 +206,17 @@ def _process_updates(
         if parsed is None:
             hint = commands.usage_hint(text)
             if hint is None:
+                if pending is not None and actions.handle_text(
+                    api,
+                    state,
+                    pending,
+                    chat_id,
+                    text,
+                    bins,
+                    detached_log,
+                    clock,
+                ):
+                    state.track(chat_id, message_id, float(message["date"]))
                 continue
             state.track(chat_id, message_id, float(message["date"]))
             _send_and_track(api, state, chat_id, hint, clock)
@@ -280,18 +296,35 @@ def run(
     allowed: frozenset[int],
     lock_path: Path,
     bins: dict[str, str],
+    detached_log: Path | None = None,
     poll_interval_s: float = 15.0,
     clock: Callable[[], float] = time.time,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> None:
     prev_user: str | None = None
     last_sweep: float | None = None
-    pending: tuple[str | None, str | None, frozenset[int]] | None = None
+    pending_notice: tuple[str | None, str | None, frozenset[int]] | None = None
     pending_tries = 0
+
+    pending = actions.Pending()
+    try:
+        api.set_my_commands(catalog.bot_commands())
+    except TelegramError as err:
+        log.warning("set_my_commands failed: %s", err)
 
     while not should_stop():
         try:
-            _process_updates(api, state, allowed, bins, lock_path, clock)
+            _process_updates(
+                api,
+                state,
+                allowed,
+                bins,
+                lock_path,
+                clock,
+                pending=pending,
+                detached_log=detached_log,
+            )
+            actions.expire(api, pending, clock())
 
             live_data = core.heartbeat.read_live(lock_path)
             current_user = (
@@ -300,24 +333,33 @@ def run(
                 else None
             )
             if current_user != prev_user:
-                pending = (current_user, prev_user, allowed)
+                pending_notice = (current_user, prev_user, allowed)
                 pending_tries = 0
                 prev_user = current_user
 
-            if pending is not None:
+            if pending_notice is not None:
                 pending_tries += 1
                 failed = _broadcast(
-                    api, state, pending[2], pending[0], pending[1], clock
+                    api,
+                    state,
+                    pending_notice[2],
+                    pending_notice[0],
+                    pending_notice[1],
+                    clock,
                 )
                 if failed and pending_tries < BROADCAST_TRIES:
-                    pending = (pending[0], pending[1], failed)
+                    pending_notice = (
+                        pending_notice[0],
+                        pending_notice[1],
+                        failed,
+                    )
                 else:
                     if failed:
                         log.warning(
                             "Broadcast gave up for chats: %s",
                             sorted(failed),
                         )
-                    pending = None
+                    pending_notice = None
 
             now = clock()
             if last_sweep is None or now - last_sweep >= 60.0:

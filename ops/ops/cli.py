@@ -348,6 +348,9 @@ def cmd_update(args: argparse.Namespace) -> int:
                       "no reinstall or worker restart needed", accent="green")
         _update.write_fingerprints(current)
         _restart_bot_if_stale(changed, args.force)
+        if args.no_watch:
+            _termui.field("update", "done", accent="green")
+            return 0
         _termui.field("update", "done — entering watch (Ctrl-C to exit)",
                       accent="green")
         time.sleep(1.0)
@@ -406,6 +409,9 @@ def cmd_update(args: argparse.Namespace) -> int:
     _restart_bot_if_stale(changed, args.force)
 
     # Hand off to watch.
+    if args.no_watch:
+        _termui.field("update", "done", accent="green")
+        return 0
     _termui.field("update", "done — entering watch (Ctrl-C to exit)",
                   accent="green")
     time.sleep(1.0)
@@ -462,6 +468,16 @@ def cmd_bot(_args: argparse.Namespace) -> int:
         print("ops bot: archiver CLI not found", file=sys.stderr)
         return 2
 
+    disp_bin = _resolve_bin("dispatcher")
+    if disp_bin is None:
+        print("ops bot: dispatcher CLI not found", file=sys.stderr)
+        return 2
+
+    ops_bin = _resolve_bin("ops")
+    if ops_bin is None:
+        print("ops bot: ops CLI not found", file=sys.stderr)
+        return 2
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -473,7 +489,13 @@ def cmd_bot(_args: argparse.Namespace) -> int:
             BotState(cfg_dir / "bot"),
             allowed=frozenset(ids),
             lock_path=_paths.tiktok_lock(),
-            bins={"recorder": rec_bin, "archiver": arc_bin},
+            bins={
+                "recorder": rec_bin,
+                "archiver": arc_bin,
+                "dispatcher": disp_bin,
+                "ops": ops_bin,
+            },
+            detached_log=LOG_DIR / "bot-detached.log",
         )
     except KeyboardInterrupt:
         return 0
@@ -523,6 +545,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "recording is actually in flight)")
     up.add_argument("--interval", type=float, default=3.0,
                     help="watch data-refresh seconds after the update completes")
+    up.add_argument("--no-watch", action="store_true", dest="no_watch",
+                    help="exit after the update instead of entering watch; "
+                         "for non-interactive callers such as the bot")
     lr = sub.add_parser(
         "logrotate",
         help="copytruncate-rotate oversized ~/.local/log/*.log (gzip history)")

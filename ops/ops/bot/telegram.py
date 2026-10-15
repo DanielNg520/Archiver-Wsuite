@@ -101,8 +101,12 @@ class BotAPI:
             ) from None
         return result
 
-    def send_message(self, chat_id: int, text: str) -> int:
+    def send_message(
+        self, chat_id: int, text: str, reply_markup: dict | None = None
+    ) -> int:
         payload = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         result = self._request("sendMessage", payload, timeout=30.0)
         if not isinstance(result, dict) or "message_id" not in result:
             raise TelegramError(
@@ -116,3 +120,36 @@ class BotAPI:
     def delete_message(self, chat_id: int, message_id: int) -> None:
         payload = {"chat_id": chat_id, "message_id": message_id}
         self._request("deleteMessage", payload, timeout=30.0)
+
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        self._request("editMessageText", payload, timeout=30.0)
+
+    def answer_callback_query(
+        self, callback_query_id: str, text: str | None = None
+    ) -> None:
+        payload = {"callback_query_id": callback_query_id}
+        if text is not None:
+            payload["text"] = text
+        self._request("answerCallbackQuery", payload, timeout=30.0)
+
+    def set_my_commands(self, commands: list[tuple[str, str]]) -> None:
+        payload = {
+            "commands": [
+                {"command": cmd, "description": desc}
+                for cmd, desc in commands
+            ]
+        }
+        self._request("setMyCommands", payload, timeout=30.0)

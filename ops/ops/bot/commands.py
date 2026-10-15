@@ -5,9 +5,11 @@ Telegram bot command parsing and CLI execution for archiver-suite.
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 import typing
 
 _CMD_PATTERN = (
@@ -108,3 +110,19 @@ def wait_record(
         return proc.returncode, output
     finally:
         log.close()
+
+
+def start_detached(
+    argv: list[str], log_path: Path
+) -> subprocess.Popen:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(f"=== {stamp} {argv} ===\n")
+        log_file.flush()
+        return subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
