@@ -13,7 +13,7 @@ dense code map. This file is only the traps that bite automated sessions.
   env silently uses a fresh `<repo>/.config` instead.
 - **Worker logs** are `~/.local/log/<app>.{out,err}.log` (unit `StandardOutput`),
   not `$CONFIG/archiver-suite/logs` (frozen since 2026-07-28).
-- **Unit names are `com.duy.{archiver,dispatcher,recorder,logrotate}`** — a bare
+- **Unit names are `com.duy.{archiver,dispatcher,recorder,bot,logrotate}`** — a bare
   `systemctl --user is-active recorder` reports `inactive` for a running service.
 - **`yt-dlp` shims:** always `python -m yt_dlp` — bare exe names can resolve to
   broken/stale shims on a stale-PATH shell.
@@ -61,7 +61,9 @@ dense code map. This file is only the traps that bite automated sessions.
   regenerate with `ops uninstall && ops install` after any path change. Enable
   `loginctl enable-linger $USER` for the services to run while logged out.
 - Don't run destructive DB/config operations while workers are up; check with
-  `ops health` first. The dispatcher is the ONLY Telegram sender.
+  `ops health` first. The dispatcher is the ONLY sender of
+  media to the archive chat; `ops bot` (Bot API, token `RECORDER_BOT_API`) only
+  sends control replies and recording start/end notices.
 - `FilePartsInvalid` failures are permanent by design (oversize file needs a
   split, not a retry) — see [ops/RUNBOOK.md](ops/RUNBOOK.md).
 

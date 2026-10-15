@@ -272,7 +272,8 @@ ops watch         auto-refreshing status
 ops install       register the service definitions
 ops load          start + enable all workers
 ops unload        stop all workers
-ops restart <s>   restart one service (dispatcher|recorder|archiver)
+ops restart <s>   restart one service (dispatcher|recorder|archiver|bot)
+ops bot          run the Telegram control bot (the com.duy.bot service)
 ops update        after a code change: drain the dispatcher cleanly,
                   reinstall the changed packages, reload every worker,
                   then watch

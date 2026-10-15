@@ -16,6 +16,7 @@ task runs as a user daemon and restarts on failure.
 | dispatcher | `com.duy.dispatcher` | starts at boot (via linger), restart-on-failure, drains the queue forever |
 | recorder | `com.duy.recorder` | starts at boot (via linger), restart-on-failure, watches for lives forever |
 | archiver | `com.duy.archiver` | starts at boot, runs `archiver loop` PLUS a background ingest sweeper; restart-on-failure |
+| bot | `com.duy.bot` | starts at boot, runs `ops bot` (Telegram control bot); `KillMode=process` so a `/record` survives a bot restart |
 | logrotate | `com.duy.logrotate` | a systemd timer (not a daemon), daily 04:05, copytruncate-rotates `~/.archive/.config/archiver-suite/logs/*.log` |
 
 **How the tasks run hidden.** Each task's action is a systemd service unit
@@ -251,8 +252,7 @@ ops unload recorder   # stop just one while you edit its config
 
 > **`unload` also un-boots.** On Linux `ops load` is `systemctl --user enable
 > --now` and `ops unload` is `disable --now`, so unloading removes the worker
-> from the boot set too, not just the running set. `opscenter` shows this as
-> `boot✗`.
+> from the boot set too, not just the running set.
 >
 > A manual `recorder record --user X` runs with the service unloaded (it
 > refuses to start otherwise), and re-runs `ops load recorder` on exit to close

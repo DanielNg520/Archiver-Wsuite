@@ -65,10 +65,10 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 ## Decisions
 
 - Recorder falls back to `~/.recorder/<user>/` when StoragEDGE is absent (owner, 2026-10-09).
-- Delete `core.notify`/`notify_outbox` and the recorder `queue_event`; Ops Center `vlog_bridge` is the only start/end notifier (owner, 2026-10-11).
+- Delete `core.notify`/`notify_outbox` and the recorder `queue_event`; `ops bot` is the only start/end notifier (owner, 2026-10-11; moved from Ops Center 2026-10-14).
 - Burner TikTok account treated as NOT banned (cookies pass login check); no `tiktok.txt` refresh from Firefox (owner, 2026-10-09).
 - StoragEDGE ejected for a multi-day live run of the `~/.recorder` fallback, started 2026-10-09 (owner, 2026-10-09).
-- Bot token for @Nothing_is_available_ARC_bot lives in suite `.env` as `RECORDER_BOT_API`; its only consumer is Ops Center `vlog_bridge` (reads it via its `config.json` `env_path`) (owner, 2026-10-12).
+- Bot token for @Nothing_is_available_ARC_bot lives in suite `.env` as `RECORDER_BOT_API`; its only consumer is `ops bot` (reads it via `core.env.read_env_file`) (owner, 2026-10-12).
 - Bot commands: `/record`, `/recstatus`, `/ar_add` (archiver), `/re_add` (recorder), `/remove`, `/list` (recorder); old `/add`, `/addrecord` dropped (owner, 2026-10-13).
 - Fallback trial runs ~1 week; StoragEDGE stays unmounted until about 2026-10-16 (owner, 2026-10-09).
 - Trial ended early: StoragEDGE replugged and auto-mounted 2026-10-11 15:28 (owner, 2026-10-11).
@@ -104,7 +104,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - `archiver/` media-archiver: scheduled platform scans (X, TikTok, Instagram) via gallery-dl/yt-dlp, reconcile, orphaned routes.
 - `dispatcher/` sole Telegram sender: claim/drain/send, fast upload, delete-after-upload.
 - `recorder/` TikTok live recorder: `state.py` loop, `capture.py` yt-dlp, `platforms/` URL resolve + browser fallback, `startup_sweep.py`.
-- `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate; `RUNBOOK.md`.
+- `ops/` CLI: install/load/unload/restart/health/watch/update/logrotate/bot; `bot/` ARC Telegram bot; `RUNBOOK.md`.
 - `tests/` `tests/test_seams.py` is the seams runner over `tests/seams/` (topic modules + `_harness.py`), plus the dispatcher stall-backoff test. `tools/` one-off migration/maintenance scripts.
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
@@ -116,26 +116,18 @@ Last audit: 2026-10-13 (through 32e7c3b).
 - 2026-10-14: `ops health` amber stall header via `recorder_stall_warning` (recorder row pending ≥30 min; TriAPI `archiver_health_stall`); selftest extended, mutant caught; 303 seams.
 - Watch: after a network drop, `reconnected after stall` must NOT be followed by `Automatic reconnection failed` 60s later; not yet seen live.
 
-### ARC bot absorb plan (2026-10-14; P0 design done, next: P1 in a new session)
-- Source: `~/Documents/Coding/Ops Center/vlog_bridge/` (7 files, ~390 lines, not git-tracked); unit `vlog-bridge.service`; owner rules in Decisions above.
-- Read its `AGENTS.md` Carryover before porting: lock-diff broadcast, supersede, `KillMode=process`, token redaction, dead-pid lock = None.
-- Target: `ops/ops/bot/` package, `ops bot` subcommand, `com.duy.bot` added to `ops/cli.py` `_SERVICE_CMD` and `health.LABELS`.
-- Reuse: `core.env` for `RECORDER_BOT_API` + new `ARC_BOT_ALLOWED_IDS`; `core.heartbeat.write_atomic` for state; recorder lock path via suite `locks_dir()`.
-- Env gap (verified): core and ops lack dotenv; only archiver/recorder/dispatcher `config.py` call `load_dotenv`. Add a stdlib `.env` reader to `core.env` (port vlog `load_env_value`).
-- State dir: `$ARCHIVER_CONFIG_HOME/archiver-suite/bot/` (offset, report_state, sent-message ledger); seed offset from vlog `offset.json` to avoid replays.
-- CLIs run as subprocess via `ops/cli.py` `_resolve_bin` (separate uv venvs); never import archiver/recorder/dispatcher from ops.
-- P1 (parity + purge): stdlib Bot API client, the 6 existing commands, lock-diff start/stop broadcast, 24h delete sweep (own replies, broadcasts, owner commands).
-- P1 tests: `ops/ops/_selftest_bot.py` for parser, lock diff, supersede, 24h sweep (fake clock, fake HTTP); seams + ops selftests pass.
-- P1 swap: only when lock shows no recording; `ops install`, stop+disable vlog-bridge, `ops load bot`; one getUpdates consumer per token.
-- P1 verify: owner sends `/recstatus` and `/list`; offset advances; a reply disappears after 24h (check next session).
-- P1 purge, last: tar Ops Center to `~/.archive/opscenter-2026-10-14.tar.gz`, verify tar lists, `uv tool uninstall opscenter`, rm unit file, `rm -rf` folder.
-- P1 docs: amend Decisions lines naming Ops Center/vlog_bridge, `ops/health.py:78` comment, `AUTOMATION.md:254`, CLAUDE.md (bot is Bot API, not the sole-sender dispatcher).
+### ARC bot (P1 done 2026-10-14; next: P2 in a new session)
+- P1 shipped (ab9f425): `ops bot` = `com.duy.bot`, `KillMode=process`; state in `$CONFIG/archiver-suite/bot/` (offset, reports, sent ledger).
+- P1 live 19:11; owner verified `/recstatus` + `/list`; vlog offset/report seeded; vlog-bridge disabled; Ops Center purged (tar `~/.archive/opscenter-2026-10-14.tar.gz`).
+- Bot only logs errors: `~/.local/log/bot.err.log`; silence = polling fine. `ops update` restarts it when ops/core change.
+- Watch: first 24h sweep ~2026-10-15 19:15; tracked messages must vanish from chat and `sent.json`.
+- Traps: OpenRouter fallback (DeepSeek peak) mangled fences/docstrings and invented APIs; agy wrote all bot modules clean. Prefer agy for new files.
+- P2 reuse: `commands.run_cli` + `bins`, loop `_handle_command`; add `callback_query` to `get_updates` handling for confirm buttons.
 - P2 (full CLI): shorthand alias table (data, not code per command) for common verbs, plus `/a /r /d /o <raw args>` passthrough for every other command.
 - P2: daemon/interactive verbs (`start`, `loop`, `watch`, `tui`) blocked; `record` stays async; per-entry timeout (ops update needs minutes).
 - P2: destructive = alias flag or passthrough verb not in a read-only allowlist; inline Yes/No `callback_query`, 60s expiry.
 - P2: graceful status: post "running <argv>", then edit it to ok/fail, exit code, trimmed output tail; update `setMyCommands`.
 - P2 trap: `ops restart bot` / `ops unload bot` from the bot kills itself mid-reply; reply first, then exec.
-- 2026-10-13: ARC bot dead since 2026-10-12 13:42 (vlog_bridge kept the old token, 401); fixed in Ops Center, details in its AGENTS.md.
 - 2026-10-09: `recording_roots` shipped via TriAPI (`tasks/archiver_recording_roots`); 296 seams, all recorder/archiver selftests, stall-backoff pass.
 - 2026-10-09: deployed (`ops restart recorder`, then `archiver`); recorder startup sweep logs both roots.
 - Fallback trial 2026-10-09→10-11 PASSED: 22 `using fallback` starts, all uploaded and deleted; `~/.recorder` holds only `pid`/`unstartable.json`.
@@ -192,4 +184,3 @@ Last audit: 2026-10-13 (through 32e7c3b).
 - 2026-10-11: one-off `ConnectionError` never reaches drain backoff: `_send_with_retries` retries 4x with reconnect first.
 - 2026-10-11 20:25: first post-trial recording (@vandaihoang4) landed on `StoragEDGE/.records`; primary path verified live.
 - 2026-10-11: `core.notify` deleted (a4c98aa, TriAPI `archiver_drop_notify`); 303 seams, recorder selftests pass; recorder+dispatcher restarted 20:49; outbox (355 files) trashed.
-- Start/end Telegram alerts come only from Ops Center `vlog_bridge` (separate bot, not git-tracked); its `/record` double-send fixed 2026-10-11.
