@@ -4,7 +4,10 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open.
+- F19 [medium · 1 · 2026-10-15] ops/ops/bot/loop.py `_broadcast`: `_send_with_retry` sleeps up to 15s per chat in-loop, delaying getUpdates and sweep (verified). Fix: one attempt, or retry off-loop.
+- F20 [low · 1 · 2026-10-15] core/core/env.py `read_env_file`: `A="tok" # c` keeps the quotes; consumers `ops/cli.py:426`, bot token (verified). Fix: parse quoted span first, then drop comment.
+- F21 [low · 1 · 2026-10-15] ops/ops/bot/commands.py `parse_command`: invalid handle returns None, so the command is dropped with no reply and untracked (verified). Fix: reply "invalid handle" in `_process_updates`.
+- F22 [low · 1 · 2026-10-15] dispatcher/dispatcher/fast_upload.py `consume` retry: bare `await sender.disconnect()` unbounded, vs the 5s bound decision; a hung dead link stalls the part (suspected). Fix: `asyncio.wait_for(..., 5)`.
 
 ## Commands
 
@@ -115,7 +118,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-14 wrap-up (audited through `c953383`; 0 new findings, light path).
+Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
 
 - Audit 2026-10-14 (65ba6fb..HEAD): reconnect wedge and stall-header fixes verified; F11-F18 logged above; fast_upload "new file_id per retry" refuted as stated.
 - Telethon-internal auto-reconnect re-sends the pending ping, so only the manual `_force_reconnect` path needed the `_ping` reset (source read, Telethon 1.45).
