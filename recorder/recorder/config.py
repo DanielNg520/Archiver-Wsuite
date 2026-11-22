@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from core import db_path as _core_db_path
 from core import env
+from core import media_prep
 from core import paths as _core_paths
 from core.platform import paths as _osp
 
@@ -78,13 +79,8 @@ class RecorderConfig:
 
     @property
     def split_seconds(self) -> float | None:
-        """Duration split trigger in seconds, or None when explicitly off.
-        A negative split_minutes is a wedged tunable and falls back to the
-        15-minute default — it must not silently disable."""
-        if self.split_minutes == 0:
-            return None
-        minutes = self.split_minutes if self.split_minutes > 0 else 15.0
-        return minutes * 60
+        """Duration split trigger in seconds, or None when explicitly off."""
+        return media_prep.split_seconds_from_minutes(self.split_minutes)
 
     @classmethod
     def load(cls) -> "RecorderConfig":

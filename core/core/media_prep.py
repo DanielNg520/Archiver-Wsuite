@@ -47,6 +47,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -97,6 +98,29 @@ def split_chunk_bytes() -> int:
 
 def delete_after_split() -> bool:
     return env.opt_bool("ARCHIVER_DELETE_AFTER_SPLIT", True)
+
+
+DEFAULT_SPLIT_MINUTES = 15.0
+
+
+def split_seconds_from_minutes(raw: object) -> float | None:
+    """Return split interval in seconds from a minutes config value.
+
+    Missing/None -> 15-minute default; exactly 0 -> None (off);
+    non-numeric, NaN, infinite or negative -> warn and use the default.
+    """
+    if raw is None:
+        return DEFAULT_SPLIT_MINUTES * 60.0
+    try:
+        minutes = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        minutes = math.nan
+    if math.isnan(minutes) or math.isinf(minutes) or minutes < 0:
+        log.warning("Invalid split_minutes value %r; using default %.0f minutes", raw, DEFAULT_SPLIT_MINUTES)
+        return DEFAULT_SPLIT_MINUTES * 60.0
+    if minutes == 0:
+        return None
+    return minutes * 60.0
 
 
 # These legacy/non-inline containers used to live ONLY here — rescued by

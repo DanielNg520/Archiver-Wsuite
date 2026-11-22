@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open (2026-10-15).
+- None open (2026-11-21).
 
 ## Commands
 
@@ -116,7 +116,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
-Last audit: 2026-10-15 wrap-up (audited through `b2aa413`; 4 new findings).
+Last audit: 2026-11-21 wrap-up (audited through `f2169d1`; 1 new finding).
 
 - Audit 2026-10-14 (65ba6fb..HEAD): reconnect wedge and stall-header fixes verified; F11-F18 logged above; fast_upload "new file_id per retry" refuted as stated.
 - Telethon-internal auto-reconnect re-sends the pending ping, so only the manual `_force_reconnect` path needed the `_ping` reset (source read, Telethon 1.45).

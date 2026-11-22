@@ -564,11 +564,6 @@ def _recorder_state_dir() -> Path:
     return recorder_state_dir()
 
 
-# Default part length for the recorder "split mode" (minutes). Each part is
-# about this long and any recording longer than it is split.
-_RECORDER_SPLIT_DEFAULT_MINUTES = 15.0
-
-
 def _recorder_split_seconds() -> float | None:
     """Recorder "split mode", from the recorder's config.toml [recorder] table:
 
@@ -576,24 +571,10 @@ def _recorder_split_seconds() -> float | None:
         split_minutes = 15   # split recordings longer than this; 0 = off (default: 15)
 
     Returns the part length in seconds, or None when the feature is off (the
-    normal ~3.9 GiB upload ceiling applies). A bad split_minutes warns and
-    falls back to the 15-minute default rather than disabling — a wedged
-    tunable mustn't lose the feature silently."""
+    normal ~3.9 GiB upload ceiling applies). Bad values fall back to the
+    15-minute default; see media_prep.split_seconds_from_minutes()."""
     rec = _recorder_config()
-    raw = rec.get("split_minutes", _RECORDER_SPLIT_DEFAULT_MINUTES)
-    try:
-        minutes = float(raw)
-    except (TypeError, ValueError):
-        log.warning("recordings reconcile: split_minutes=%r is not a number "
-                    "— using %s", raw, _RECORDER_SPLIT_DEFAULT_MINUTES)
-        minutes = _RECORDER_SPLIT_DEFAULT_MINUTES
-    if minutes < 0:
-        log.warning("recordings reconcile: split_minutes=%s must be >= 0 — "
-                    "using %s", minutes, _RECORDER_SPLIT_DEFAULT_MINUTES)
-        minutes = _RECORDER_SPLIT_DEFAULT_MINUTES
-    if minutes == 0:
-        return None
-    return minutes * 60
+    return media_prep.split_seconds_from_minutes(rec.get("split_minutes"))
 
 
 def _recording_caption(username: str, path: Path) -> str:

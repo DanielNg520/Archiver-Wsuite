@@ -375,6 +375,20 @@ def test_prep_lock_busy(tmp: Path) -> None:
     media_prep._unlink(res.outputs[0])
 
 
+def test_split_seconds_from_minutes() -> None:
+    print("\n── split_seconds_from_minutes parses the split_minutes setting ──")
+    ssfm = media_prep.split_seconds_from_minutes
+    check(ssfm(15) == 900.0, "15 minutes converts to 900 seconds")
+    check(ssfm("10") == 600.0, 'the string "10" converts to 600 seconds')
+    check(ssfm(0) is None, "0 disables splitting")
+    check(ssfm(0.0) is None, "0.0 disables splitting")
+    check(ssfm(-5) == 900.0, "a negative value falls back to the default")
+    check(ssfm("abc") == 900.0, "a non-numeric value falls back to the default")
+    check(ssfm(None) == 900.0, "None falls back to the default")
+    check(ssfm(float("nan")) == 900.0, "NaN falls back to the default")
+    check(ssfm(float("inf")) == 900.0, "infinite falls back to the default")
+
+
 def main() -> None:
     print("media_prep self-test")
     with tempfile.TemporaryDirectory() as d:
@@ -388,6 +402,7 @@ def main() -> None:
         test_flv_not_kept_as_document(tmp)
         test_prep_lock_busy(tmp)
     test_clean_upload_name()
+    test_split_seconds_from_minutes()
     print(f"\nALL PASS ({_checks} checks)")
 
 
