@@ -116,6 +116,11 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Carryover
 
+### F24 truncated-remux gap — next session (owner, 2026-11-21)
+- Trigger: recorder restart killed post-capture flv→mp4 remux; startup sweep registered the moov-less mp4 via `media_prep.prepare` unprobeable-under-ceiling passthrough.
+- Constraint: that passthrough is the documented raw-fallback contract (`prepare` probe-None branch); fix must not strand legitimate raw recordings.
+- Start: plan first, check `startup_sweep`/`reconcile` for sibling `<stem>.flv` handling and capture's remux-finalize path; dispatch via TriAPI.
+
 Last audit: 2026-11-21 wrap-up (audited through `f2169d1`; 1 new finding).
 
 - Audit 2026-10-14 (65ba6fb..HEAD): reconnect wedge and stall-header fixes verified; F11-F18 logged above; fast_upload "new file_id per retry" refuted as stated.
