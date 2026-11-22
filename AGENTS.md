@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- None open (2026-11-21).
+- F24 [medium · 1 · 2026-11-21] recorder/startup_sweep.py: restart mid flv→mp4 remux; sweep enqueues truncated mp4 raw (unprobeable, under ceiling) beside its intact flv (verified). Ask owner: plan fix.
 
 ## Commands
 
