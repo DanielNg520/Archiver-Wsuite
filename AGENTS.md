@@ -98,6 +98,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Fix every known open problem in-session; no deferred "still open" lists (owner, 2026-10-11).
 - Ops Center references removed from Hivemind (memory + inventory) and TriAPI AGENTS.md, pushed (owner, 2026-10-14).
 - Archiver stack is Fedora-only: Mac repo copies, config dirs and Gemini project state deleted; Fedora is the sole deployment (owner, 2026-10-14).
+- Recorder split mode splits by duration (`split_minutes`, default 15, `0` = off; code `split_seconds`) into ordered album parts regardless of size (owner, 2026-11-21).
 
 ## Ask owner
 

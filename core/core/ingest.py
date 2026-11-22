@@ -233,7 +233,7 @@ def register_media(
     priority:   int = 100,
     topic_id:   int | None = None,
     group_key:  str | None = None,
-    split_threshold_bytes: int | None = None,
+    split_seconds: float | None = None,
     identifier_for: Callable[[Path], str] | None = None,
     caption_for:    Callable[[Path], str | None] | None = None,
     album_split_parts: bool = True,
@@ -247,13 +247,14 @@ def register_media(
     startup sweep share one Telegram-readiness guarantee. A producer that goes
     through here can never enqueue a file Telegram rejects at upload
     (FilePartsInvalid): a non-streamable video is converted, one over the upload
-    ceiling (or `split_threshold_bytes`, recorder split mode) is split into
-    parts, and EACH output is registered. Images and already-streamable
-    in-ceiling files pass straight through (one cheap ffprobe), so the common
-    case behaves exactly as a bare register_file.
+    ceiling (or `split_seconds`, recorder split mode) is split into parts, and
+    EACH output is registered. Images and already-streamable in-ceiling files
+    pass straight through (one cheap ffprobe), so the common case behaves
+    exactly as a bare register_file.
 
-    `split_threshold_bytes` lowers the split trigger below the ~3.9 GiB ceiling
-    (recorder split mode); None keeps the ceiling. `identifier_for(out)` /
+    `split_seconds` splits any recording longer than that many seconds into
+    parts of about that length (recorder split mode); None or <=0 keeps only
+    the ~3.9 GiB ceiling split. `identifier_for(out)` /
     `caption_for(out)` override identity/caption per output (the recorder's
     recorder_<stem> scheme); a None from caption_for falls back to `caption`.
     Split parts share one album group_key minted from the ORIGINAL stem when
@@ -281,7 +282,7 @@ def register_media(
             prep_ok=False,
             error=f"not yet stable (still being written): {path.name}")
     try:
-        prep = media_prep.prepare(path, split_threshold_bytes=split_threshold_bytes)
+        prep = media_prep.prepare(path, split_seconds=split_seconds)
     except Exception as e:                       # pragma: no cover — defensive
         log.exception("register_media: prepare raised on %s", path)
         return PreparedResult(prep_ok=False, error=str(e))

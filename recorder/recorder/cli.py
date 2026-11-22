@@ -157,7 +157,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     for root in recording_roots(config.output_dir, config.state_dir):
         try:
             report = sweep(root, config.db_path,
-                           split_threshold_bytes=config.split_threshold_bytes)
+                           split_seconds=config.split_seconds)
             log.info("startup sweep — %s: %s", root, report, extra={"ev": "sweep"})
         except Exception as e:
             log.warning("startup sweep skipped after error for %s: %s", root, e)
@@ -165,7 +165,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
     capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s, fallback_dir=config.state_dir)
     enqueue_client = EnqueueClient(
-        config.db_path, split_threshold_bytes=config.split_threshold_bytes)
+        config.db_path, split_seconds=config.split_seconds)
     lock = TikTokLock(config.lock_path, os.getpid())
 
     def _enqueue(platform_name, username, file_path, caption,
@@ -268,7 +268,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         platform = TikTokLivePlatform(config.tiktok_cookies_file, config.state_dir)
         capture  = StreamCapture(config.output_dir, config.tiktok_cookies_file, stall_timeout_s=config.stall_timeout_s, fallback_dir=config.state_dir)
         enqueue_client = EnqueueClient(
-            config.db_path, split_threshold_bytes=config.split_threshold_bytes)
+            config.db_path, split_seconds=config.split_seconds)
         lock = TikTokLock(config.lock_path, os.getpid())
 
         def _enqueue(platform_name, username, file_path, caption,

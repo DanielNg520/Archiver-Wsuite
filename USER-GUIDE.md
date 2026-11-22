@@ -248,18 +248,17 @@ dispatcher config set delete_after_upload_records true               # live reco
 ```
 Restart the dispatcher after changing delete/batch policies.
 
-## Recorder split mode (slice big recordings into ≤2 GiB parts)
+## Recorder split mode (slice recordings into 15-minute parts)
 
-By default a file is only split when it exceeds the ~3.9 GiB Telegram upload
-ceiling. To split **every** recording over 2 GiB (after it's made
-Telegram-compatible) into ≤2 GiB parts — each shipped as one ordered album —
-turn on split mode in the recorder's config:
+Every recording longer than `split_minutes` is cut at enqueue into parts of about
+`split_minutes` each regardless of file size, shipped as one ordered album. Parts are cut at
+the first keyframe after the mark. The ~3.9 GiB Telegram upload-ceiling split
+still applies independently. Set `0` to disable:
 
 ```toml
 # $CONFIG/recorder/config.toml  ($CONFIG = ~/.archive/.config on this machine)
 [recorder]
-split_at_chunk_size = true   # split recordings over the chunk size
-split_chunk_gib     = 2.0    # part size / split trigger (default 2 GiB)
+split_minutes = 15    # part duration in minutes (default 15, 0 = off)
 ```
 
 Applies only to the recorder output folder (reconciled by the archiver). Needs

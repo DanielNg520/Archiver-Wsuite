@@ -146,7 +146,7 @@ def test_live_recording_protection_seam(tmp: Path) -> None:
     orig_prep = ingest.media_prep.prepare
     core_paths.tiktok_lock = lambda: lock_path          # type: ignore
     ingest.media_prep.prepare = (                        # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult.passthrough(p))
+        lambda p, split_seconds=None: PrepResult.passthrough(p))
     try:
         lock = TikTokLock(str(lock_path))
         lock.username = "alice"

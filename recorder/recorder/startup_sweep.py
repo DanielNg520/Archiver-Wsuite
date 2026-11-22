@@ -138,15 +138,16 @@ def _delete_policy_and_guard(
 def sweep(output_dir: str, db_path: str | None = None,
           *, priority: int = RECORDER_PRIORITY,
           policy_store: "PolicyStore | None" = None,
-          split_threshold_bytes: int | None = None) -> SweepReport:
+          split_seconds: float | None = None) -> SweepReport:
     """Run the startup reconciliation over `output_dir`. Never raises for an
     expected condition — a single bad file logs and the sweep continues — so a
     cluttered tree can never stop the recorder from starting.
 
-    `split_threshold_bytes` (recorder split mode) lowers the size at which a
-    recording is split into parts below the ~3.9 GiB upload ceiling; None keeps
-    the ceiling. Either way an oversize recording is split rather than enqueued
-    whole onto Telegram's FilePartsInvalid wall (see core.register_media)."""
+    `split_seconds` (recorder split mode) splits recordings longer than this
+    many seconds into parts of about this duration; None or <=0 keeps recordings
+    whole until they hit the ~3.9 GiB upload ceiling. Oversize recordings are
+    still split rather than enqueued whole onto Telegram's FilePartsInvalid wall
+    (see core.register_media)."""
     report = SweepReport()
     root = Path(output_dir).expanduser()
     if not root.exists():
@@ -248,7 +249,7 @@ def sweep(output_dir: str, db_path: str | None = None,
                 source="recorder", platform="tiktok",
                 username=username,
                 priority=priority,
-                split_threshold_bytes=split_threshold_bytes,
+                split_seconds=split_seconds,
                 identifier_for=lambda out: f"recorder_{out.stem or 'item'}",
                 caption_for=lambda out: _caption(username, out),
                 retire_original=_retire_after_split,

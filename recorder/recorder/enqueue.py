@@ -78,19 +78,19 @@ class EnqueueClient:
     """
 
     def __init__(self, db_path: str | None = None,
-                 *, split_threshold_bytes: int | None = None):
+                 *, split_seconds: float | None = None):
         # None → core resolves the default suite DB ($ARCHIVER_DB or the
         # packaged default). No "db not found" guard: core.connect() runs
         # CREATE TABLE IF NOT EXISTS idempotently, so whichever process
         # connects first creates the schema. This is what removes the old
         # install-order requirement.
         self._db_path = db_path
-        # Recorder split mode (config.toml): when set, a recording over this
-        # size is split into <=this-size parts at enqueue instead of only above
-        # the ~3.9 GiB upload ceiling. None → ceiling only. Either way, an
-        # oversize recording is never enqueued whole onto the FilePartsInvalid
-        # wall (see core.register_media).
-        self._split_threshold_bytes = split_threshold_bytes
+        # Recorder split mode (config.toml): when set, a recording longer than
+        # this many seconds is split into parts of about this duration at
+        # enqueue instead of only above the ~3.9 GiB upload ceiling. None →
+        # ceiling only. Either way, an oversize recording is never enqueued
+        # whole onto the FilePartsInvalid wall (see core.register_media).
+        self._split_seconds = split_seconds
 
     def enqueue(
         self,
@@ -116,9 +116,10 @@ class EnqueueClient:
         register_file primitive the startup sweep and every other producer use.
         A still-streamable in-ceiling recording passes straight through (one
         cheap ffprobe) exactly as a bare register_file would; a non-streamable
-        one is converted and an oversize one is split into parts (recorder split
-        mode lowers that trigger), so a big recording is never enqueued whole
-        onto Telegram's FilePartsInvalid wall. Each output keeps the recorder's
+        one is converted, one over the upload ceiling is split into parts, and
+        (recorder split mode) one longer than split_seconds is also cut into
+        ~that-long parts, so a big recording is never enqueued whole onto
+        Telegram's FilePartsInvalid wall. Each output keeps the recorder's
         `recorder_<stem>` identity and live caption; split parts share one album
         key so they ship as a single ordered batch, and the replaced original is
         deleted (gated by delete-after-split).
@@ -138,7 +139,7 @@ class EnqueueClient:
                 username   = username,
                 priority   = priority,
                 group_key  = group_key,
-                split_threshold_bytes = self._split_threshold_bytes,
+                split_seconds = self._split_seconds,
                 identifier_for = lambda out: _recorder_identifier(str(out)),
                 caption_for    = lambda out: (
                     caption if out == path

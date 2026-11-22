@@ -17,10 +17,11 @@ it is enqueued. Two concerns, applied only to video:
   2. SIZE — a single Telegram upload is capped (4 GiB on a Premium account).
      A file over the ceiling is split into <=1 GiB chunks by the AutoSplitter
      project (lossless stream-copy segmenting with its own integrity check),
-     and each verified chunk is enqueued as its own message. A caller may pass
-     prepare(split_threshold_bytes=N) to LOWER that trigger below the ~3.9 GiB
-     ceiling — e.g. the recorder-output "split mode" cuts every recording over
-     2 GiB into <=2 GiB parts (see archiver.reconcile).
+     and each verified chunk is enqueued as its own message. Separately, a
+     caller may pass prepare(split_seconds=N) to cut every recording longer
+     than N seconds into ~N-second parts regardless of file size — the
+     recorder-output "split mode" (see archiver.reconcile). The upload ceiling
+     still applies on its own.
 
 ORDER: convert FIRST, then split. Re-encoding an incompatible file often drops
 it under the ceiling on its own (no split needed), and splitting on the final
@@ -631,14 +632,14 @@ def _prep_lock(src: Path):
             # split future lockers across two inodes.
 
 
-def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResult:
+def prepare(path: Path, *, split_seconds: float | None = None) -> PrepResult:
     """Prepare one file for Telegram. See module docstring for the contract.
 
-    `split_threshold_bytes` (optional) lowers the size at which we split below
-    the default ~3.9 GiB upload ceiling AND caps each part to that size — so a
-    caller can force every file over, say, 2 GiB into <=2 GiB parts (recorder
-    split mode). Clamped to the hard ceiling: it can only make the trigger
-    SMALLER, never larger (a single upload above the ceiling would be rejected).
+    `split_seconds` (optional) enables recorder "split mode": every probed
+    recording longer than N seconds is cut into parts of ~N seconds each,
+    regardless of file size. The ~3.9 GiB upload ceiling still applies on its
+    own — a part never exceeds it. None or <=0 disables duration splitting
+    (ceiling-only split with default chunk sizes).
 
     Never raises. Cleans up its own intermediate files before returning; the
     caller is responsible only for deleting the ORIGINAL when .transformed."""
@@ -649,13 +650,6 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
 
     ceiling = max_upload_bytes()
     chunk_target = split_chunk_bytes()
-    # Optional lower split trigger: split at the caller's threshold instead of
-    # the upload ceiling, and never produce a part larger than it. Only ever
-    # tightens the limits (min), so a misconfigured huge value can't raise the
-    # trigger above the hard ceiling.
-    if split_threshold_bytes is not None and split_threshold_bytes > 0:
-        ceiling = min(ceiling, split_threshold_bytes)
-        chunk_target = min(chunk_target, split_threshold_bytes)
 
     probe = _probe(path)
     if probe is None:
@@ -696,7 +690,15 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
     known_size = probe.size if probe.size > 0 else _stat_size(path)
     oversize = known_size > ceiling if known_size > 0 else False
 
-    if streamable and not oversize:
+    # Duration split trigger (recorder split mode): a probed file longer than
+    # split_seconds is split even under the ceiling and even if streamable.
+    duration_split = (
+        split_seconds is not None
+        and split_seconds > 0
+        and probe.duration > split_seconds
+    )
+
+    if streamable and not oversize and not duration_split:
         return PrepResult.passthrough(path)        # already perfect
 
     # Real work (convert and/or split) needed. Serialize it per source file
@@ -725,8 +727,14 @@ def prepare(path: Path, *, split_threshold_bytes: int | None = None) -> PrepResu
             except OSError:
                 oversize = False
 
-        # 2. Split if still oversized.
-        if oversize:
+        # 2. Split if oversized or duration split mode demands it.
+        if oversize or duration_split:
+            if duration_split:
+                split_size = _stat_size(to_split)
+                if split_size > 0:
+                    chunk_target = int(split_size * (split_seconds / probe.duration))
+                    if chunk_target > ceiling:
+                        chunk_target = split_chunk_bytes()
             parts = _split(to_split, chunk_target)
             if parts is None:
                 _unlink(converted)                 # clean the intermediate

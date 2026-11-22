@@ -181,7 +181,7 @@ def test_recording_roots_seam(tmp: Path) -> None:
 
     orig_prep = ingest.media_prep.prepare
     ingest.media_prep.prepare = (                        # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult.passthrough(p))
+        lambda p, split_seconds=None: PrepResult.passthrough(p))
     try:
         # 2. both roots hold a recording for different users
         primary2 = tmp / "primary2"

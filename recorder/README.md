@@ -33,8 +33,7 @@ output_dir = "~/.archive/.records"   # dot-prefixed: orphaned scanner skips it
 # ~/.recorder) instead. Startup sweep, `recorder watch`, ban/unban quarantine and
 # the archiver's recordings reconcile all cover both roots (core.paths.recording_roots).
 # The output_dir root itself is never created, so an empty mountpoint is never written to.
-split_at_chunk_size = true    # optional split mode: every recording over…
-split_chunk_gib     = 2.0     # …this size is cut into <=2 GiB album parts
+split_minutes = 15            # split mode: recordings over this duration cut into parts of about `split_minutes` each (0 = off)
 
 [recorder.tiktok]
 users = [ "someuser", "another" ]   # order = priority when several go live

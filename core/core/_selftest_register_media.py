@@ -63,7 +63,7 @@ def _run(tmp: Path) -> None:
     src = _make_stable_file(tmp / "clip.mp4")
     retired: list[Path] = []
     ingest.media_prep.prepare = (                              # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult.passthrough(p))
+        lambda p, split_seconds=None: PrepResult.passthrough(p))
     res = register_media(
         store, src, source="recorder", platform="tiktok", username="alice",
         caption="cap-alice", retire_original=retired.append,
@@ -90,7 +90,7 @@ def _run(tmp: Path) -> None:
     parts = [_make_stable_file(tmp / f"big_part{i:03d}.mp4") for i in range(3)]
     retired = []
     ingest.media_prep.prepare = (                             # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult(
+        lambda p, split_seconds=None: PrepResult(
             outputs=parts, transformed=True, individual=True))
     res = register_media(
         store, big, source="recorder", platform="tiktok", username="bob",
@@ -121,7 +121,7 @@ def _run(tmp: Path) -> None:
     unstable.write_bytes(os.urandom(2048))
     retired = []
     ingest.media_prep.prepare = (                             # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult(
+        lambda p, split_seconds=None: PrepResult(
             outputs=[good, unstable], transformed=True, individual=True))
     res = register_media(
         store, big2, source="recorder", platform="tiktok", username="cara",
@@ -136,7 +136,7 @@ def _run(tmp: Path) -> None:
     bad = _make_stable_file(tmp / "bad.mkv")
     retired = []
     ingest.media_prep.prepare = (                             # type: ignore
-        lambda p, split_threshold_bytes=None: PrepResult.failed("conversion failed"))
+        lambda p, split_seconds=None: PrepResult.failed("conversion failed"))
     res = register_media(
         store, bad, source="recorder", platform="tiktok", username="dan",
         retire_original=retired.append)
@@ -147,20 +147,20 @@ def _run(tmp: Path) -> None:
     check(retired == [], "prep-fail: original kept on disk")
     store.close()
 
-    # ── 5. split_threshold_bytes is threaded through to media_prep.prepare ──
+    # ── 5. split_seconds is threaded through to media_prep.prepare ──
     seen: dict = {}
 
-    def _spy(p, split_threshold_bytes=None):
-        seen["threshold"] = split_threshold_bytes
+    def _spy(p, split_seconds=None):
+        seen["seconds"] = split_seconds
         return PrepResult.passthrough(p)
 
     ingest.media_prep.prepare = _spy                          # type: ignore
     store = ItemStore.open(str(tmp / "thr.db"))
     f = _make_stable_file(tmp / "thr.mp4")
     register_media(store, f, source="recorder", platform="tiktok",
-                   username="e", split_threshold_bytes=1234)
-    check(seen.get("threshold") == 1234,
-          "split mode: split_threshold_bytes forwarded to media_prep.prepare")
+                   username="e", split_seconds=900.0)
+    check(seen.get("seconds") == 900.0,
+          "split mode: split_seconds forwarded to media_prep.prepare")
     store.close()
 
 

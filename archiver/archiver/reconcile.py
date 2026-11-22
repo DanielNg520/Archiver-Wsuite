@@ -197,10 +197,11 @@ def reconcile_recordings(
     # the recording user's backlog is picked up again on the next pass.
     lock_held, recording_user = _live_recording_user()
 
-    # Recorder "split mode" (config.toml): when on, every recording over the
-    # configured size (default 2 GiB) is cut into <=that-size parts, instead of
-    # only splitting above the ~3.9 GiB upload ceiling.
-    split_threshold = _recorder_split_threshold_bytes()
+    # Recorder "split mode" (config.toml): when on, every recording longer
+    # than the configured duration (default 15 minutes) is cut into parts of
+    # about that length, instead of only splitting above the ~3.9 GiB upload
+    # ceiling.
+    split_seconds = _recorder_split_seconds()
 
     for root in roots:
         if not root.exists():
@@ -227,7 +228,7 @@ def reconcile_recordings(
                 identifier_for_path=_recorder_identifier,
                 priority=_RECORDER_PRIORITY,
                 guard=guard,
-                split_threshold_bytes=split_threshold,
+                split_seconds=split_seconds,
             ))
 
         for user_dir in sorted(p for p in entries
@@ -257,7 +258,7 @@ def reconcile_recordings(
                 identifier_for_path=_recorder_identifier,
                 priority=_RECORDER_PRIORITY,
                 guard=guard,
-                split_threshold_bytes=split_threshold,
+                split_seconds=split_seconds,
             ))
     return reports
 
@@ -308,7 +309,7 @@ def _reconcile_dir(
     identifier_for_path: Callable[[Path], str] | None = None,
     priority: int = 10,
     guard: "DeletionGuard | None" = None,
-    split_threshold_bytes: int | None = None,
+    split_seconds: float | None = None,
 ) -> ReconcileReport:
     if not scan_dir.exists():
         return report
@@ -451,9 +452,9 @@ def _reconcile_dir(
         # oversize). Previously only the oddball extensions were converted, so
         # platform downloads with bad codecs uploaded non-streamable.
         # Images pass through prepare() untouched by construction.
-        # split_threshold_bytes (recorder split mode) lowers the split trigger
-        # below the default ~3.9 GiB ceiling for this scan dir only.
-        prep = media_prep.prepare(f, split_threshold_bytes=split_threshold_bytes)
+        # split_seconds (recorder split mode) splits by duration for this scan
+        # dir only; the ~3.9 GiB upload ceiling split still applies on top.
+        prep = media_prep.prepare(f, split_seconds=split_seconds)
         if prep.busy:
             # Another worker's sweep (recorder/orphaned) is already converting or
             # splitting this same file — skip this pass, retry next, so we don't
@@ -563,37 +564,36 @@ def _recorder_state_dir() -> Path:
     return recorder_state_dir()
 
 
-# Default part size / split trigger for the recorder "split mode" (GiB). Each
-# part is <= this and any recording above it is split.
-_RECORDER_SPLIT_DEFAULT_GIB = 2.0
+# Default part length for the recorder "split mode" (minutes). Each part is
+# about this long and any recording longer than it is split.
+_RECORDER_SPLIT_DEFAULT_MINUTES = 15.0
 
 
-def _recorder_split_threshold_bytes() -> int | None:
+def _recorder_split_seconds() -> float | None:
     """Recorder "split mode", from the recorder's config.toml [recorder] table:
 
         [recorder]
-        split_at_chunk_size = true    # enable (default: false)
-        split_chunk_gib     = 2.0     # part size / split trigger (default: 2)
+        split_minutes = 15   # split recordings longer than this; 0 = off (default: 15)
 
-    Returns the byte threshold when enabled, else None (the normal ~3.9 GiB
-    upload ceiling applies). A bad split_chunk_gib warns and falls back to the
-    2 GiB default rather than disabling — a wedged tunable mustn't lose the
-    feature silently."""
+    Returns the part length in seconds, or None when the feature is off (the
+    normal ~3.9 GiB upload ceiling applies). A bad split_minutes warns and
+    falls back to the 15-minute default rather than disabling — a wedged
+    tunable mustn't lose the feature silently."""
     rec = _recorder_config()
-    if not rec.get("split_at_chunk_size", False):
-        return None
-    raw = rec.get("split_chunk_gib", _RECORDER_SPLIT_DEFAULT_GIB)
+    raw = rec.get("split_minutes", _RECORDER_SPLIT_DEFAULT_MINUTES)
     try:
-        gib = float(raw)
+        minutes = float(raw)
     except (TypeError, ValueError):
-        log.warning("recordings reconcile: split_chunk_gib=%r is not a number "
-                    "— using %s", raw, _RECORDER_SPLIT_DEFAULT_GIB)
-        gib = _RECORDER_SPLIT_DEFAULT_GIB
-    if gib <= 0:
-        log.warning("recordings reconcile: split_chunk_gib=%s must be > 0 — "
-                    "using %s", gib, _RECORDER_SPLIT_DEFAULT_GIB)
-        gib = _RECORDER_SPLIT_DEFAULT_GIB
-    return int(gib * 1024 ** 3)
+        log.warning("recordings reconcile: split_minutes=%r is not a number "
+                    "— using %s", raw, _RECORDER_SPLIT_DEFAULT_MINUTES)
+        minutes = _RECORDER_SPLIT_DEFAULT_MINUTES
+    if minutes < 0:
+        log.warning("recordings reconcile: split_minutes=%s must be >= 0 — "
+                    "using %s", minutes, _RECORDER_SPLIT_DEFAULT_MINUTES)
+        minutes = _RECORDER_SPLIT_DEFAULT_MINUTES
+    if minutes == 0:
+        return None
+    return minutes * 60
 
 
 def _recording_caption(username: str, path: Path) -> str:

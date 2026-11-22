@@ -181,7 +181,7 @@ $CONFIG/dispatcher/
 $CONFIG/recorder/
     .env                    TIKTOK_COOKIES_FILE
     config.toml             priority-ordered TikTok user list + output_dir;
-                            optional split mode (split_at_chunk_size/_chunk_gib)
+                            split mode by duration (split_minutes)
 
 ~/.archive/
     x/ tiktok/ instagram/ …   platform download folders (per-user subfolders)

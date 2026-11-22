@@ -155,36 +155,46 @@ def test_split(tmp: Path) -> None:
         media_prep._unlink(p)
 
 
-def test_split_threshold(tmp: Path) -> None:
+def test_split_seconds(tmp: Path) -> None:
     """Recorder split mode: a streamable mp4 UNDER the default upload ceiling but
-    OVER an explicit split_threshold_bytes is split, with no env override — the
-    threshold both triggers the split and caps each part."""
-    print("\n── media_prep split_threshold (recorder split mode) ──")
+    LONGER than split_seconds is split into parts of about split_seconds, with no
+    env override — the duration both triggers the split and caps each part."""
+    print("\n── media_prep split_seconds (recorder split mode) ──")
     if media_prep._load_run_split() is None:
-        print("  (AutoSplitter not found — skipping split-threshold test)")
+        print("  (AutoSplitter not found — skipping split-seconds test)")
         return
     big = tmp / "rec_long.mp4"
     make_video(big, seconds=20, vcodec="libx264", acodec="aac",
                bitrate="300k", gop=10)
-    size = big.stat().st_size
-    # No env tunables touched: the default ceiling (~3.9 GiB) leaves this tiny
-    # clip alone. Passing a sub-file-size threshold must force the split anyway.
-    threshold = size // 3
-    res = media_prep.prepare(big, split_threshold_bytes=threshold)
+    # No env tunables touched: this tiny clip sits far below the upload ceiling,
+    # so a split_seconds of 6 is the only reason the recorder splits at all.
+    res = media_prep.prepare(big, split_seconds=6)
     check(res.ok and res.transformed and res.individual,
-          "under-ceiling mp4 over split_threshold → split, individual=True")
-    check(len(res.outputs) >= 2,
-          f"threshold split produced {len(res.outputs)} parts (>=2)")
-    check(all(p.exists() and 0 < p.stat().st_size <= threshold + (1 << 20)
-              for p in res.outputs),
-          "all parts exist and respect the threshold cap")
-    # A threshold ABOVE the file size is a no-op: nothing to split.
+          "20 s mp4 over split_seconds → split, individual=True")
+    check(len(res.outputs) >= 3,
+          f"duration split produced {len(res.outputs)} parts (>=3)")
+    durations = [media_prep._probe(p).duration for p in res.outputs]
+    check(all(p.exists() and 0 < p.stat().st_size for p in res.outputs),
+          "all parts exist and are non-empty")
+    check(all(d <= 6 + 1.5 for d in durations),
+          "all parts respect the split_seconds duration cap")
+    check(abs(sum(durations) - 20) <= 2,
+          f"sum of part durations ≈ 20 s (got {sum(durations):.2f})")
+    # A clip SHORTER than split_seconds is a no-op: nothing to split.
     big2 = tmp / "rec_small.mp4"
     make_video(big2, seconds=3, vcodec="libx264", acodec="aac")
-    res2 = media_prep.prepare(big2, split_threshold_bytes=big2.stat().st_size * 4)
+    res2 = media_prep.prepare(big2, split_seconds=6)
     check(res2.ok and not res2.transformed and len(res2.outputs) == 1
           and res2.outputs[0] == big2,
-          "streamable file under threshold → passthrough (no split)")
+          "3 s mp4 under split_seconds → passthrough (no split)")
+    # split_seconds=None disables duration splitting entirely.
+    big3 = tmp / "rec_none.mp4"
+    make_video(big3, seconds=20, vcodec="libx264", acodec="aac",
+               bitrate="300k", gop=10)
+    res3 = media_prep.prepare(big3, split_seconds=None)
+    check(res3.ok and not res3.transformed and len(res3.outputs) == 1
+          and res3.outputs[0] == big3,
+          "split_seconds=None → passthrough (no duration split)")
     for p in res.outputs:
         media_prep._unlink(p)
 
@@ -371,7 +381,7 @@ def main() -> None:
         tmp = Path(d)
         test_decisions(tmp)
         test_split(tmp)
-        test_split_threshold(tmp)
+        test_split_seconds(tmp)
         test_split_via_cli(tmp)
         test_ingest_folder(tmp)
         test_delete_after_split_off(tmp)

@@ -69,24 +69,22 @@ class RecorderConfig:
     max_session_minutes:      float = 0.0   # 0 = no cap on total session length
     stall_timeout_s:          float = 300.0
     # ── Split mode (see register_media / archiver.reconcile) ──────────────────
-    # When on, every recording over `split_chunk_gib` is cut into <=that-size
-    # parts at enqueue, instead of only splitting above the ~3.9 GiB upload
-    # ceiling. Keeps an oversize recording off the FilePartsInvalid wall and
-    # ships it as a single ordered album. Mirrors archiver.reconcile's reading
-    # of the SAME config.toml keys (both producers stay self-contained).
-    split_at_chunk_size:      bool  = False
-    split_chunk_gib:          float = 2.0
+    # Every recording longer than `split_minutes` is cut into ~that-long parts
+    # at enqueue, regardless of size. 0 disables duration splitting. The
+    # ~3.9 GiB upload ceiling split applies regardless. Mirrors
+    # archiver.reconcile's reading of the SAME config.toml key (both producers
+    # stay self-contained).
+    split_minutes:            float = 15.0
 
     @property
-    def split_threshold_bytes(self) -> int | None:
-        """Byte split trigger when split mode is on, else None (the normal
-        upload ceiling applies). A non-positive/garbage split_chunk_gib falls
-        back to 2 GiB rather than disabling — a wedged tunable mustn't silently
-        drop the protection."""
-        if not self.split_at_chunk_size:
+    def split_seconds(self) -> float | None:
+        """Duration split trigger in seconds, or None when explicitly off.
+        A negative split_minutes is a wedged tunable and falls back to the
+        15-minute default — it must not silently disable."""
+        if self.split_minutes == 0:
             return None
-        gib = self.split_chunk_gib if self.split_chunk_gib > 0 else 2.0
-        return int(gib * 1024 ** 3)
+        minutes = self.split_minutes if self.split_minutes > 0 else 15.0
+        return minutes * 60
 
     @classmethod
     def load(cls) -> "RecorderConfig":
@@ -141,6 +139,5 @@ class RecorderConfig:
             max_zero_byte_reconnects = int(rec.get("max_zero_byte_reconnects", 3)),
             max_session_minutes      = float(rec.get("max_session_minutes", 0.0)),
             stall_timeout_s          = float(rec.get("stall_timeout_s", 300.0)),
-            split_at_chunk_size      = bool(rec.get("split_at_chunk_size", False)),
-            split_chunk_gib          = _safe_float(rec.get("split_chunk_gib", 2.0), 2.0),
+            split_minutes            = _safe_float(rec.get("split_minutes", 15.0), 15.0),
         )
