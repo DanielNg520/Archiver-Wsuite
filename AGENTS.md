@@ -105,7 +105,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Ask owner
 
-- Ask owner: restart archiver onto F24 code now (interrupts the X pass) or wait for next natural restart?
+- None open.
 
 ## Index
 
@@ -118,6 +118,13 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
 ## Carryover
+
+### F25 convert-then-split window — next session (owner, 2026-11-21)
+- Owner decision: fix F25 in a new session.
+- Location: `core/core/media_prep.py` `prepare()`, step "1. Convert first": `_convert` publishes the intermediate under its final name (`<stem>.mp4`, or `.tgprep.mp4`), then `_split(to_split, ...)` runs and `_unlink(converted)` after.
+- Constraint: AutoSplitter names parts from input stem and infers container from extension; cannot use `.tgtmp` suffix, and dot-prefix yields hidden parts (`..<stem>_part`→ published as `.<stem>_part`).
+- Constraint: `PrepResult.converted`/`individual` and caller retire logic (`ingest.register_media`, `orphaned`) depend on outputs; seams 6/7 and `_selftest_media_prep.py` pin current behaviour.
+- Start: plan first; dispatch via TriAPI (agy writes, Claude audits); regression test must kill-simulate between convert and split.
 
 Last audit: 2026-11-21 wrap-up (audited through `f2169d1`; 1 new finding).
 
