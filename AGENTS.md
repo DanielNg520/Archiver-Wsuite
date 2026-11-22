@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F25 [low · 1 · 2026-11-21] core/core/media_prep.py: prepare convert-then-split keeps converted mp4 under final name while splitting; kill leaves complete copy uploaded beside parts (verified).
+- None open.
 
 ## Commands
 
@@ -46,7 +46,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Priority order for design trade-offs: integrity > self-healing > seam robustness > efficiency.
 - Recorder `wait()` exit codes: -1 clean stop, -2 dead stream (zero bytes), -3 stall guard (`stall_timeout_s`, default 300); all three end the reconnect loop.
 - Recorder discards segments under `RECORDER_MIN_SEGMENT_BYTES` (default 1MB) before remux; logs `discarded_stub`.
-- Media writers publish atomically (convert via .tgtmp, split via dotfiles); sweep extension/dotfile filters and Seams 6/7 keep debris out.
+- Media writers publish atomically (convert stages hidden `.<name>` via `.tgtmp`, rename reveals; split parts hidden until published; send-time temp dotfile); sweep dotfile/extension filters plus Seams 6/7 keep debris out.
 - `recorder record --user X` reloads the service on every exit path; `--no-reload` only when the caller reloads itself.
 - `ops unload recorder` also SIGTERMs a manual `recorder record` (`health.foreground_pid`), touching `recorder_suppress_reload_flag` so it skips its reload.
 - Dispatcher whole-batch failures always set `retry_after` (`stall_backoff_s`, 300s); schema v5 `items.retry_after` gates `claim_next`/`claim_batch`.
@@ -118,13 +118,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
 ## Carryover
-
-### F25 convert-then-split window — next session (owner, 2026-11-21)
-- Owner decision: fix F25 in a new session.
-- Location: `core/core/media_prep.py` `prepare()`, step "1. Convert first": `_convert` publishes the intermediate under its final name (`<stem>.mp4`, or `.tgprep.mp4`), then `_split(to_split, ...)` runs and `_unlink(converted)` after.
-- Constraint: AutoSplitter names parts from input stem and infers container from extension; cannot use `.tgtmp` suffix, and dot-prefix yields hidden parts (`..<stem>_part`→ published as `.<stem>_part`).
-- Constraint: `PrepResult.converted`/`individual` and caller retire logic (`ingest.register_media`, `orphaned`) depend on outputs; seams 6/7 and `_selftest_media_prep.py` pin current behaviour.
-- Start: plan first; dispatch via TriAPI (agy writes, Claude audits); regression test must kill-simulate between convert and split.
 
 Last audit: 2026-11-21 wrap-up (audited through `f2169d1`; 1 new finding).
 

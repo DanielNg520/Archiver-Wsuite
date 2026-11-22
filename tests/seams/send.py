@@ -258,8 +258,8 @@ def test_send_streamable_net_seam(tmp: Path) -> None:
        "upload filename is the clean original stem + .mp4 (no .tgprep tag)")
     ok(flv.exists() and flv.suffix == ".flv",
        "the on-disk original recording is left untouched (never lose bytes)")
-    ok(not (tmp / "u" / "clip.mp4").exists(),
-       "the converted temp was cleaned up after the send")
+    ok(not (tmp / "u" / "clip.mp4").exists() and not (tmp / "u" / ".clip.mp4").exists(),
+       "the converted temp was cleaned up after the send (visible and hidden)")
 
     # (b) an already-streamable .mp4 → passthrough: sent untouched, no temp.
     mp4 = _make_video(tmp / "u" / "ok.mp4", container="mp4")

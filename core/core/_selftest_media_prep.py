@@ -13,6 +13,7 @@ split test); both are part of the suite's normal toolchain.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,12 @@ def test_clean_upload_name() -> None:
     check(cun("clip.mp4") == "clip.mp4", "a clean name is returned unchanged")
     check(cun("keep.mkv") == "keep.mkv", "a non-mp4 original is untouched")
     check(cun("a.tgprep.mp4") == cun(cun("a.tgprep.mp4")), "idempotent")
+    check(cun(".clip.mp4") == "clip.mp4",
+          "leading dot stripped from upload name")
+    check(cun(".clip.tgprep.mp4") == "clip.mp4",
+          "leading dot and .tgprep marker both stripped")
+    check(cun(cun(".clip.mp4")) == "clip.mp4",
+          "leading dot stripping is idempotent")
 
 
 def test_flv_not_kept_as_document(tmp: Path) -> None:
@@ -386,12 +393,14 @@ def test_convert_publishes_atomically(tmp: Path) -> None:
           "happy path: prepare() succeeds, single output is clean <stem>.mp4")
     check(clean1.exists(), "happy path: clean output exists")
     check(not list(tmp.glob("*.tgtmp")), "happy path: no *.tgtmp file left in directory")
+    check(not list(tmp.glob(".pub_atomic_happy*")),
+          "happy path: no dotfile named after stem remains")
     media_prep._unlink(clean1)
 
     # 2. Stale debris from a killed run: pre-created .tgtmp overwritten and published.
     mkv2 = tmp / "pub_atomic_debris.mkv"
     clean2 = tmp / "pub_atomic_debris.mp4"
-    debris2 = tmp / f"{clean2.name}{media_prep._TMP_SUFFIX}"
+    debris2 = tmp / f".{clean2.name}{media_prep._TMP_SUFFIX}"
     debris2.write_bytes(b"corrupt partial ffmpeg output from killed worker")
     make_video(mkv2, seconds=2, vcodec="libx264", acodec="aac")
     res2 = media_prep.prepare(mkv2)
@@ -454,6 +463,93 @@ def test_convert_publishes_atomically(tmp: Path) -> None:
         media_prep._run_ffmpeg = orig_ffmpeg
 
 
+def test_streamable_temp_hidden(tmp: Path) -> None:
+    print("\n── streamable_temp produces a hidden staged dotfile ──")
+    src = tmp / "st_hidden.flv"
+    make_video(src, seconds=2, vcodec="libx264", acodec="aac")
+    out = media_prep.streamable_temp(src)
+    check(out is not None, "streamable_temp produced an output path")
+    assert out is not None
+    check(out.name.startswith("."), "streamable_temp output is a hidden dotfile")
+    check(out.exists(), "streamable_temp output exists")
+    check(media_prep.clean_upload_name(out) == "st_hidden.mp4",
+          "clean_upload_name returns clean .mp4 for hidden temp")
+    check(not (tmp / "st_hidden.mp4").exists(),
+          "visible .mp4 was not created")
+    media_prep._unlink(out)
+
+
+def test_kill_between_convert_and_split(tmp: Path) -> None:
+    print("\n── kill between convert and split leaves no visible debris (F25) ──")
+    if media_prep._load_run_split() is None:
+        print("  (AutoSplitter not found — skipping split kill test)")
+        return
+    chat_id = "100200399"
+    folder = tmp / chat_id
+    folder.mkdir(parents=True)
+    src = folder / "stream.flv"
+    make_video(src, seconds=20, vcodec="libx264", acodec="aac",
+               bitrate="300k", gop=10)
+    size = src.stat().st_size
+    os.environ["ARCHIVER_TG_MAX_UPLOAD_BYTES"] = str(size // 3)
+    os.environ["ARCHIVER_SPLIT_CHUNK_BYTES"] = str(size // 3)
+    try:
+        class _Killed(BaseException):
+            pass
+
+        recorded_to_split: list[Path] = []
+        recorded_visible_mp4: list[list[str]] = []
+        orig_split = media_prep._split
+
+        def fake_split(to_split: Path, chunk_bytes: int | None = None) -> list[Path] | None:
+            recorded_to_split.append(to_split)
+            visible = [p.name for p in folder.iterdir()
+                       if p.name.endswith(".mp4") and not p.name.startswith(".")]
+            recorded_visible_mp4.append(visible)
+            raise _Killed
+
+        media_prep._split = fake_split
+        try:
+            try:
+                media_prep.prepare(src)
+            except _Killed:
+                pass
+        finally:
+            media_prep._split = orig_split
+
+        check(len(recorded_to_split) == 1,
+              "kill simulation: fake _split was called")
+        check(recorded_to_split[0].name.startswith("."),
+              "kill simulation: to_split target starts with '.'")
+        check(recorded_visible_mp4[0] == [],
+              "kill simulation: no visible *.mp4 existed at split time")
+        visible_after_kill = [p.name for p in folder.iterdir()
+                              if p.name.endswith(".mp4") and not p.name.startswith(".")]
+        check(visible_after_kill == [],
+              "kill simulation: no visible *.mp4 in folder after kill (F25)")
+
+        stale_part = folder / ".stream_part009.mp4"
+        stale_part.write_bytes(b"stale partial split bytes from previous kill")
+
+        store = ItemStore.open(str(tmp / "kill.db"))
+        rep = ingest_folder(store, folder, chat_id=chat_id, guard=None)
+        row_names = [Path(r.file_path).name for r in rows_for(store, chat_id)]
+        check(all(re.fullmatch(r"stream_part\d+\.mp4", name) for name in row_names),
+              "every registered row name matches stream_part\\d+\\.mp4")
+        check(len(row_names) >= 2,
+              f"split produced >= 2 parts (got {len(row_names)})")
+        check("stream.mp4" not in row_names,
+              "stream.mp4 is not among registered rows")
+        dotfiles = [p for p in folder.iterdir() if p.name.startswith(".")]
+        check(dotfiles == [], "folder holds no dotfiles after ingest")
+        tgtmps = [p for p in folder.iterdir() if p.name.endswith(media_prep._TMP_SUFFIX)]
+        check(tgtmps == [], "folder holds no *.tgtmp files")
+        store.close()
+    finally:
+        del os.environ["ARCHIVER_TG_MAX_UPLOAD_BYTES"]
+        del os.environ["ARCHIVER_SPLIT_CHUNK_BYTES"]
+
+
 def test_split_seconds_from_minutes() -> None:
     print("\n── split_seconds_from_minutes parses the split_minutes setting ──")
     ssfm = media_prep.split_seconds_from_minutes
@@ -481,6 +577,8 @@ def main() -> None:
         test_flv_not_kept_as_document(tmp)
         test_prep_lock_busy(tmp)
         test_convert_publishes_atomically(tmp)
+        test_streamable_temp_hidden(tmp)
+        test_kill_between_convert_and_split(tmp)
     test_clean_upload_name()
     test_split_seconds_from_minutes()
     print(f"\nALL PASS ({_checks} checks)")

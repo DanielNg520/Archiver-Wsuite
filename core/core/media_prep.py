@@ -26,7 +26,7 @@ it is enqueued. Two concerns, applied only to video:
 ORDER: convert FIRST, then split. Re-encoding an incompatible file often drops
 it under the ceiling on its own (no split needed), and splitting on the final
 streamable bytes gives correct chunk sizes. When both apply, the intermediate
-converted file is split and then discarded.
+converted file is staged hidden, split, then discarded.
 
 ROBUSTNESS CONTRACT: this module never raises for an expected problem. A probe
 that fails, an ffmpeg error, a missing AutoSplitter, or a failed integrity
@@ -352,10 +352,11 @@ def _accept(p: _Probe, dst: Path, mode: str, src_name: str) -> bool:
 def _convert(src: Path, p: _Probe) -> Path | None:
     """Produce a streamable mp4 next to `src`. Lossless remux when the codecs
     already pass; otherwise a visually-lossless libx264/aac re-encode. Output
-    is written to a temporary in-progress file and atomically renamed onto the
-    final path after validation, so a process kill never leaves a truncated file
-    under a media name. Returns the output path, or None on failure (output
-    cleaned up)."""
+    is written to a temporary in-progress file and atomically renamed onto a
+    hidden staged path after validation. Returns the hidden staged path (sweeps
+    skip dotfiles, so a kill at any point never leaves a sweep-visible copy;
+    the visible name is staged.name minus its leading dot), or None on failure
+    (output cleaned up)."""
     # Prefer a clean "<stem>.mp4" so the UPLOADED filename carries no internal
     # marker — the output path is what every send path names the Telegram file
     # after. Fall back to the "<stem>.tgprep.mp4" tag only when the clean name
@@ -365,19 +366,20 @@ def _convert(src: Path, p: _Probe) -> Path | None:
     clean = src.with_name(f"{src.stem}.mp4")
     dst = (clean if clean != src and not clean.exists()
            else src.with_name(f"{src.stem}{_PREP_TAG}.mp4"))
-    tmp = dst.with_name(f"{dst.name}{_TMP_SUFFIX}")
+    work = dst.with_name("." + dst.name)
+    tmp = work.with_name(f"{work.name}{_TMP_SUFFIX}")
 
     def _publish(mode: str) -> Path | None:
         try:
-            os.replace(tmp, dst)
+            os.replace(tmp, work)
         except OSError as e:
             log.warning("media_prep: could not publish %s → %s: %s",
-                        tmp.name, dst.name, e)
+                        tmp.name, work.name, e)
             _unlink(tmp)
             return None
-        log.info("media_prep: %s %s → %s (%.2f GB)", mode, src.name, dst.name,
-                 dst.stat().st_size / 1e9)
-        return dst
+        log.info("media_prep: %s %s → %s (%.2f GB)", mode, src.name, work.name,
+                 work.stat().st_size / 1e9)
+        return work
 
     # A lossless remux is preferred whenever the codecs already pass, but a
     # stream-copy CANNOT repair a source with missing/irregular timestamps — it
@@ -400,6 +402,19 @@ def _convert(src: Path, p: _Probe) -> Path | None:
     return None
 
 
+def _unhide(staged: Path) -> Path | None:
+    """Atomically reveal a hidden staged file by stripping its leading dot."""
+    dst = staged.with_name(staged.name[1:])
+    try:
+        os.replace(staged, dst)
+    except OSError as e:
+        log.warning("media_prep: could not publish %s → %s: %s",
+                    staged.name, dst.name, e)
+        _unlink(staged)
+        return None
+    return dst
+
+
 def streamable_temp(path: Path) -> Path | None:
     """Send-time safety net: if `path` is a video Telegram can't stream inline
     (wrong container and/or codec), produce a streamable .mp4 next to it and
@@ -408,7 +423,9 @@ def streamable_temp(path: Path) -> Path | None:
     Returns None for the common cases that need no work — a probe failure (not
     a readable video: image, audio-only, ffprobe missing), an already-streamable
     video, or a conversion that fails — so the caller simply sends the original.
-    The caller owns the returned temp and must unlink it after sending.
+    The caller owns the returned temp and must unlink it after sending. The temp
+    is a dotfile so a killed send never leaves a sweep-visible copy, and the
+    upload is named via clean_upload_name.
 
     Unlike prepare(), this never splits: it is a last-line guard for producers
     that bypass ingest-time prep (chiefly the recorder, whose remux is allowed
@@ -436,10 +453,12 @@ def clean_upload_name(path: "str | Path") -> str:
     incompatible-codec .mp4 source (clean name == source) or a pre-existing
     sibling. That on-disk tag is fine, but it must NEVER reach the upload, so
     every send path names the Telegram file after this. Idempotent for names
-    that already carry no tag."""
+    that already carry no tag. Send-time temps are hidden dotfiles; queued files
+    never are (sweeps skip dotfiles)."""
     name = Path(path).name
     tag = f"{_PREP_TAG}."
-    return name.replace(tag, ".", 1) if tag in name else name
+    cleaned = name.replace(tag, ".", 1) if tag in name else name
+    return cleaned[1:] if cleaned.startswith(".") else cleaned
 
 
 def clean_upload_stem(path: "str | Path") -> str:
@@ -755,7 +774,8 @@ def prepare(path: Path, *, split_seconds: float | None = None) -> PrepResult:
             return PrepResult.busy_()
 
         # 1. Convert first (only when needed). The to-split source becomes the
-        #    converted file so we split final, streamable bytes.
+        #    converted file so we split final, streamable bytes; the converted
+        #    file stays hidden until published.
         to_split = path
         converted: Path | None = None
         if not streamable:
@@ -777,18 +797,37 @@ def prepare(path: Path, *, split_seconds: float | None = None) -> PrepResult:
                     chunk_target = int(split_size * (split_seconds / probe.duration))
                     if chunk_target > ceiling:
                         chunk_target = split_chunk_bytes()
+            if converted is not None:
+                _cleanup_split_debris(converted)
             parts = _split(to_split, chunk_target)
             if parts is None:
                 _unlink(converted)                 # clean the intermediate
                 return PrepResult.failed(f"split failed: {path.name}")
             if converted is not None:
-                _unlink(converted)                 # intermediate consumed by split
+                # The intermediate goes first so a kill between steps leaves
+                # only hidden debris that the next run's cleanup clears.
+                _unlink(converted)
+                revealed: list[Path] = []
+                for p in parts:
+                    pub = _unhide(p)
+                    if pub is None:
+                        for r in revealed:
+                            _unlink(r)
+                        for unrev in parts:
+                            _unlink(unrev)
+                        return PrepResult.failed(
+                            f"could not publish split parts: {path.name}")
+                    revealed.append(pub)
+                parts = revealed
             return PrepResult(outputs=parts, transformed=True, individual=True,
                               converted=converted is not None)
 
         # Converted but within size → single streamable output.
         assert converted is not None
-        return PrepResult(outputs=[converted], transformed=True, individual=False,
+        published = _unhide(converted)
+        if published is None:
+            return PrepResult.failed(f"could not publish converted file: {path.name}")
+        return PrepResult(outputs=[published], transformed=True, individual=False,
                           converted=True)
 
 
