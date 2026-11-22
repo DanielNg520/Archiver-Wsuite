@@ -375,6 +375,85 @@ def test_prep_lock_busy(tmp: Path) -> None:
     media_prep._unlink(res.outputs[0])
 
 
+def test_convert_publishes_atomically(tmp: Path) -> None:
+    print("\n── convert publishes atomically (in-progress .tgtmp replaced onto final name) ──")
+    # 1. Happy path: an .mkv with copyable codecs -> transformed, clean <stem>.mp4 output, no .tgtmp left.
+    mkv1 = tmp / "pub_atomic_happy.mkv"
+    clean1 = tmp / "pub_atomic_happy.mp4"
+    make_video(mkv1, seconds=2, vcodec="libx264", acodec="aac")
+    res1 = media_prep.prepare(mkv1)
+    check(res1.ok and res1.transformed and res1.outputs == [clean1],
+          "happy path: prepare() succeeds, single output is clean <stem>.mp4")
+    check(clean1.exists(), "happy path: clean output exists")
+    check(not list(tmp.glob("*.tgtmp")), "happy path: no *.tgtmp file left in directory")
+    media_prep._unlink(clean1)
+
+    # 2. Stale debris from a killed run: pre-created .tgtmp overwritten and published.
+    mkv2 = tmp / "pub_atomic_debris.mkv"
+    clean2 = tmp / "pub_atomic_debris.mp4"
+    debris2 = tmp / f"{clean2.name}{media_prep._TMP_SUFFIX}"
+    debris2.write_bytes(b"corrupt partial ffmpeg output from killed worker")
+    make_video(mkv2, seconds=2, vcodec="libx264", acodec="aac")
+    res2 = media_prep.prepare(mkv2)
+    check(res2.ok and res2.transformed and res2.outputs == [clean2],
+          "stale debris: prepare() succeeds with clean <stem>.mp4")
+    check(clean2.exists(), "stale debris: clean output exists")
+    check(not debris2.exists(), "stale debris: stale in-progress file is gone")
+    check(not list(tmp.glob("*.tgtmp")), "stale debris: no *.tgtmp file left in directory")
+    media_prep._unlink(clean2)
+
+    # 3 & 4. Failing fakes: replace runner functions and restore in finally.
+    recorded_paths: list[str] = []
+
+    def fake_runner(cmd: list[str], what: str = "") -> bool:
+        out = Path(cmd[-1])
+        recorded_paths.append(str(out))
+        out.write_bytes(b"garbage bytes from fake ffmpeg")
+        return False
+
+    orig_remux = media_prep._run_ffmpeg_remux
+    orig_ffmpeg = media_prep._run_ffmpeg
+    media_prep._run_ffmpeg_remux = fake_runner
+    media_prep._run_ffmpeg = fake_runner
+    try:
+        # 3. Failed conversion never writes the final name.
+        mkv3 = tmp / "pub_atomic_fail.mkv"
+        clean3 = tmp / "pub_atomic_fail.mp4"
+        make_video(mkv3, seconds=2, vcodec="libx264", acodec="aac")
+        res3 = media_prep.prepare(mkv3)
+        check(not res3.ok, "failed conversion: prepare() returns ok=False")
+        check(len(recorded_paths) > 0 and all(p.endswith(media_prep._TMP_SUFFIX) for p in recorded_paths),
+              "failed conversion: every recorded output path ends with .tgtmp")
+        check(not clean3.exists(), "failed conversion: clean <stem>.mp4 never written")
+        check(not list(tmp.glob("*.tgtmp")), "failed conversion: no *.tgtmp left after cleanup")
+        check(mkv3.exists(), "failed conversion: source still exists")
+
+        # 4. Failed conversion targeting .tgprep fallback preserves existing siblings.
+        recorded_paths.clear()
+        mkv4 = tmp / "pub_atomic_fallback.mkv"
+        clean4 = tmp / "pub_atomic_fallback.mp4"
+        tgprep4 = tmp / f"{mkv4.stem}{media_prep._PREP_TAG}.mp4"
+        clean_bytes = b"pre-existing clean sibling bytes"
+        tgprep_bytes = b"pre-existing fallback tag bytes"
+        clean4.write_bytes(clean_bytes)
+        tgprep4.write_bytes(tgprep_bytes)
+        make_video(mkv4, seconds=2, vcodec="libx264", acodec="aac")
+        res4 = media_prep.prepare(mkv4)
+        check(not res4.ok, "failed fallback conversion: prepare() returns ok=False")
+        check(clean4.exists() and clean4.read_bytes() == clean_bytes,
+              "failed fallback conversion: pre-existing clean .mp4 preserved with original bytes")
+        check(tgprep4.exists() and tgprep4.read_bytes() == tgprep_bytes,
+              "failed fallback conversion: pre-existing .tgprep.mp4 preserved with original bytes")
+        check(not list(tmp.glob("*.tgtmp")),
+              "failed fallback conversion: no *.tgtmp left after cleanup")
+        check(mkv4.exists(), "failed fallback conversion: source still exists")
+        media_prep._unlink(clean4)
+        media_prep._unlink(tgprep4)
+    finally:
+        media_prep._run_ffmpeg_remux = orig_remux
+        media_prep._run_ffmpeg = orig_ffmpeg
+
+
 def test_split_seconds_from_minutes() -> None:
     print("\n── split_seconds_from_minutes parses the split_minutes setting ──")
     ssfm = media_prep.split_seconds_from_minutes
@@ -401,6 +480,7 @@ def main() -> None:
         test_delete_after_split_off(tmp)
         test_flv_not_kept_as_document(tmp)
         test_prep_lock_busy(tmp)
+        test_convert_publishes_atomically(tmp)
     test_clean_upload_name()
     test_split_seconds_from_minutes()
     print(f"\nALL PASS ({_checks} checks)")

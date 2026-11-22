@@ -56,6 +56,12 @@ def test_startup_sweep_seam(tmp: Path) -> None:
         orphan_flv = _write_media(out / "dave" / "dave_crash.flv",
                                   b"ORPHANED-RAW-FLV-NEVER-ENQUEUED")
 
+        # (f) in-progress conversion debris (.tgtmp) → sweep ignores it (neither
+        #     registered into the DB nor deleted from disk).
+        from core import media_prep
+        debris_f = _write_media(out / "dave" / ("dave_debris.mp4" + media_prep._TMP_SUFFIX),
+                                b"IN-PROGRESS-DEBRIS-BYTES")
+
         db.close()   # sweep opens its own ItemStore on the same file
 
         # Policy ON so the sent leftover is actually removed (uses a temp config).
@@ -76,6 +82,10 @@ def test_startup_sweep_seam(tmp: Path) -> None:
                "brand-new recording registered into the shared table")
             ok(db2.has_file_path(str(orphan_flv)),
                "orphaned raw .flv recovered by the sweep (not stranded on disk)")
+            ok(not db2.has_file_path(str(debris_f)),
+               "in-progress conversion debris NOT registered into the shared table")
+            ok(debris_f.exists(),
+               "in-progress conversion debris left on disk untouched")
         finally:
             db2.close()
     finally:
@@ -106,11 +116,16 @@ def test_recordings_reconcile_seam(tmp: Path) -> None:
 
     out = tmp / "recorder-out"
     _write_media(out / "dave" / "dave_42.mp4", b"RECONCILE-RECORDING-BYTES")
+    from core import media_prep
+    debris = _write_media(out / "dave" / ("dave_debris.mp4" + media_prep._TMP_SUFFIX),
+                          b"RECONCILE-DEBRIS-BYTES")
     db = _fresh_db()
     try:
         reports = reconcile_recordings(db, str(out))
         total = sum(r.inserted for r in reports)
         ok(total == 1, "reconcile_recordings queued the loose recording")
+        ok(not db.has_file_path(str(debris)),
+           "in-progress conversion debris NOT registered into the shared table")
         row = db.get(db.id_of(str(out / "dave" / "dave_42.mp4")))
         ok(row.source == "recorder" and row.priority == RECORDER_PRIORITY,
            "reconciled recording carries source=recorder + recorder priority")

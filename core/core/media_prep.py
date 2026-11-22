@@ -150,6 +150,9 @@ _CONVERT_TIMEOUT_S = 6 * 3600.0
 # Marker so prep never re-processes its own output (defensive belt-and-braces;
 # converted outputs are already compatible so they passthrough anyway).
 _PREP_TAG = ".tgprep"
+# In-progress suffix; not a media extension, so sweeps never pick up a
+# killed conversion's debris.
+_TMP_SUFFIX = ".tgtmp"
 
 
 @dataclass
@@ -295,7 +298,8 @@ def _run_ffmpeg_remux(cmd: list[str], what: str) -> bool:
 def _remux_cmd(src: Path, dst: Path) -> list[str]:
     return ["ffmpeg", "-y", "-v", "warning", "-i", str(src),
             "-map", "0:V:0", "-map", "0:a:0?",
-            "-c", "copy", "-movflags", "+faststart", str(dst)]
+            "-c", "copy", "-movflags", "+faststart",
+            "-f", "mp4", str(dst)]
 
 
 def _reencode_cmd(src: Path, dst: Path) -> list[str]:
@@ -307,7 +311,8 @@ def _reencode_cmd(src: Path, dst: Path) -> list[str]:
             "-c:v", "libx264", "-crf", "18", "-preset", "medium",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "256k",
-            "-movflags", "+faststart", str(dst)]
+            "-movflags", "+faststart",
+            "-f", "mp4", str(dst)]
 
 
 def _accept(p: _Probe, dst: Path, mode: str, src_name: str) -> bool:
@@ -346,8 +351,11 @@ def _accept(p: _Probe, dst: Path, mode: str, src_name: str) -> bool:
 
 def _convert(src: Path, p: _Probe) -> Path | None:
     """Produce a streamable mp4 next to `src`. Lossless remux when the codecs
-    already pass; otherwise a visually-lossless libx264/aac re-encode. Returns
-    the output path, or None on failure (output cleaned up)."""
+    already pass; otherwise a visually-lossless libx264/aac re-encode. Output
+    is written to a temporary in-progress file and atomically renamed onto the
+    final path after validation, so a process kill never leaves a truncated file
+    under a media name. Returns the output path, or None on failure (output
+    cleaned up)."""
     # Prefer a clean "<stem>.mp4" so the UPLOADED filename carries no internal
     # marker — the output path is what every send path names the Telegram file
     # after. Fall back to the "<stem>.tgprep.mp4" tag only when the clean name
@@ -357,6 +365,19 @@ def _convert(src: Path, p: _Probe) -> Path | None:
     clean = src.with_name(f"{src.stem}.mp4")
     dst = (clean if clean != src and not clean.exists()
            else src.with_name(f"{src.stem}{_PREP_TAG}.mp4"))
+    tmp = dst.with_name(f"{dst.name}{_TMP_SUFFIX}")
+
+    def _publish(mode: str) -> Path | None:
+        try:
+            os.replace(tmp, dst)
+        except OSError as e:
+            log.warning("media_prep: could not publish %s → %s: %s",
+                        tmp.name, dst.name, e)
+            _unlink(tmp)
+            return None
+        log.info("media_prep: %s %s → %s (%.2f GB)", mode, src.name, dst.name,
+                 dst.stat().st_size / 1e9)
+        return dst
 
     # A lossless remux is preferred whenever the codecs already pass, but a
     # stream-copy CANNOT repair a source with missing/irregular timestamps — it
@@ -365,20 +386,17 @@ def _convert(src: Path, p: _Probe) -> Path | None:
     # durations from decoded frames. (-c copy ignores -fflags +genpts, so the
     # re-encode is the only path that actually fixes such a source.)
     if _codecs_copyable(p):
-        if (_run_ffmpeg_remux(_remux_cmd(src, dst), what=f"remux {src.name}")
-                and _accept(p, dst, "remux", src.name)):
-            log.info("media_prep: remux %s → %s (%.2f GB)", src.name, dst.name,
-                     dst.stat().st_size / 1e9)
-            return dst
+        if (_run_ffmpeg_remux(_remux_cmd(src, tmp), what=f"remux {src.name}")
+                and _accept(p, tmp, "remux", src.name)):
+            return _publish("remux")
+        _unlink(tmp)
         log.info("media_prep: remux of %s unusable — re-encoding", src.name)
 
-    if (_run_ffmpeg(_reencode_cmd(src, dst), what=f"re-encode {src.name}")
-            and _accept(p, dst, "re-encode", src.name)):
-        log.info("media_prep: re-encode %s → %s (%.2f GB)", src.name, dst.name,
-                 dst.stat().st_size / 1e9)
-        return dst
+    if (_run_ffmpeg(_reencode_cmd(src, tmp), what=f"re-encode {src.name}")
+            and _accept(p, tmp, "re-encode", src.name)):
+        return _publish("re-encode")
 
-    _unlink(dst)
+    _unlink(tmp)
     return None
 
 

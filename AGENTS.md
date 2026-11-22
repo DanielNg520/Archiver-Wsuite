@@ -4,7 +4,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 
 ## Findings
 
-- F24 [medium · 1 · 2026-11-21] recorder/startup_sweep.py: restart mid flv→mp4 remux; sweep enqueues truncated mp4 raw (unprobeable, under ceiling) beside its intact flv (verified). Ask owner: plan fix.
+- F25 [low · 1 · 2026-11-21] core/core/media_prep.py: prepare convert-then-split keeps converted mp4 under final name while splitting; kill leaves complete copy uploaded beside parts (verified).
 
 ## Commands
 
@@ -46,6 +46,7 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Priority order for design trade-offs: integrity > self-healing > seam robustness > efficiency.
 - Recorder `wait()` exit codes: -1 clean stop, -2 dead stream (zero bytes), -3 stall guard (`stall_timeout_s`, default 300); all three end the reconnect loop.
 - Recorder discards segments under `RECORDER_MIN_SEGMENT_BYTES` (default 1MB) before remux; logs `discarded_stub`.
+- Media writers publish atomically (convert via .tgtmp, split via dotfiles); sweep extension/dotfile filters and Seams 6/7 keep debris out.
 - `recorder record --user X` reloads the service on every exit path; `--no-reload` only when the caller reloads itself.
 - `ops unload recorder` also SIGTERMs a manual `recorder record` (`health.foreground_pid`), touching `recorder_suppress_reload_flag` so it skips its reload.
 - Dispatcher whole-batch failures always set `retry_after` (`stall_backoff_s`, 300s); schema v5 `items.retry_after` gates `claim_next`/`claim_batch`.
@@ -99,10 +100,12 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Ops Center references removed from Hivemind (memory + inventory) and TriAPI AGENTS.md, pushed (owner, 2026-10-14).
 - Archiver stack is Fedora-only: Mac repo copies, config dirs and Gemini project state deleted; Fedora is the sole deployment (owner, 2026-10-14).
 - Recorder split mode splits by duration (`split_minutes`, default 15, `0` = off; code `split_seconds`) into ordered album parts regardless of size (owner, 2026-11-21).
+- Live recorder `split_minutes = 20` in `$CONFIG/recorder/config.toml`; code default stays 15 (owner, 2026-11-21).
+- Per-platform loop lanes deferred as a future problem; F24 goes first (owner, 2026-11-21).
 
 ## Ask owner
 
-- None open.
+- Ask owner: restart archiver onto F24 code now (interrupts the X pass) or wait for next natural restart?
 
 ## Index
 
@@ -115,11 +118,6 @@ Single agent doc for this repo. Read first. Traps: `CLAUDE.md`. Architecture: `R
 - Docs: `README.md`, `DESIGN.md`, `USER-GUIDE.md`, `AUTOMATION.md`, `ops/RUNBOOK.md`, per-package `README.md`, `CLAUDE.md`.
 
 ## Carryover
-
-### F24 truncated-remux gap — next session (owner, 2026-11-21)
-- Trigger: recorder restart killed post-capture flv→mp4 remux; startup sweep registered the moov-less mp4 via `media_prep.prepare` unprobeable-under-ceiling passthrough.
-- Constraint: that passthrough is the documented raw-fallback contract (`prepare` probe-None branch); fix must not strand legitimate raw recordings.
-- Start: plan first, check `startup_sweep`/`reconcile` for sibling `<stem>.flv` handling and capture's remux-finalize path; dispatch via TriAPI.
 
 Last audit: 2026-11-21 wrap-up (audited through `f2169d1`; 1 new finding).
 
